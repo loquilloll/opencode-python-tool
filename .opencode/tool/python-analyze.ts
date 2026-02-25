@@ -118,6 +118,26 @@ const DANGEROUS_DESERIALIZE_EXEC_CALLS = new Set([
   "marshal.load",
   "marshal.loads",
 ])
+const OCI_EXEC_CALLS = new Set([
+  "oci.identity.IdentityClient",
+  "oci.core.ComputeClient",
+  "oci.core.VirtualNetworkClient",
+  "oci.object_storage.ObjectStorageClient",
+  "oci.database.DatabaseClient",
+  "oci.secrets.SecretsClient",
+  "oci.key_management.KmsManagementClient",
+  "oci.pagination.list_call_get_all_results",
+  "oci.pagination.list_call_get_all_results_generator",
+])
+const OCI_CLIENT_METHOD_PREFIXES = [
+  "oci.identity.IdentityClient.",
+  "oci.core.ComputeClient.",
+  "oci.core.VirtualNetworkClient.",
+  "oci.object_storage.ObjectStorageClient.",
+  "oci.database.DatabaseClient.",
+  "oci.secrets.SecretsClient.",
+  "oci.key_management.KmsManagementClient.",
+]
 
 const resolveWasm = (asset: string) => {
   if (asset.startsWith("file://")) return fileURLToPath(asset)
@@ -294,11 +314,14 @@ function classify(node: Node): PythonEvent | undefined {
   if (READ_CALLS.has(call)) return { kind: "read", call }
   if (WRITE_CALLS.has(call)) return { kind: "write", call }
   if (TEMPFILE_WRITE_CALLS.has(call)) return { kind: "write", call }
+  if (call === "oci.config.from_file") return pathEvent("read", call, pick(input, 0, ["file_location"]))
 
   if (EXEC_CALLS.has(call)) return { kind: "exec", call }
   if (NETWORK_EXEC_CALLS.has(call)) return { kind: "exec", call }
   if (DB_EXEC_CALLS.has(call)) return { kind: "exec", call }
   if (DANGEROUS_DESERIALIZE_EXEC_CALLS.has(call)) return { kind: "exec", call }
+  if (OCI_EXEC_CALLS.has(call)) return { kind: "exec", call }
+  if (OCI_CLIENT_METHOD_PREFIXES.some((prefix) => call.startsWith(prefix))) return { kind: "exec", call }
   if (call.startsWith("subprocess.")) return { kind: "exec", call }
   if (call.startsWith("os.exec")) return { kind: "exec", call }
 

@@ -246,6 +246,66 @@ describe("python analyzer", () => {
     })
   })
 
+  describe("phase 11 oci coverage", () => {
+    it("classifies known OCI constructors and pagination helpers as exec", async () => {
+      const events = await analyze(
+        [
+          "oci.identity.IdentityClient(config)",
+          "oci.core.ComputeClient(config)",
+          "oci.core.VirtualNetworkClient(config)",
+          "oci.object_storage.ObjectStorageClient(config)",
+          "oci.database.DatabaseClient(config)",
+          "oci.secrets.SecretsClient(config)",
+          "oci.key_management.KmsManagementClient(config)",
+          "oci.pagination.list_call_get_all_results(fetch_fn)",
+          "oci.pagination.list_call_get_all_results_generator(fetch_fn)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "oci.identity.IdentityClient" },
+          { kind: "exec", call: "oci.core.ComputeClient" },
+          { kind: "exec", call: "oci.core.VirtualNetworkClient" },
+          { kind: "exec", call: "oci.object_storage.ObjectStorageClient" },
+          { kind: "exec", call: "oci.database.DatabaseClient" },
+          { kind: "exec", call: "oci.secrets.SecretsClient" },
+          { kind: "exec", call: "oci.key_management.KmsManagementClient" },
+          { kind: "exec", call: "oci.pagination.list_call_get_all_results" },
+          { kind: "exec", call: "oci.pagination.list_call_get_all_results_generator" },
+        ]),
+      )
+    })
+
+    it("classifies oci.config.from_file as read with literal and dynamic paths", async () => {
+      expect(await analyze("oci.config.from_file('~/.oci/config')")).toEqual([
+        { kind: "read", call: "oci.config.from_file", path: "~/.oci/config" },
+      ])
+
+      expect(await analyze("oci.config.from_file(file_location=config_path)")).toEqual([
+        { kind: "read", call: "oci.config.from_file", dynamicPath: true },
+      ])
+    })
+
+    it("classifies chained OCI client method calls as exec", async () => {
+      const events = await analyze(
+        "oci.object_storage.ObjectStorageClient(config).put_object('ns', 'bucket', 'name', body)",
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "oci.object_storage.ObjectStorageClient" },
+          { kind: "exec", call: "oci.object_storage.ObjectStorageClient.put_object" },
+        ]),
+      )
+    })
+
+    it("keeps OCI alias form as callable fallback unknown", async () => {
+      const events = await analyze("import oci as cloud\ncloud.object_storage.ObjectStorageClient(config)")
+      expect(events).toEqual([{ kind: "unknown", call: "callable:cloud.object_storage.ObjectStorageClient" }])
+    })
+  })
+
   describe("edge cases and fallbacks", () => {
     it("classifies empty, whitespace, parse-error, and no-calls paths", async () => {
       expect(await analyze("")).toEqual([{ kind: "unknown", call: "empty-source" }])

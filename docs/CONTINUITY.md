@@ -1,6 +1,7 @@
 # CONTINUITY
 
 [PLANS]
+- 2026-02-25T20:39Z [USER] [plan:15-phase11-oci-coverage] Implement Phase 11 only from `docs/python-custom-tool-plan.md`: add OCI analyzer classification for known entrypoints, chained client method prefixes, and `oci.config.from_file` read-path handling; update analyzer tests and validate with `.opencode` bun tests; do not implement Phase 12 (GHAPI).
 - 2026-02-25T19:21Z [USER] [plan:14-phase10-docs-continuity] Implement Phase 10 only from `docs/python-custom-tool-plan.md`: finalize documentation/continuity state through completed Phase 9 work, mark Phase 10 done, keep Phases 11-12 TODO, run validation checks, and stop before implementation of future phases.
 - 2026-02-25T18:08Z [USER] [plan:13-phase9-policy-hardening] Implement Phase 9 only from `docs/python-custom-tool-plan.md`: harden `.opencode/opencode.jsonc` python policy with dangerous deserialization deny rules, preserve existing restrictive defaults (`python:*` ask, dangerous exec denies), keep `unknown:*` and `external_directory` ask posture, validate config compatibility, and stop before Phase 10+.
 - 2026-02-25T17:29Z [USER] [plan:12-phase8-runtime-tests] Implement Phase 8 only from `docs/python-custom-tool-plan.md`: add comprehensive runtime tests in `.opencode/test/python.test.ts` reusing `.opencode/test/fixtures/context.ts`, allow runtime file edits only if strictly needed for deterministic tests, and stop before Phase 9+.
@@ -23,6 +24,9 @@
 - 2026-02-25T16:30Z [CODE] [plan:04-comprehensive-replan] Expanded plan to 10 phases: split hardening from initial implementation, added dedicated test phases (7 analyzer tests, 8 runtime tests), added Phase 5 (analyzer hardening: network/db/tempfile/pickle), Phase 6 (runtime hardening: venv detection, env vars, error handling), Phase 9 (permission policy hardening).
 
 [PROGRESS]
+- 2026-02-25T20:39Z [TOOL] [plan:15-phase11-oci-coverage] Updated `.opencode/tool/python-analyze.ts` with `OCI_EXEC_CALLS` and `OCI_CLIENT_METHOD_PREFIXES`, added OCI exec classification for known SDK entrypoints and chained constructor->method calls, and added `oci.config.from_file` read classification with first positional or `file_location` argument path extraction.
+- 2026-02-25T20:39Z [TOOL] [plan:15-phase11-oci-coverage] Expanded `.opencode/test/python-analyze.test.ts` with deterministic Phase 11 OCI coverage tests for known constructor/pagination exec calls, `oci.config.from_file("~/.oci/config")` literal read path, dynamic `file_location` read, chained client method exec, and alias-form callable fallback unknown behavior.
+- 2026-02-25T20:39Z [TOOL] [plan:15-phase11-oci-coverage] Validation passed in `.opencode`: `bun test test/python-analyze.test.ts` => `24 pass, 0 fail`; `bun test` => `54 pass, 0 fail`.
 - 2026-02-25T19:21Z [TOOL] [plan:14-phase10-docs-continuity] Updated `docs/python-custom-tool-plan.md` to reflect delivered state: Phases 6-10 statuses are now `DONE` in both section headers and the phase summary table, while Phases 11-12 remain `TODO`.
 - 2026-02-25T19:21Z [TOOL] [plan:14-phase10-docs-continuity] Refined Phase 10 known-limitation bullets to match implemented analyzer/runtime behavior, explicitly documenting callable fallback (`unknown:callable:<name>`), alias deferral, dynamic attribute gaps, indirect-call gaps, and inner-`exec` analysis boundary.
 - 2026-02-25T18:08Z [TOOL] [plan:13-phase9-policy-hardening] Updated `.opencode/opencode.jsonc` Phase 9 policy with four new deny entries for dangerous deserialization exec patterns: `exec:pickle.load`, `exec:pickle.loads`, `exec:marshal.load`, `exec:marshal.loads`.
@@ -54,6 +58,8 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Validation command `bun test test/python-analyze.test.ts` passed with `7 pass, 0 fail`.
 
 [DISCOVERIES]
+- 2026-02-25T20:39Z [CODE] [plan:15-phase11-oci-coverage] Tree-sitter call-name resolution already captures chained constructor->method OCI calls as dotted identities (for example `oci.object_storage.ObjectStorageClient.put_object`), so prefix-based exec classification cleanly upgrades these without alias/scope tracking.
+- 2026-02-25T20:39Z [CODE] [plan:15-phase11-oci-coverage] OCI import alias resolution remains deferred by design: `import oci as cloud; cloud.object_storage.ObjectStorageClient(...)` continues to emit callable-fallback unknown events (`unknown:callable:cloud.object_storage.ObjectStorageClient`) and is still permission-checkable.
 - 2026-02-25T19:21Z [CODE] [plan:14-phase10-docs-continuity] Plan document drift had persisted after prior implementation phases (6-9 were implemented but marked TODO); this pass reconciles status truth so section-level and summary-table status values now agree.
 - 2026-02-25T19:21Z [CODE] [plan:14-phase10-docs-continuity] Keeping Phases 11-12 as TODO is required to preserve roadmap clarity: OCI/GHAPI explicit classification is still pending even though generic callable fallback coverage already exists.
 - 2026-02-25T18:08Z [CODE] [plan:13-phase9-policy-hardening] Existing wildcard deny `exec:os.exec*` remains necessary and intact; with last-match-wins permission evaluation and glob-style matching, it continues to cover `exec:os.execvp`/`exec:os.execvpe` variants while new deserialization denies close analyzer-classified gaps.
@@ -74,6 +80,7 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Alias deferral remains unchanged after Phase 5 checks: `import requests as rq; rq.get(...)` currently results in `unknown:no-classified-call` because alias tracking is intentionally not implemented.
 
 [OUTCOMES]
+- 2026-02-25T20:39Z [TOOL] [plan:15-phase11-oci-coverage] Phase 11 OCI analyzer coverage is implemented and validated: known OCI SDK entrypoints and chained client method calls now classify as `exec`, `oci.config.from_file` now classifies as `read` with literal/dynamic path behavior, analyzer tests are expanded and passing, and Phase 12 (GHAPI) was not started.
 - 2026-02-25T19:21Z [TOOL] [plan:14-phase10-docs-continuity] Phase 10 documentation/continuity finalization is complete: plan status tracking now matches completed implementation through Phase 9 plus this documentation pass, known limitations are current, and future phases 11-12 are intentionally left pending.
 - 2026-02-25T18:08Z [TOOL] [plan:13-phase9-policy-hardening] Phase 9 permission policy hardening is implemented and validated: dangerous Python deserialization exec patterns are now explicitly denied, restrictive defaults and unknown/external-directory ask posture are preserved, and no Phase 10+ work was started.
 - 2026-02-25T17:29Z [TOOL] [plan:12-phase8-runtime-tests] Phase 8 runtime test suite is implemented and passing; coverage now validates permission planning, external directory asks, runtime execution behavior, timeout/abort metadata, streaming updates, ENOENT ergonomics, and workdir resolution without beginning Phase 9+ policy changes.
