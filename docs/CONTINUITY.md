@@ -1,6 +1,7 @@
 # CONTINUITY
 
 [PLANS]
+- 2026-02-25T19:21Z [USER] [plan:14-phase10-docs-continuity] Implement Phase 10 only from `docs/python-custom-tool-plan.md`: finalize documentation/continuity state through completed Phase 9 work, mark Phase 10 done, keep Phases 11-12 TODO, run validation checks, and stop before implementation of future phases.
 - 2026-02-25T18:08Z [USER] [plan:13-phase9-policy-hardening] Implement Phase 9 only from `docs/python-custom-tool-plan.md`: harden `.opencode/opencode.jsonc` python policy with dangerous deserialization deny rules, preserve existing restrictive defaults (`python:*` ask, dangerous exec denies), keep `unknown:*` and `external_directory` ask posture, validate config compatibility, and stop before Phase 10+.
 - 2026-02-25T17:29Z [USER] [plan:12-phase8-runtime-tests] Implement Phase 8 only from `docs/python-custom-tool-plan.md`: add comprehensive runtime tests in `.opencode/test/python.test.ts` reusing `.opencode/test/fixtures/context.ts`, allow runtime file edits only if strictly needed for deterministic tests, and stop before Phase 9+.
 - 2026-02-25T17:05Z [USER] [plan:11-phase7-analyzer-tests] Implement Phase 7 only from `docs/python-custom-tool-plan.md`: add fixture context helper and expand `.opencode/test/python-analyze.test.ts` to comprehensive analyzer coverage, then validate with `bun test test/python-analyze.test.ts` (and `bun test` if practical), without starting Phase 8+.
@@ -22,6 +23,8 @@
 - 2026-02-25T16:30Z [CODE] [plan:04-comprehensive-replan] Expanded plan to 10 phases: split hardening from initial implementation, added dedicated test phases (7 analyzer tests, 8 runtime tests), added Phase 5 (analyzer hardening: network/db/tempfile/pickle), Phase 6 (runtime hardening: venv detection, env vars, error handling), Phase 9 (permission policy hardening).
 
 [PROGRESS]
+- 2026-02-25T19:21Z [TOOL] [plan:14-phase10-docs-continuity] Updated `docs/python-custom-tool-plan.md` to reflect delivered state: Phases 6-10 statuses are now `DONE` in both section headers and the phase summary table, while Phases 11-12 remain `TODO`.
+- 2026-02-25T19:21Z [TOOL] [plan:14-phase10-docs-continuity] Refined Phase 10 known-limitation bullets to match implemented analyzer/runtime behavior, explicitly documenting callable fallback (`unknown:callable:<name>`), alias deferral, dynamic attribute gaps, indirect-call gaps, and inner-`exec` analysis boundary.
 - 2026-02-25T18:08Z [TOOL] [plan:13-phase9-policy-hardening] Updated `.opencode/opencode.jsonc` Phase 9 policy with four new deny entries for dangerous deserialization exec patterns: `exec:pickle.load`, `exec:pickle.loads`, `exec:marshal.load`, `exec:marshal.loads`.
 - 2026-02-25T18:08Z [TOOL] [plan:13-phase9-policy-hardening] Validation passed in `.opencode`: `bun test` => `50 pass, 0 fail`, confirming workflow parse/load compatibility after policy change.
 - 2026-02-25T17:29Z [TOOL] [plan:12-phase8-runtime-tests] Added `.opencode/test/python.test.ts` with 30 deterministic Phase 8 runtime tests covering validation, permission asks/always patterns, external-directory detection, script-path behavior, ENOENT/workdir semantics, process execution, timeout/abort metadata, and metadata streaming/cap behavior.
@@ -51,6 +54,8 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Validation command `bun test test/python-analyze.test.ts` passed with `7 pass, 0 fail`.
 
 [DISCOVERIES]
+- 2026-02-25T19:21Z [CODE] [plan:14-phase10-docs-continuity] Plan document drift had persisted after prior implementation phases (6-9 were implemented but marked TODO); this pass reconciles status truth so section-level and summary-table status values now agree.
+- 2026-02-25T19:21Z [CODE] [plan:14-phase10-docs-continuity] Keeping Phases 11-12 as TODO is required to preserve roadmap clarity: OCI/GHAPI explicit classification is still pending even though generic callable fallback coverage already exists.
 - 2026-02-25T18:08Z [CODE] [plan:13-phase9-policy-hardening] Existing wildcard deny `exec:os.exec*` remains necessary and intact; with last-match-wins permission evaluation and glob-style matching, it continues to cover `exec:os.execvp`/`exec:os.execvpe` variants while new deserialization denies close analyzer-classified gaps.
 - 2026-02-25T17:29Z [CODE] [plan:12-phase8-runtime-tests] `MAX_METADATA_LENGTH` trim behavior yields up to `30005` chars in metadata output (`30_000` slice plus `"\n\n..."` suffix and occasional trailing newline from runtime output), so cap assertions should allow `<= 30005`.
 - 2026-02-25T17:05Z [CODE] [plan:11-phase7-analyzer-tests] Current analyzer semantics differ from the original Phase 7 examples for some path extraction cases: `Path(path_var).read_text()` emits both `read:Path.read_text` with `dynamicPath:true` and an additional `unknown:callable:Path` event from the constructor call.
@@ -69,6 +74,7 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Alias deferral remains unchanged after Phase 5 checks: `import requests as rq; rq.get(...)` currently results in `unknown:no-classified-call` because alias tracking is intentionally not implemented.
 
 [OUTCOMES]
+- 2026-02-25T19:21Z [TOOL] [plan:14-phase10-docs-continuity] Phase 10 documentation/continuity finalization is complete: plan status tracking now matches completed implementation through Phase 9 plus this documentation pass, known limitations are current, and future phases 11-12 are intentionally left pending.
 - 2026-02-25T18:08Z [TOOL] [plan:13-phase9-policy-hardening] Phase 9 permission policy hardening is implemented and validated: dangerous Python deserialization exec patterns are now explicitly denied, restrictive defaults and unknown/external-directory ask posture are preserved, and no Phase 10+ work was started.
 - 2026-02-25T17:29Z [TOOL] [plan:12-phase8-runtime-tests] Phase 8 runtime test suite is implemented and passing; coverage now validates permission planning, external directory asks, runtime execution behavior, timeout/abort metadata, streaming updates, ENOENT ergonomics, and workdir resolution without beginning Phase 9+ policy changes.
 - 2026-02-25T17:05Z [TOOL] [plan:11-phase7-analyzer-tests] Phase 7 analyzer test suite is implemented and passing with deterministic assertions, fixture helper is present, callable-fallback expectations now consistently use `unknown:callable:<name>`, and no Phase 8+ implementation work was started.

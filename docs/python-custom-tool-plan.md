@@ -409,7 +409,7 @@ feat: expand analyzer classification and add callable-fallback unknown events
 **Goal:** Fix gaps between our python tool and the reference bash tool's runtime
 behavior. Make the tool production-ready.
 
-**Status:** TODO.
+**Status:** DONE (implemented and validated).
 
 **Changes to `.opencode/tool/python.ts`:**
 
@@ -494,7 +494,7 @@ feat: harden python tool runtime with venv detection, env vars, and error handli
 **Goal:** Comprehensive unit tests for the AST analyzer covering every classification
 rule, edge case, and fallback.
 
-**Status:** TODO.
+**Status:** DONE (implemented and validated).
 
 **Files created:**
 - `.opencode/test/fixtures/context.ts` — mock `ToolContext` factory
@@ -628,7 +628,7 @@ test: add comprehensive unit tests for Python AST analyzer
 **Goal:** Integration tests for the full tool: arg validation, permission flow,
 process execution, timeout, abort, output streaming.
 
-**Status:** TODO.
+**Status:** DONE (implemented and validated).
 
 **Files created:**
 - `.opencode/test/python.test.ts`
@@ -712,7 +712,7 @@ test: add integration tests for Python tool runtime
 **Goal:** Refine the `opencode.jsonc` permission policy based on the expanded
 analyzer classifications from Phase 5 and real-world threat modeling.
 
-**Status:** TODO.
+**Status:** DONE (implemented and validated).
 
 **Changes to `.opencode/opencode.jsonc`:**
 
@@ -767,7 +767,7 @@ feat: harden permission policy with deserialization deny rules
 **Goal:** Finalize all documentation, ensure CONTINUITY.md reflects the full
 implementation state, and prepare for handoff.
 
-**Status:** TODO.
+**Status:** DONE (documentation pass completed).
 
 **Files changed:**
 - `docs/python-custom-tool-plan.md` — mark all phases complete, add outcomes
@@ -779,16 +779,19 @@ implementation state, and prepare for handoff.
   - `[OUTCOMES]`: summary of what was delivered, known limitations, future work
 
 **Known limitations to document:**
-1. Import alias tracking is not implemented. Aliased calls are captured as
+1. Generic callable fallback is intentionally coarse-grained: unrecognized calls are
+   classified as `unknown:callable:<resolved-name>` and remain permission-checkable,
+   but are not upgraded to canonical `read`/`write`/`exec` families automatically.
+2. Import alias tracking is not implemented. Aliased calls are captured as
    callable-identity unknown events (e.g., `unknown:callable:sp.run`) but do not
    resolve to canonical module names (e.g., `subprocess.run`).
-2. Dynamic attribute access (e.g., `getattr(os, "system")("cmd")`) is not detected.
-3. String formatting in paths (f-strings) is marked as dynamic, not resolved.
-4. Indirect calls through variables (e.g., `fn = open; fn("f")`) are not tracked.
-5. `exec("import os; os.system('rm -rf /')")` — the inner code is not analyzed
+3. Dynamic attribute access (e.g., `getattr(os, "system")("cmd")`) is not detected.
+4. String formatting in paths (f-strings) is marked as dynamic, not resolved.
+5. Indirect calls through variables (e.g., `fn = open; fn("f")`) are not tracked.
+6. `exec("import os; os.system('rm -rf /')")` — the inner code is not analyzed
    (but `exec` itself is denied by policy).
-6. Network calls via libraries/import styles not explicitly recognized may not map to
-   an `exec:*` family, but are still captured by generic callable unknown fallback.
+7. Network/API calls via libraries or import styles not explicitly recognized may not
+   map to an `exec:*` family, but still fall back to `unknown:callable:<name>`.
 
 **Verification:**
 - All files under cwd are workspace-scoped.
@@ -980,11 +983,11 @@ feat: add ghapi module call classification for GitHub API permissions
 | 3 | AST Analyzer | DONE | 2 | `feat` |
 | 4 | Tool Runtime + Permissions | DONE | 3 | `feat` |
 | 5 | Analyzer Hardening | DONE | 3 | `feat` |
-| 6 | Tool Runtime Hardening | TODO | 4 | `feat` |
-| 7 | Test Suite: Analyzer | TODO | 5 | `test` |
-| 8 | Test Suite: Tool Runtime | TODO | 6 | `test` |
-| 9 | Permission Policy Hardening | TODO | 5 | `feat` |
-| 10 | Documentation + Continuity | TODO | all | `docs` |
+| 6 | Tool Runtime Hardening | DONE | 4 | `feat` |
+| 7 | Test Suite: Analyzer | DONE | 5 | `test` |
+| 8 | Test Suite: Tool Runtime | DONE | 6 | `test` |
+| 9 | Permission Policy Hardening | DONE | 5 | `feat` |
+| 10 | Documentation + Continuity | DONE | all | `docs` |
 | 11 | OCI Module Call Coverage | TODO | 5 | `feat` |
 | 12 | GHAPI Module Call Coverage | TODO | 5 | `feat` |
 
