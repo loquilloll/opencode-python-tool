@@ -811,7 +811,7 @@ docs: finalize plan, continuity, and known-limitations documentation
 cloud operations are classified and permission-checked without relying only on
 generic callable fallback.
 
-**Status:** TODO.
+**Status:** DONE (implemented and validated).
 
 **Files changed:**
 - `.opencode/tool/python-analyze.ts`
@@ -885,7 +885,7 @@ feat: add OCI module call classification for cloud API permissions
 surfaces so GitHub API activity is classified and permission-checked as remote
 execution, not only through generic callable fallback.
 
-**Status:** TODO.
+**Status:** DONE (implemented and validated).
 
 **Primary source:**
 - `https://ghapi.fast.ai/`
@@ -988,8 +988,8 @@ feat: add ghapi module call classification for GitHub API permissions
 | 8 | Test Suite: Tool Runtime | DONE | 6 | `test` |
 | 9 | Permission Policy Hardening | DONE | 5 | `feat` |
 | 10 | Documentation + Continuity | DONE | all | `docs` |
-| 11 | OCI Module Call Coverage | TODO | 5 | `feat` |
-| 12 | GHAPI Module Call Coverage | TODO | 5 | `feat` |
+| 11 | OCI Module Call Coverage | DONE | 5 | `feat` |
+| 12 | GHAPI Module Call Coverage | DONE | 5 | `feat` |
 
 ## Commit Sequence (recommended)
 

@@ -306,6 +306,100 @@ describe("python analyzer", () => {
     })
   })
 
+  describe("phase 12 ghapi coverage", () => {
+    it("classifies direct ghapi module calls as exec", async () => {
+      const events = await analyze(
+        [
+          "ghapi.all.GhApi(owner='o', repo='r')",
+          "ghapi.core.GhApi(owner='o', repo='r')",
+          "ghapi.graphql.gh_query('query { viewer { login } }')",
+          "ghapi.page.paged(fetcher)",
+          "ghapi.page.pages(fetcher)",
+          "ghapi.auth.GhDeviceAuth()",
+          "ghapi.auth.github_auth_device()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "ghapi.all.GhApi" },
+          { kind: "exec", call: "ghapi.core.GhApi" },
+          { kind: "exec", call: "ghapi.graphql.gh_query" },
+          { kind: "exec", call: "ghapi.page.paged" },
+          { kind: "exec", call: "ghapi.page.pages" },
+          { kind: "exec", call: "ghapi.auth.GhDeviceAuth" },
+          { kind: "exec", call: "ghapi.auth.github_auth_device" },
+        ]),
+      )
+    })
+
+    it("classifies GhApi convenience methods as exec", async () => {
+      const events = await analyze(
+        [
+          "GhApi().create_gist(files={}, description='d')",
+          "GhApi().create_release(tag_name='v1.0.0')",
+          "GhApi.delete_release(release_id=1)",
+          "GhApi.upload_file(path='dist.tgz')",
+          "GhApi.enable_pages()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "GhApi.create_gist" },
+          { kind: "exec", call: "GhApi.create_release" },
+          { kind: "exec", call: "GhApi.delete_release" },
+          { kind: "exec", call: "GhApi.upload_file" },
+          { kind: "exec", call: "GhApi.enable_pages" },
+        ]),
+      )
+    })
+
+    it("classifies ghapi workflow helper calls as write", async () => {
+      const events = await analyze(
+        [
+          "ghapi.actions.create_workflow_files(workflow='ci')",
+          "ghapi.actions.create_workflow(name='ci')",
+          "ghapi.actions.gh_create_workflow(name='ci')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "write", call: "ghapi.actions.create_workflow_files" },
+          { kind: "write", call: "ghapi.actions.create_workflow" },
+          { kind: "write", call: "ghapi.actions.gh_create_workflow" },
+        ]),
+      )
+    })
+
+    it("classifies GhApi instance variable group methods as normalized exec calls", async () => {
+      const events = await analyze(
+        [
+          "api = GhApi()",
+          "api.git.get_ref(owner='o', repo='r', ref='heads/main')",
+          "client = ghapi.all.GhApi(owner='o', repo='r')",
+          "client.issues.create(title='bug')",
+          "core = ghapi.core.GhApi(owner='o', repo='r')",
+          "core.repos.get(owner='o', repo='r')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "ghapi.git.get_ref" },
+          { kind: "exec", call: "ghapi.issues.create" },
+          { kind: "exec", call: "ghapi.repos.get" },
+        ]),
+      )
+    })
+
+    it("keeps ghapi alias form as callable fallback unknown", async () => {
+      const events = await analyze("import ghapi.all as ga\nga.GhApi(owner='o', repo='r')")
+      expect(events).toEqual([{ kind: "unknown", call: "callable:ga.GhApi" }])
+    })
+  })
+
   describe("edge cases and fallbacks", () => {
     it("classifies empty, whitespace, parse-error, and no-calls paths", async () => {
       expect(await analyze("")).toEqual([{ kind: "unknown", call: "empty-source" }])

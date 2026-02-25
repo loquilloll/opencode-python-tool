@@ -138,6 +138,26 @@ const OCI_CLIENT_METHOD_PREFIXES = [
   "oci.secrets.SecretsClient.",
   "oci.key_management.KmsManagementClient.",
 ]
+const GHAPI_EXEC_CALLS = new Set([
+  "ghapi.all.GhApi",
+  "ghapi.core.GhApi",
+  "ghapi.graphql.gh_query",
+  "ghapi.page.paged",
+  "ghapi.page.pages",
+  "ghapi.auth.GhDeviceAuth",
+  "ghapi.auth.github_auth_device",
+  "GhApi.create_gist",
+  "GhApi.create_release",
+  "GhApi.delete_release",
+  "GhApi.upload_file",
+  "GhApi.enable_pages",
+])
+const GHAPI_WRITE_CALLS = new Set([
+  "ghapi.actions.create_workflow_files",
+  "ghapi.actions.create_workflow",
+  "ghapi.actions.gh_create_workflow",
+])
+const GHAPI_INSTANCE_CONSTRUCTORS = new Set(["GhApi", "ghapi.all.GhApi", "ghapi.core.GhApi"])
 
 const resolveWasm = (asset: string) => {
   if (asset.startsWith("file://")) return fileURLToPath(asset)
@@ -296,7 +316,7 @@ function classifyOpen(input: Args): PythonEvent {
   return pathEvent("read", "open", file)
 }
 
-function classify(node: Node): PythonEvent | undefined {
+function classify(node: Node, ghapiInstances: Set<string>): PythonEvent | undefined {
   const fn = node.childForFieldName("function")
   const call = name(fn)
   if (!call) return { kind: "unknown", call: "dynamic-call" }
@@ -313,6 +333,7 @@ function classify(node: Node): PythonEvent | undefined {
 
   if (READ_CALLS.has(call)) return { kind: "read", call }
   if (WRITE_CALLS.has(call)) return { kind: "write", call }
+  if (GHAPI_WRITE_CALLS.has(call)) return { kind: "write", call }
   if (TEMPFILE_WRITE_CALLS.has(call)) return { kind: "write", call }
   if (call === "oci.config.from_file") return pathEvent("read", call, pick(input, 0, ["file_location"]))
 
@@ -321,7 +342,15 @@ function classify(node: Node): PythonEvent | undefined {
   if (DB_EXEC_CALLS.has(call)) return { kind: "exec", call }
   if (DANGEROUS_DESERIALIZE_EXEC_CALLS.has(call)) return { kind: "exec", call }
   if (OCI_EXEC_CALLS.has(call)) return { kind: "exec", call }
+  if (GHAPI_EXEC_CALLS.has(call)) return { kind: "exec", call }
   if (OCI_CLIENT_METHOD_PREFIXES.some((prefix) => call.startsWith(prefix))) return { kind: "exec", call }
+
+  const parts = call.split(".")
+  const instance = parts[0]
+  if (instance && ghapiInstances.has(instance) && parts.length >= 3) {
+    return { kind: "exec", call: `ghapi.${parts[1]}.${parts[2]}` }
+  }
+
   if (call.startsWith("subprocess.")) return { kind: "exec", call }
   if (call.startsWith("os.exec")) return { kind: "exec", call }
 
@@ -343,8 +372,22 @@ export async function analyze(source: string) {
   if (!tree) return [{ kind: "unknown", call: "parse-error" }] satisfies PythonEvent[]
   if (tree.rootNode.hasError) return [{ kind: "unknown", call: "parse-error" }] satisfies PythonEvent[]
 
+  const ghapiInstances = new Set<string>()
+  const assignments = tree.rootNode.descendantsOfType("assignment")
+  for (const assignment of assignments) {
+    const left = assignment.childForFieldName("left")
+    const right = assignment.childForFieldName("right")
+    if (!left || left.type !== "identifier" || !right || right.type !== "call") continue
+
+    const assignedCall = name(right.childForFieldName("function"))
+    if (!assignedCall || !GHAPI_INSTANCE_CONSTRUCTORS.has(assignedCall)) continue
+    ghapiInstances.add(left.text)
+  }
+
   const calls = tree.rootNode.descendantsOfType("call")
-  const events = calls.map((call) => classify(call)).filter((item): item is PythonEvent => item !== undefined)
+  const events = calls
+    .map((call) => classify(call, ghapiInstances))
+    .filter((item): item is PythonEvent => item !== undefined)
 
   if (events.length) return unique(events)
   if (calls.length) return [{ kind: "unknown", call: "no-classified-call" }] satisfies PythonEvent[]
