@@ -1,6 +1,7 @@
 # CONTINUITY
 
 [PLANS]
+- 2026-02-25T17:29Z [USER] [plan:12-phase8-runtime-tests] Implement Phase 8 only from `docs/python-custom-tool-plan.md`: add comprehensive runtime tests in `.opencode/test/python.test.ts` reusing `.opencode/test/fixtures/context.ts`, allow runtime file edits only if strictly needed for deterministic tests, and stop before Phase 9+.
 - 2026-02-25T17:05Z [USER] [plan:11-phase7-analyzer-tests] Implement Phase 7 only from `docs/python-custom-tool-plan.md`: add fixture context helper and expand `.opencode/test/python-analyze.test.ts` to comprehensive analyzer coverage, then validate with `bun test test/python-analyze.test.ts` (and `bun test` if practical), without starting Phase 8+.
 - 2026-02-25T16:43Z [USER] [plan:10-phase6-runtime-hardening] Implement Phase 6 only from `docs/python-custom-tool-plan.md` in `.opencode/tool/python.ts` and `.opencode/tool/python.txt`, run minimal Phase 6 validation checks, and stop before Phase 7+ work.
 - 2026-02-25T16:38Z [USER] [plan:09-ghapi-phase-plan] Requested adding a new plan phase to include known `ghapi` module calls (source: `https://ghapi.fast.ai/`) in analyzer coverage and tests.
@@ -19,6 +20,8 @@
 - 2026-02-25T16:30Z [CODE] [plan:04-comprehensive-replan] Expanded plan to 10 phases: split hardening from initial implementation, added dedicated test phases (7 analyzer tests, 8 runtime tests), added Phase 5 (analyzer hardening: network/db/tempfile/pickle), Phase 6 (runtime hardening: venv detection, env vars, error handling), Phase 9 (permission policy hardening).
 
 [PROGRESS]
+- 2026-02-25T17:29Z [TOOL] [plan:12-phase8-runtime-tests] Added `.opencode/test/python.test.ts` with 30 deterministic Phase 8 runtime tests covering validation, permission asks/always patterns, external-directory detection, script-path behavior, ENOENT/workdir semantics, process execution, timeout/abort metadata, and metadata streaming/cap behavior.
+- 2026-02-25T17:29Z [TOOL] [plan:12-phase8-runtime-tests] Validation passed in `.opencode`: `bun test test/python.test.ts` => `30 pass, 0 fail`; `bun test` => `50 pass, 0 fail`.
 - 2026-02-25T17:05Z [TOOL] [plan:11-phase7-analyzer-tests] Added `.opencode/test/fixtures/context.ts` with `createMockContext()` that returns a mock `ToolContext` and captures `asks` / `metadatas` arrays for test assertions.
 - 2026-02-25T17:05Z [TOOL] [plan:11-phase7-analyzer-tests] Replaced `.opencode/test/python-analyze.test.ts` with comprehensive Phase 7 analyzer coverage across open/path handling, Path methods, os/shutil writes, json/yaml, exec calls, Phase 5 network+db+tempfile+deserialization, edge/fallbacks, dedupe/mixed calls, and decorator/class/nested/list-comprehension contexts.
 - 2026-02-25T17:05Z [TOOL] [plan:11-phase7-analyzer-tests] Validation passed in `.opencode`: `bun test test/python-analyze.test.ts` => `20 pass, 0 fail`; `bun test` => `20 pass, 0 fail`.
@@ -44,6 +47,7 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Validation command `bun test test/python-analyze.test.ts` passed with `7 pass, 0 fail`.
 
 [DISCOVERIES]
+- 2026-02-25T17:29Z [CODE] [plan:12-phase8-runtime-tests] `MAX_METADATA_LENGTH` trim behavior yields up to `30005` chars in metadata output (`30_000` slice plus `"\n\n..."` suffix and occasional trailing newline from runtime output), so cap assertions should allow `<= 30005`.
 - 2026-02-25T17:05Z [CODE] [plan:11-phase7-analyzer-tests] Current analyzer semantics differ from the original Phase 7 examples for some path extraction cases: `Path(path_var).read_text()` emits both `read:Path.read_text` with `dynamicPath:true` and an additional `unknown:callable:Path` event from the constructor call.
 - 2026-02-25T17:05Z [CODE] [plan:11-phase7-analyzer-tests] `os.unlink('f')`, `os.rename('a','b')`, and `os.replace('a','b')` currently classify as `write` with `dynamicPath:true` (no literal path extraction), while `os.remove` and `shutil.copy/copytree/move` still resolve literal paths; tests were aligned to this implemented behavior.
 - 2026-02-25T16:43Z [CODE] [plan:10-phase6-runtime-hardening] Existing source-empty validation (`!source.trim()`) already allows comment-only source (for example `# note`) to execute, so Phase 6's no-calls/non-blocking behavior needed no extra runtime gate changes.
@@ -60,6 +64,7 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Alias deferral remains unchanged after Phase 5 checks: `import requests as rq; rq.get(...)` currently results in `unknown:no-classified-call` because alias tracking is intentionally not implemented.
 
 [OUTCOMES]
+- 2026-02-25T17:29Z [TOOL] [plan:12-phase8-runtime-tests] Phase 8 runtime test suite is implemented and passing; coverage now validates permission planning, external directory asks, runtime execution behavior, timeout/abort metadata, streaming updates, ENOENT ergonomics, and workdir resolution without beginning Phase 9+ policy changes.
 - 2026-02-25T17:05Z [TOOL] [plan:11-phase7-analyzer-tests] Phase 7 analyzer test suite is implemented and passing with deterministic assertions, fixture helper is present, callable-fallback expectations now consistently use `unknown:callable:<name>`, and no Phase 8+ implementation work was started.
 - 2026-02-25T16:43Z [TOOL] [plan:10-phase6-runtime-hardening] Phase 6 runtime hardening is implemented and validated; venv resolution, prompt hardening, script-path ENOENT clarity, env hardening, and non-zero exit metadata are in place without starting Phase 7+ test-suite expansion.
 - 2026-02-25T16:38Z [TOOL] [plan:09-ghapi-phase-plan] Plan now includes a dedicated GHAPI coverage phase, without changing implementation code in this step.
