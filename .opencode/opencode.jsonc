@@ -10,6 +10,10 @@
       "exec:os.system": "deny",
       "exec:os.popen": "deny",
       "exec:os.exec*": "deny",
+      "exec:pickle.load": "deny",
+      "exec:pickle.loads": "deny",
+      "exec:marshal.load": "deny",
+      "exec:marshal.loads": "deny",
       "unknown:*": "ask"
     },
     "external_directory": "ask"
