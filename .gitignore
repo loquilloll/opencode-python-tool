@@ -1,0 +1,7 @@
+./opencode
+/opencode/
+!.opencode/
+!.opencode/**
+!docs/
+!docs/**
+.opencode/node_modules/

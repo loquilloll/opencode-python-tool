@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "python": {
+      "*": "ask",
+      "exec:eval": "deny",
+      "exec:exec": "deny",
+      "exec:compile": "deny",
+      "exec:__import__": "deny",
+      "exec:os.system": "deny",
+      "exec:os.popen": "deny",
+      "exec:os.exec*": "deny",
+      "unknown:*": "ask"
+    },
+    "external_directory": "ask"
+  }
+}

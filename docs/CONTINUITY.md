@@ -1,0 +1,65 @@
+# CONTINUITY
+
+[PLANS]
+- 2026-02-25T16:43Z [USER] [plan:10-phase6-runtime-hardening] Implement Phase 6 only from `docs/python-custom-tool-plan.md` in `.opencode/tool/python.ts` and `.opencode/tool/python.txt`, run minimal Phase 6 validation checks, and stop before Phase 7+ work.
+- 2026-02-25T16:38Z [USER] [plan:09-ghapi-phase-plan] Requested adding a new plan phase to include known `ghapi` module calls (source: `https://ghapi.fast.ai/`) in analyzer coverage and tests.
+- 2026-02-25T16:33Z [USER] [plan:08-oci-phase-plan] Requested adding a new plan phase to include known `oci` module calls in analyzer coverage and tests.
+- 2026-02-25T16:30Z [USER] [plan:07-update-plan-callable-fallback] Update `docs/python-custom-tool-plan.md` so phased documentation reflects generic callable fallback classification and permission-pattern behavior.
+- 2026-02-25T16:25Z [USER] [plan:06-callable-unknown-fallback] Implement generic callable-based fallback classification in `.opencode/tool/python-analyze.ts` so unrecognized calls emit callable-identity events and are permission-checkable without relying on `unknown:no-classified-call`.
+- 2026-02-25T15:41Z [USER] [plan:01-cwd-bootstrap] Keep development in repository root (`/home/alvins/Documents/pgit/opencode-python-tool`), initialize git in cwd, and ignore `./opencode` reference folder.
+- 2026-02-25T15:41Z [ASSUMPTION] [plan:02-python-tool] Implement full no-fork custom `python` tool under `./.opencode/tool` with AST-based permission classification, external path checks, timeout/abort handling, and restrictive default permissions.
+- 2026-02-25T15:47Z [USER] [plan:03-phased-plan-doc] Requested visibility of the implementation plan location after cwd migration.
+- 2026-02-25T16:30Z [USER] [plan:04-comprehensive-replan] Requested comprehensive phased plan breakdown with commit-safe phases. Expanded from 5 phases to 10. See `docs/python-custom-tool-plan.md`.
+- 2026-02-25T16:18Z [USER] [plan:05-phasewise-review] Requested phase-by-phase implementation via `@general` agents with a review stop after each phase.
+- 2026-02-25T16:17Z [USER] [plan:05-analyzer-hardening] Implement Phase 5 only from `docs/python-custom-tool-plan.md` in `.opencode/tool/python-analyze.ts`, add/adjust analyzer tests for network/db/tempfile/deserialization + with/decorator/class detection, and keep import-alias resolution deferred.
+
+[DECISIONS]
+- 2026-02-25T15:41Z [USER] Use `./opencode` only as reference; all implementation artifacts must live in cwd.
+- 2026-02-25T16:30Z [CODE] [plan:04-comprehensive-replan] Expanded plan to 10 phases: split hardening from initial implementation, added dedicated test phases (7 analyzer tests, 8 runtime tests), added Phase 5 (analyzer hardening: network/db/tempfile/pickle), Phase 6 (runtime hardening: venv detection, env vars, error handling), Phase 9 (permission policy hardening).
+
+[PROGRESS]
+- 2026-02-25T16:43Z [TOOL] [plan:10-phase6-runtime-hardening] Updated `.opencode/tool/python.ts` with runtime hardening: venv-aware Python resolution order (`OPENCODE_PYTHON_BIN` -> `$VIRTUAL_ENV/bin/python3` -> `<worktree>/.venv/bin/python3` -> `<worktree>/venv/bin/python3` -> `python3`), script `ENOENT` read error message with resolved path, passthrough env plus `PYTHONDONTWRITEBYTECODE=1` and `PYTHONUNBUFFERED=1`, and non-zero exit code metadata appended inside `<python_metadata>` while preserving timeout/abort metadata.
+- 2026-02-25T16:43Z [TOOL] [plan:10-phase6-runtime-hardening] Rewrote `.opencode/tool/python.txt` with expanded guidance for python-vs-bash usage, `code` vs `scriptPath`, non-interactive execution, `args`/`workdir` semantics, output truncation/metadata behavior, permission asks, and security posture notes.
+- 2026-02-25T16:43Z [TOOL] [plan:10-phase6-runtime-hardening] Validation passed: module load smoke check `bun -e "import('./tool/python.ts').then(() => console.log('module loads ok'))"` and existing test suite `bun test` (in `.opencode`) reporting `9 pass, 0 fail`.
+- 2026-02-25T16:38Z [TOOL] [plan:09-ghapi-phase-plan] Updated `docs/python-custom-tool-plan.md` with new Phase 12 (GHAPI Module Call Coverage), including known `ghapi` call surfaces, optional `GhApi` instance heuristic, test scope, summary table row, and commit-sequence entry.
+- 2026-02-25T16:33Z [TOOL] [plan:08-oci-phase-plan] Updated `docs/python-custom-tool-plan.md` with new Phase 11 (OCI Module Call Coverage), including known `oci` call list, classification intent (`exec`/`read` for `oci.config.from_file`), test scope, summary table row, and commit-sequence entry.
+- 2026-02-25T16:30Z [TOOL] [plan:07-update-plan-callable-fallback] Updated `docs/python-custom-tool-plan.md` to reflect callable-identity unknown fallback in Phase 4/5/7/8/10 sections, including unknown pattern examples (`unknown:callable:<name>`), alias-limitation wording, and Phase 5 status/commit text.
+- 2026-02-25T16:25Z [TOOL] [plan:06-callable-unknown-fallback] Updated `.opencode/tool/python-analyze.ts` to emit `unknown` events for unrecognized call nodes as `callable:<resolved-name>` while preserving existing explicit read/write/exec classifications.
+- 2026-02-25T16:25Z [TOOL] [plan:06-callable-unknown-fallback] Updated `.opencode/tool/python.ts` unknown permission allow-shaping to callable-specific patterns (`unknown:callable:...`) instead of always defaulting unknowns to `unknown:*`.
+- 2026-02-25T16:25Z [TOOL] [plan:06-callable-unknown-fallback] Expanded `.opencode/test/python-analyze.test.ts` with callable-fallback coverage and no-calls behavior guard; updated alias-deferral expectation to callable-specific unknown event.
+- 2026-02-25T16:25Z [TOOL] [plan:06-callable-unknown-fallback] Validation passed: `bun test test/python-analyze.test.ts` and `bun test` (in `.opencode`) both report `9 pass, 0 fail`.
+- 2026-02-25T15:41Z [TOOL] Initialized git repo in cwd and added root `.gitignore` entries for `./opencode`.
+- 2026-02-25T15:41Z [TOOL] Removed unintended development artifacts from `./opencode` and restored that reference repo to clean state.
+- 2026-02-25T15:47Z [TOOL] [plan:02-python-tool] Implemented `.opencode/tool/python.ts`, `.opencode/tool/python-analyze.ts`, `.opencode/tool/python.txt`, `.opencode/opencode.jsonc`, and local dependencies in `.opencode/package.json` + `.opencode/bun.lock`.
+- 2026-02-25T15:47Z [TOOL] [plan:03-phased-plan-doc] Added phased commit-safe plan at `docs/python-custom-tool-plan.md`.
+- 2026-02-25T16:30Z [TOOL] [plan:04-comprehensive-replan] Rewrote `docs/python-custom-tool-plan.md` with 10 commit-safe phases, comprehensive detail per phase (exact files, classification tables, test categories, verification commands).
+- 2026-02-25T16:18Z [TOOL] [plan:05-analyzer-hardening] Completed Phase 5 implementation in `.opencode/tool/python-analyze.ts`; added network/db/tempfile/deserialization classification sets and classifier branches.
+- 2026-02-25T16:18Z [TOOL] [plan:05-analyzer-hardening] Added focused analyzer coverage in `.opencode/test/python-analyze.test.ts` for with-statement, decorator/class contexts, and alias-tracking-deferred behavior.
+- 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Extended `.opencode/tool/python-analyze.ts` classification tables for network/HTTP exec, DB exec, tempfile write, and dangerous deserialization exec events.
+- 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Added `.opencode/test/python-analyze.test.ts` with 7 Phase 5 checks (network, DB, tempfile, deserialization, with-statement call detection, decorator/class-level detection, alias deferral).
+- 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Validation command `bun test test/python-analyze.test.ts` passed with `7 pass, 0 fail`.
+
+[DISCOVERIES]
+- 2026-02-25T16:43Z [CODE] [plan:10-phase6-runtime-hardening] Existing source-empty validation (`!source.trim()`) already allows comment-only source (for example `# note`) to execute, so Phase 6's no-calls/non-blocking behavior needed no extra runtime gate changes.
+- 2026-02-25T16:38Z [TOOL] [plan:09-ghapi-phase-plan] Official docs (`https://ghapi.fast.ai/`, `core.html`, `page.html`, `auth.html`, `graphql.html`) show `ghapi` has dynamic endpoint calls through `GhApi` groups (for example `api.git.get_ref`), plus stable helpers (`ghapi.page.paged/pages`, `ghapi.graphql.gh_query`, `ghapi.actions.create_workflow_files`) suitable for explicit analyzer classification.
+- 2026-02-25T16:25Z [CODE] [plan:06-callable-unknown-fallback] Existing `unknown:*` permissive allow in `buildPermissionPlan` can be narrowed safely for callable-derived unknown events by tagging analyzer fallback calls with a deterministic `callable:` prefix, while keeping parser/meta unknown markers on `unknown:*`.
+- 2026-02-25T15:41Z [TOOL] `tree-sitter-python@0.25.0` package includes `tree-sitter-python.wasm`, compatible with `web-tree-sitter` runtime loading approach.
+- 2026-02-25T15:41Z [TOOL] Current workspace root previously had no git repository (`fatal: not a git repository`) until initialization in this session.
+- 2026-02-25T15:47Z [TOOL] `web-tree-sitter` root node exposes `hasError` as a boolean property, not a function; parse-failure detection in analyzer must check `tree.rootNode.hasError`.
+- 2026-02-25T15:47Z [TOOL] Analyzer smoke checks: `open('data.json','r') -> read`, `open('out.txt','w') -> write`, `subprocess.run(...) -> exec`, malformed source -> `unknown:parse-error`.
+- 2026-02-25T16:30Z [CODE] Reference bash tool analysis: bash tool uses tree-sitter-bash for command parsing, arity-based permission prefix system (~130 commands), two-phase permission (external_directory + bash), plugin hook for shell.env, Shell.killTree (SIGTERM→200ms→SIGKILL), output truncation (2000 lines / 50KB) with file persistence. Our python tool mirrors this architecture but uses Python-specific AST classification instead of command arity.
+- 2026-02-25T16:30Z [CODE] Permission system uses last-match-wins evaluation with wildcard matching (`*` → `.*`, `?` → `.`). Pattern ending in ` *` (space+wildcard) makes trailing portion optional. Config supports per-tool objects with pattern→action mappings, plus `.catchall(PermissionRule)` for custom tools.
+- 2026-02-25T16:30Z [CODE] Known limitation: import alias tracking not implemented. `import subprocess as sp; sp.run()` sees `sp.run` not `subprocess.run`. Deferred — requires scope analysis.
+- 2026-02-25T16:18Z [TOOL] [plan:05-analyzer-hardening] `bun test test/python-analyze.test.ts` (in `.opencode`) reports `7 pass, 0 fail`, confirming new classification paths and context-recursive call detection.
+- 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Alias deferral remains unchanged after Phase 5 checks: `import requests as rq; rq.get(...)` currently results in `unknown:no-classified-call` because alias tracking is intentionally not implemented.
+
+[OUTCOMES]
+- 2026-02-25T16:43Z [TOOL] [plan:10-phase6-runtime-hardening] Phase 6 runtime hardening is implemented and validated; venv resolution, prompt hardening, script-path ENOENT clarity, env hardening, and non-zero exit metadata are in place without starting Phase 7+ test-suite expansion.
+- 2026-02-25T16:38Z [TOOL] [plan:09-ghapi-phase-plan] Plan now includes a dedicated GHAPI coverage phase, without changing implementation code in this step.
+- 2026-02-25T16:33Z [TOOL] [plan:08-oci-phase-plan] Plan now explicitly tracks OCI SDK coverage as a dedicated future phase, without changing implementation code in this step.
+- 2026-02-25T16:30Z [TOOL] [plan:07-update-plan-callable-fallback] Plan document is now aligned with implemented callable-fallback behavior; future phases reference callable-specific unknown permission patterns instead of `unknown:no-classified-call` for unrecognized calls.
+- 2026-02-25T16:25Z [TOOL] [plan:06-callable-unknown-fallback] Generic callable fallback classification is implemented and validated; unknown calls now produce callable-identity events and permission patterns, while parse-error/empty-source/no-calls semantics remain intact.
+- 2026-02-25T15:41Z [TOOL] Bootstrap completed for cwd-based development; implementation now targets root `.opencode` workspace instead of `./opencode`.
+- 2026-02-25T15:47Z [TOOL] CWD workspace now contains both implementation and plan artifacts; `opencode/` remains reference-only and ignored by root git.
+- 2026-02-25T16:18Z [TOOL] [plan:05-analyzer-hardening] Phase 5 is implemented and validated; Phase 6+ intentionally not started pending user review gate.
+- 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Phase 5 analyzer hardening completed and validated without implementing Phase 6+ work.
