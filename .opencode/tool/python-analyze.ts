@@ -4,6 +4,8 @@ type Node = {
   type: string
   text: string
   hasError: boolean
+  startIndex: number
+  endIndex: number
   namedChildren: Node[]
   childForFieldName(name: string): Node | null
   descendantsOfType(type: string): Node[]
@@ -158,6 +160,76 @@ const GHAPI_WRITE_CALLS = new Set([
   "ghapi.actions.gh_create_workflow",
 ])
 const GHAPI_INSTANCE_CONSTRUCTORS = new Set(["GhApi", "ghapi.all.GhApi", "ghapi.core.GhApi"])
+
+type AtlassianClientFamily = "jira" | "confluence" | "bitbucket" | "servicedesk"
+
+const ATLASSIAN_CONSTRUCTOR_COVERAGE: Array<{ family?: AtlassianClientFamily; variants: string[] }> = [
+  { family: "jira", variants: ["Jira", "atlassian.Jira", "atlassian.jira.Jira"] },
+  {
+    family: "confluence",
+    variants: [
+      "Confluence",
+      "atlassian.Confluence",
+      "atlassian.confluence.Confluence",
+      "ConfluenceCloud",
+      "atlassian.ConfluenceCloud",
+      "atlassian.confluence.ConfluenceCloud",
+      "ConfluenceServer",
+      "atlassian.ConfluenceServer",
+      "atlassian.confluence.ConfluenceServer",
+    ],
+  },
+  {
+    family: "bitbucket",
+    variants: [
+      "Bitbucket",
+      "atlassian.Bitbucket",
+      "atlassian.bitbucket.Bitbucket",
+      "Cloud",
+      "atlassian.Cloud",
+      "atlassian.bitbucket.Cloud",
+    ],
+  },
+  {
+    family: "servicedesk",
+    variants: ["ServiceDesk", "atlassian.ServiceDesk", "atlassian.servicedesk.ServiceDesk", "atlassian.service_desk.ServiceDesk"],
+  },
+  { variants: ["Crowd", "atlassian.Crowd"] },
+  { variants: ["Xray", "atlassian.Xray"] },
+  { variants: ["CloudAdminOrgs", "atlassian.CloudAdminOrgs"] },
+  { variants: ["CloudAdminUsers", "atlassian.CloudAdminUsers"] },
+]
+
+const ATLASSIAN_CONSTRUCTOR_METADATA = new Map<
+  string,
+  {
+    family?: AtlassianClientFamily
+    bare: boolean
+  }
+>()
+
+for (const constructor of ATLASSIAN_CONSTRUCTOR_COVERAGE) {
+  for (const variant of constructor.variants) {
+    ATLASSIAN_CONSTRUCTOR_METADATA.set(variant, {
+      family: constructor.family,
+      bare: !variant.includes("."),
+    })
+  }
+}
+
+const ATLASSIAN_CLIENT_METHODS = {
+  jira: new Set(["jql", "issue", "create_issue", "issue_create", "issue_transition", "issue_add_comment"]),
+  confluence: new Set(["get_page_by_id", "get_page_by_title", "create_page", "update_page", "cql", "attach_file"]),
+  bitbucket: new Set([
+    "get_repo",
+    "create_repo",
+    "open_pull_request",
+    "get_pull_requests",
+    "get_pipelines",
+    "trigger_pipeline",
+  ]),
+  servicedesk: new Set(["get_service_desks", "create_customer_request", "get_queues", "create_request_comment"]),
+} satisfies Record<AtlassianClientFamily, Set<string>>
 
 const resolveWasm = (asset: string) => {
   if (asset.startsWith("file://")) return fileURLToPath(asset)
@@ -316,7 +388,12 @@ function classifyOpen(input: Args): PythonEvent {
   return pathEvent("read", "open", file)
 }
 
-function classify(node: Node, ghapiInstances: Set<string>): PythonEvent | undefined {
+function classify(
+  node: Node,
+  hasAtlassianImportProvenance: boolean,
+  ghapiInstances: Set<string>,
+  atlassianInstances: Map<string, AtlassianClientFamily>,
+): PythonEvent | undefined {
   const fn = node.childForFieldName("function")
   const call = name(fn)
   if (!call) return { kind: "unknown", call: "dynamic-call" }
@@ -343,6 +420,7 @@ function classify(node: Node, ghapiInstances: Set<string>): PythonEvent | undefi
   if (DANGEROUS_DESERIALIZE_EXEC_CALLS.has(call)) return { kind: "exec", call }
   if (OCI_EXEC_CALLS.has(call)) return { kind: "exec", call }
   if (GHAPI_EXEC_CALLS.has(call)) return { kind: "exec", call }
+  if (isAtlassianConstructorCall(call, hasAtlassianImportProvenance)) return { kind: "exec", call }
   if (OCI_CLIENT_METHOD_PREFIXES.some((prefix) => call.startsWith(prefix))) return { kind: "exec", call }
 
   const parts = call.split(".")
@@ -351,10 +429,51 @@ function classify(node: Node, ghapiInstances: Set<string>): PythonEvent | undefi
     return { kind: "exec", call: `ghapi.${parts[1]}.${parts[2]}` }
   }
 
+  const atlassianClient = instance ? atlassianInstances.get(instance) : undefined
+  if (atlassianClient && parts.length >= 2) {
+    const method = parts[1]
+    if (ATLASSIAN_CLIENT_METHODS[atlassianClient].has(method)) {
+      return { kind: "exec", call: `atlassian.${atlassianClient}.${method}` }
+    }
+  }
+
   if (call.startsWith("subprocess.")) return { kind: "exec", call }
   if (call.startsWith("os.exec")) return { kind: "exec", call }
 
   return { kind: "unknown", call: `${CALLABLE_UNKNOWN_PREFIX}${call}` }
+}
+
+function isAtlassianImportStatement(node: Node) {
+  if (node.type === "import_from_statement") {
+    return /^\s*from\s+atlassian(?:\.|\s)/.test(node.text)
+  }
+
+  if (node.type === "import_statement") {
+    const match = node.text.match(/^\s*import\s+([\s\S]+)$/)
+    if (!match) return false
+    const modules = match[1].split(",")
+    return modules.some((part) => {
+      const moduleName = part.trim().split(/\s+as\s+/i)[0]?.trim()
+      if (!moduleName) return false
+      return moduleName === "atlassian" || moduleName.startsWith("atlassian.")
+    })
+  }
+
+  return false
+}
+
+function isAtlassianConstructorCall(call: string, hasAtlassianImportProvenance: boolean) {
+  const metadata = ATLASSIAN_CONSTRUCTOR_METADATA.get(call)
+  if (!metadata) return false
+  if (!metadata.bare) return true
+  return hasAtlassianImportProvenance
+}
+
+function atlassianFamilyForConstructor(call: string, hasAtlassianImportProvenance: boolean) {
+  const metadata = ATLASSIAN_CONSTRUCTOR_METADATA.get(call)
+  if (!metadata) return
+  if (metadata.bare && !hasAtlassianImportProvenance) return
+  return metadata.family
 }
 
 export async function analyze(source: string) {
@@ -372,22 +491,62 @@ export async function analyze(source: string) {
   if (!tree) return [{ kind: "unknown", call: "parse-error" }] satisfies PythonEvent[]
   if (tree.rootNode.hasError) return [{ kind: "unknown", call: "parse-error" }] satisfies PythonEvent[]
 
+  const hasAtlassianImportProvenance =
+    tree.rootNode.descendantsOfType("import_statement").some(isAtlassianImportStatement) ||
+    tree.rootNode.descendantsOfType("import_from_statement").some(isAtlassianImportStatement)
+
   const ghapiInstances = new Set<string>()
-  const assignments = tree.rootNode.descendantsOfType("assignment")
-  for (const assignment of assignments) {
-    const left = assignment.childForFieldName("left")
-    const right = assignment.childForFieldName("right")
-    if (!left || left.type !== "identifier" || !right || right.type !== "call") continue
-
-    const assignedCall = name(right.childForFieldName("function"))
-    if (!assignedCall || !GHAPI_INSTANCE_CONSTRUCTORS.has(assignedCall)) continue
-    ghapiInstances.add(left.text)
-  }
-
+  const atlassianInstances = new Map<string, AtlassianClientFamily>()
   const calls = tree.rootNode.descendantsOfType("call")
-  const events = calls
-    .map((call) => classify(call, ghapiInstances))
-    .filter((item): item is PythonEvent => item !== undefined)
+
+  const assignments = tree.rootNode.descendantsOfType("assignment")
+  const timeline = [
+    ...assignments.map((assignment) => ({ kind: "assignment" as const, node: assignment })),
+    ...calls.map((call) => ({ kind: "call" as const, node: call })),
+  ].sort((a, b) => {
+    if (a.node.startIndex === b.node.startIndex) return a.node.endIndex - b.node.endIndex
+    return a.node.startIndex - b.node.startIndex
+  })
+
+  const events: PythonEvent[] = []
+  for (const entry of timeline) {
+    if (entry.kind === "assignment") {
+      const left = entry.node.childForFieldName("left")
+      const right = entry.node.childForFieldName("right")
+      if (!left || left.type !== "identifier") continue
+
+      if (!right || right.type !== "call") {
+        ghapiInstances.delete(left.text)
+        atlassianInstances.delete(left.text)
+        continue
+      }
+
+      const assignedCall = name(right.childForFieldName("function"))
+      if (!assignedCall) {
+        ghapiInstances.delete(left.text)
+        atlassianInstances.delete(left.text)
+        continue
+      }
+
+      if (GHAPI_INSTANCE_CONSTRUCTORS.has(assignedCall)) {
+        ghapiInstances.add(left.text)
+      } else {
+        ghapiInstances.delete(left.text)
+      }
+
+      const atlassianClient = atlassianFamilyForConstructor(assignedCall, hasAtlassianImportProvenance)
+      if (atlassianClient) {
+        atlassianInstances.set(left.text, atlassianClient)
+      } else {
+        atlassianInstances.delete(left.text)
+      }
+
+      continue
+    }
+
+    const event = classify(entry.node, hasAtlassianImportProvenance, ghapiInstances, atlassianInstances)
+    if (event) events.push(event)
+  }
 
   if (events.length) return unique(events)
   if (calls.length) return [{ kind: "unknown", call: "no-classified-call" }] satisfies PythonEvent[]

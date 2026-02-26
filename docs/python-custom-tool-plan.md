@@ -974,6 +974,175 @@ feat: add ghapi module call classification for GitHub API permissions
 
 ---
 
+### Phase 13 — Atlassian Python API Module Call Coverage
+
+**Goal:** Add first-class analyzer coverage for known `atlassian-python-api`
+(`atlassian`) call surfaces so Atlassian API usage is classified and
+permission-checked as remote execution instead of relying only on generic
+callable fallback.
+
+**Status:** DONE (implemented and validated).
+
+**Primary sources:**
+- `https://atlassian-python-api.readthedocs.io/`
+- `https://atlassian-python-api.readthedocs.io/jira.html`
+- `https://atlassian-python-api.readthedocs.io/confluence.html`
+- `https://atlassian-python-api.readthedocs.io/bitbucket.html`
+- `https://atlassian-python-api.readthedocs.io/service_desk.html`
+
+**Files changed:**
+- `.opencode/tool/python-analyze.ts`
+- `.opencode/test/python-analyze.test.ts`
+
+**Changes to `.opencode/tool/python-analyze.ts`:**
+
+#### 13a. Atlassian client constructor classification (`exec`)
+
+Add known client constructors as `exec` events:
+
+| Pattern | Kind | Call |
+|---------|------|------|
+| `Jira`, `atlassian.Jira` | exec | `Jira` / `atlassian.Jira` |
+| `Confluence`, `atlassian.Confluence` | exec | `Confluence` / `atlassian.Confluence` |
+| `ConfluenceCloud`, `atlassian.confluence.ConfluenceCloud` | exec | `ConfluenceCloud` / `atlassian.confluence.ConfluenceCloud` |
+| `ConfluenceServer`, `atlassian.confluence.ConfluenceServer` | exec | `ConfluenceServer` / `atlassian.confluence.ConfluenceServer` |
+| `Bitbucket`, `atlassian.Bitbucket` | exec | `Bitbucket` / `atlassian.Bitbucket` |
+| `Cloud`, `atlassian.bitbucket.Cloud` | exec | `Cloud` / `atlassian.bitbucket.Cloud` |
+| `ServiceDesk`, `atlassian.ServiceDesk` | exec | `ServiceDesk` / `atlassian.ServiceDesk` |
+| `Crowd`, `atlassian.Crowd` | exec | `Crowd` / `atlassian.Crowd` |
+| `Xray`, `atlassian.Xray` | exec | `Xray` / `atlassian.Xray` |
+| `CloudAdminOrgs`, `atlassian.CloudAdminOrgs` | exec | `CloudAdminOrgs` / `atlassian.CloudAdminOrgs` |
+| `CloudAdminUsers`, `atlassian.CloudAdminUsers` | exec | `CloudAdminUsers` / `atlassian.CloudAdminUsers` |
+
+**Implementation:**
+- Add an `ATLASSIAN_EXEC_CALLS` set for the constructor/callables above.
+
+#### 13b. Known Atlassian client method coverage (`exec`)
+
+Add a bounded known-method surface for high-signal remote operations:
+
+| Client | Example methods | Kind | Normalized call |
+|--------|-----------------|------|-----------------|
+| Jira | `jql`, `issue`, `create_issue`, `issue_create`, `issue_transition`, `issue_add_comment` | exec | `atlassian.jira.<method>` |
+| Confluence* | `get_page_by_id`, `get_page_by_title`, `create_page`, `update_page`, `cql`, `attach_file` | exec | `atlassian.confluence.<method>` |
+| Bitbucket / Cloud | `get_repo`, `create_repo`, `open_pull_request`, `get_pull_requests`, `get_pipelines`, `trigger_pipeline` | exec | `atlassian.bitbucket.<method>` |
+| ServiceDesk | `get_service_desks`, `create_customer_request`, `get_queues`, `create_request_comment` | exec | `atlassian.servicedesk.<method>` |
+
+**Implementation:**
+- Add `ATLASSIAN_CLIENT_METHODS` as a map of client kind -> allowed method names.
+- Keep the list explicit and documentation-backed; avoid broad catch-all matching.
+
+#### 13c. Optional tracked-instance heuristic (bounded)
+
+To reduce dependence on variable naming while avoiding full symbol resolution:
+- Track assignments of the form `<name> = Jira(...)`, `<name> = Confluence(...)`,
+  `<name> = Bitbucket(...)`, `<name> = ServiceDesk(...)`, plus Cloud/Server
+  variants.
+- For tracked names, classify `<name>.<method>(...)` as `exec` when `<method>` is
+  in that client's known-method set.
+- Normalize emitted call identifiers to `atlassian.<client>.<method>`.
+
+Example:
+- `jira = Jira(...); jira.jql("project = DEMO")` -> `exec:atlassian.jira.jql`
+- `cf = Confluence(...); cf.create_page(...)` -> `exec:atlassian.confluence.create_page`
+
+#### 13d. Atlassian alias/scope limitations (deferred)
+
+Full alias and scope graph resolution remains out of scope. For example,
+`import atlassian as atl; atl.Jira(...)` may still use callable-fallback unknown
+unless covered by direct-name matching in this phase.
+
+**Changes to `.opencode/test/python-analyze.test.ts`:**
+- Add tests for:
+  - constructor coverage (`Jira`, `Confluence`, `Bitbucket`, `ServiceDesk` -> `exec`)
+  - tracked-instance method coverage with normalized call IDs
+  - unknown method on tracked instance falls back to `unknown:callable:<name>`
+  - alias/import edge remains deferred and falls back to callable unknown where expected
+
+**Verification:**
+```bash
+cd .opencode && bun test test/python-analyze.test.ts
+```
+
+**Commit:**
+```
+feat: add atlassian-python-api callable classification for API permissions
+```
+
+---
+
+### Phase 14 — Atlassian Classification Precision Hardening
+
+**Goal:** Address review-identified precision gaps in Phase 13 so Atlassian
+classification remains high-signal and avoids avoidable false positives and
+false negatives in permission prompts.
+
+**Status:** DONE (implemented and validated).
+
+**Input:**
+- `@code-reviewer` findings for Phase 13 (flow-insensitive tracking,
+  broad bare-name matches, constructor-variant consistency, and regression tests).
+
+**Files changed:**
+- `.opencode/tool/python-analyze.ts`
+- `.opencode/test/python-analyze.test.ts`
+- `.opencode/test/python.test.ts` (only if runtime permission-plan assertions are added)
+
+**Changes to `.opencode/tool/python-analyze.ts`:**
+
+#### 14a. Flow-aware tracked-instance classification
+
+Replace flow-insensitive instance mapping with order-aware handling:
+- Only normalize `<name>.<method>(...)` calls to `atlassian.<client>.<method>`
+  after the tracked assignment is observed.
+- Invalidate tracked client family when `<name>` is reassigned to a
+  non-Atlassian constructor/call.
+- Keep behavior bounded; no full symbol engine or cross-scope alias graph.
+
+#### 14b. Import-aware bare constructor gating
+
+Reduce name-collision false positives:
+- Keep module-qualified `atlassian.*` constructor callables as `exec`.
+- Treat bare constructors (for example `Jira`, `Cloud`) as `exec` only when
+  supported Atlassian imports are observed in the module.
+- Without import provenance, fall back to `unknown:callable:<name>` for bare
+  constructor-like names.
+
+#### 14c. Consistent constructor variant coverage
+
+Harden constructor matching consistency:
+- Use a single constructor-coverage map for known Atlassian client families.
+- Ensure supported dotted module variants are consistently covered across
+  Jira/Confluence/Bitbucket/ServiceDesk client families.
+- Preserve explicit, bounded matching (no broad wildcard that upgrades unknown
+  modules).
+
+**Changes to `.opencode/test/python-analyze.test.ts`:**
+
+Add regression guards for review findings:
+- call before assignment does not normalize to `atlassian.*`
+- reassignment invalidates prior tracked instance mapping
+- bare-name collision case (user-defined `Jira`) does not auto-upgrade to exec
+  without Atlassian import provenance
+- constructor variant matrix for supported module-qualified forms
+
+**Optional runtime tests (`.opencode/test/python.test.ts`):**
+- Add assertions that normalized Atlassian calls produce expected
+  `python:exec:atlassian.*` permission ask patterns.
+
+**Verification:**
+```bash
+cd .opencode && bun test test/python-analyze.test.ts
+cd .opencode && bun test
+```
+
+**Commit:**
+```
+feat: harden atlassian analyzer precision and flow-sensitive classification
+```
+
+---
+
 ## Phase Summary Table
 
 | Phase | Title | Status | Depends On | Commit Type |
@@ -990,6 +1159,8 @@ feat: add ghapi module call classification for GitHub API permissions
 | 10 | Documentation + Continuity | DONE | all | `docs` |
 | 11 | OCI Module Call Coverage | DONE | 5 | `feat` |
 | 12 | GHAPI Module Call Coverage | DONE | 5 | `feat` |
+| 13 | Atlassian Python API Module Call Coverage | DONE | 5 | `feat` |
+| 14 | Atlassian Classification Precision Hardening | DONE | 13 | `feat` |
 
 ## Commit Sequence (recommended)
 
@@ -1006,6 +1177,8 @@ feat: add ghapi module call classification for GitHub API permissions
 10. docs: finalize plan, continuity, and known-limitations documentation
 11. feat: add OCI module call classification for cloud API permissions
 12. feat: add ghapi module call classification for GitHub API permissions
+13. feat: add atlassian-python-api callable classification for API permissions
+14. feat: harden atlassian analyzer precision and flow-sensitive classification
 ```
 
 Each commit is independently reviewable and the repo is in a valid state after each one.

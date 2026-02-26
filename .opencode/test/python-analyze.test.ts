@@ -400,6 +400,185 @@ describe("python analyzer", () => {
     })
   })
 
+  describe("phase 13 atlassian-python-api coverage", () => {
+    it("classifies Atlassian constructors and dotted call surfaces as exec", async () => {
+      const events = await analyze(
+        [
+          "from atlassian import Jira, Confluence, Bitbucket, ServiceDesk, Crowd, Xray, CloudAdminOrgs, CloudAdminUsers",
+          "Jira(url='https://example.atlassian.net')",
+          "atlassian.Jira(url='https://example.atlassian.net')",
+          "Confluence(url='https://example.atlassian.net/wiki')",
+          "atlassian.confluence.ConfluenceCloud(url='https://example.atlassian.net/wiki')",
+          "Bitbucket(url='https://bitbucket.org')",
+          "atlassian.bitbucket.Cloud(username='u', password='p')",
+          "ServiceDesk(url='https://example.atlassian.net')",
+          "Crowd(url='https://crowd.example.com')",
+          "Xray(url='https://example.atlassian.net')",
+          "CloudAdminOrgs(token='x')",
+          "CloudAdminUsers(token='x')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "Jira" },
+          { kind: "exec", call: "atlassian.Jira" },
+          { kind: "exec", call: "Confluence" },
+          { kind: "exec", call: "atlassian.confluence.ConfluenceCloud" },
+          { kind: "exec", call: "Bitbucket" },
+          { kind: "exec", call: "atlassian.bitbucket.Cloud" },
+          { kind: "exec", call: "ServiceDesk" },
+          { kind: "exec", call: "Crowd" },
+          { kind: "exec", call: "Xray" },
+          { kind: "exec", call: "CloudAdminOrgs" },
+          { kind: "exec", call: "CloudAdminUsers" },
+        ]),
+      )
+    })
+
+    it("classifies tracked instance methods with normalized Atlassian call IDs", async () => {
+      const events = await analyze(
+        [
+          "from atlassian import Jira, ConfluenceServer, ServiceDesk",
+          "jira = Jira(url='https://example.atlassian.net')",
+          "jira.jql('project = DEMO')",
+          "jira.issue_add_comment('DEMO-1', 'done')",
+          "cf = ConfluenceServer(url='https://example.atlassian.net/wiki')",
+          "cf.create_page(space='ENG', title='t', body='b')",
+          "bb = atlassian.bitbucket.Cloud(username='u', password='p')",
+          "bb.trigger_pipeline('workspace', 'repo')",
+          "sd = ServiceDesk(url='https://example.atlassian.net')",
+          "sd.get_queues(service_desk_id=1)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "atlassian.jira.jql" },
+          { kind: "exec", call: "atlassian.jira.issue_add_comment" },
+          { kind: "exec", call: "atlassian.confluence.create_page" },
+          { kind: "exec", call: "atlassian.bitbucket.trigger_pipeline" },
+          { kind: "exec", call: "atlassian.servicedesk.get_queues" },
+        ]),
+      )
+    })
+
+    it("falls back to callable unknown for unknown methods on tracked instances", async () => {
+      const events = await analyze(
+        "from atlassian import Jira\njira = Jira(url='https://example.atlassian.net')\njira.unknown_method()",
+      )
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "Jira" },
+          { kind: "unknown", call: "callable:jira.unknown_method" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "atlassian.jira.unknown_method" }]))
+    })
+
+    it("keeps Atlassian import alias behavior deferred", async () => {
+      const events = await analyze("import atlassian as atl\nclient = atl.Jira(url='https://example.atlassian.net')\nclient.jql('project = DEMO')")
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:atl.Jira" },
+          { kind: "unknown", call: "callable:client.jql" },
+        ]),
+      )
+    })
+
+    it("does not normalize tracked calls before assignment", async () => {
+      const events = await analyze(
+        [
+          "from atlassian import Jira",
+          "jira.jql('project = DEMO')",
+          "jira = Jira(url='https://example.atlassian.net')",
+          "jira.jql('project = APP')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:jira.jql" },
+          { kind: "exec", call: "Jira" },
+          { kind: "exec", call: "atlassian.jira.jql" },
+        ]),
+      )
+    })
+
+    it("invalidates tracked Atlassian instance on reassignment", async () => {
+      const events = await analyze(
+        [
+          "from atlassian import Jira",
+          "jira = Jira(url='https://example.atlassian.net')",
+          "jira.jql('project = DEMO')",
+          "jira = build_client()",
+          "jira.jql('project = APP')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "atlassian.jira.jql" },
+          { kind: "unknown", call: "callable:build_client" },
+          { kind: "unknown", call: "callable:jira.jql" },
+        ]),
+      )
+    })
+
+    it("keeps bare constructor names as unknown without Atlassian import provenance", async () => {
+      const events = await analyze(
+        [
+          "class Jira:",
+          "    def __init__(self):",
+          "        pass",
+          "",
+          "    def jql(self, query):",
+          "        return []",
+          "",
+          "client = Jira()",
+          "client.jql('project = DEMO')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:Jira" },
+          { kind: "unknown", call: "callable:client.jql" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "Jira" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "atlassian.jira.jql" }]))
+    })
+
+    it("supports consistent module-qualified constructor variants across client families", async () => {
+      const events = await analyze(
+        [
+          "atlassian.jira.Jira(url='https://example.atlassian.net')",
+          "atlassian.confluence.Confluence(url='https://example.atlassian.net/wiki')",
+          "atlassian.confluence.ConfluenceCloud(url='https://example.atlassian.net/wiki')",
+          "atlassian.confluence.ConfluenceServer(url='https://example.atlassian.net/wiki')",
+          "atlassian.bitbucket.Bitbucket(url='https://bitbucket.org')",
+          "atlassian.bitbucket.Cloud(username='u', password='p')",
+          "atlassian.servicedesk.ServiceDesk(url='https://example.atlassian.net')",
+          "atlassian.service_desk.ServiceDesk(url='https://example.atlassian.net')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "atlassian.jira.Jira" },
+          { kind: "exec", call: "atlassian.confluence.Confluence" },
+          { kind: "exec", call: "atlassian.confluence.ConfluenceCloud" },
+          { kind: "exec", call: "atlassian.confluence.ConfluenceServer" },
+          { kind: "exec", call: "atlassian.bitbucket.Bitbucket" },
+          { kind: "exec", call: "atlassian.bitbucket.Cloud" },
+          { kind: "exec", call: "atlassian.servicedesk.ServiceDesk" },
+          { kind: "exec", call: "atlassian.service_desk.ServiceDesk" },
+        ]),
+      )
+    })
+  })
+
   describe("edge cases and fallbacks", () => {
     it("classifies empty, whitespace, parse-error, and no-calls paths", async () => {
       expect(await analyze("")).toEqual([{ kind: "unknown", call: "empty-source" }])
