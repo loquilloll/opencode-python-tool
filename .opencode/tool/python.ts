@@ -277,6 +277,10 @@ function buildPermissionCodePreview(source: string): PermissionCodePreview {
   }
 }
 
+function hasDirectSubprocessInvocation(events: PythonEvent[]) {
+  return events.some((event) => event.call.startsWith("subprocess."))
+}
+
 export default tool({
   description: DESCRIPTION,
   args: {
@@ -340,6 +344,12 @@ export default tool({
       Buffer.byteLength(source, "utf8") > MAX_ANALYZE_BYTES
         ? ([{ kind: "unknown", call: "large-script" }] satisfies PythonEvent[])
         : await analyze(source)
+
+    if (hasDirectSubprocessInvocation(events)) {
+      throw new Error(
+        "Direct subprocess invocation is blocked in the `python` tool. Use the `bash` tool for terminal/process orchestration.",
+      )
+    }
 
     const plan = buildPermissionPlan(events, cwd, context.worktree, script)
     const mode = script ? "script" : "inline"

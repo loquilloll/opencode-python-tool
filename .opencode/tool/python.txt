@@ -1,7 +1,8 @@
 Use this tool to run Python code or scripts with permission-aware execution.
 
 When to use this tool vs bash:
-- Use `python` when the primary action is executing Python source or a Python script.
+- Use `python` when the primary action is executing Python source or a Python script, including cases where you might otherwise run Bash heredoc Python like `python <<'EOF'`.
+- This tool executes Python directly and is not terminal shell orchestration.
 - Use `bash` for shell orchestration (git/npm/docker/file utilities) where Python is not the core task.
 
 Choose one source mode:

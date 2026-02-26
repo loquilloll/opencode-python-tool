@@ -1,6 +1,7 @@
 # CONTINUITY
 
 [PLANS]
+- 2026-02-26T13:55Z [USER] [plan:20-phase16-routing-subprocess-hardfail] Requested end-to-end Phase 16 implementation across runtime/tool wording/tests plus required validation and docs state updates, while leaving unrelated `.opencode/package.json` and `.opencode/bun.lock` modifications untouched.
 - 2026-02-26T13:44Z [USER] [plan:19-phase15-permission-code-visibility] Requested end-to-end implementation and validation of Phase 15: permission prompt code preview metadata in runtime/tests, then docs state updates.
 - 2026-02-26T13:40Z [USER] [plan:20-phase16-routing-subprocess-hardfail] Requested plan updates for two features: (1) stronger python-tool description language that reroutes Bash Python heredoc intent to this tool, and (2) immediate failure when subprocess is invoked.
 - 2026-02-26T13:32Z [USER] [plan:19-phase15-permission-code-visibility] Requested a new plan phase to add permission-prompt visibility of the code that will be executed by the Python tool.
@@ -33,6 +34,10 @@
 - 2026-02-25T16:30Z [CODE] [plan:04-comprehensive-replan] Expanded plan to 10 phases: split hardening from initial implementation, added dedicated test phases (7 analyzer tests, 8 runtime tests), added Phase 5 (analyzer hardening: network/db/tempfile/pickle), Phase 6 (runtime hardening: venv detection, env vars, error handling), Phase 9 (permission policy hardening).
 
 [PROGRESS]
+- 2026-02-26T13:55Z [TOOL] [plan:20-phase16-routing-subprocess-hardfail] Updated `.opencode/tool/python.txt` routing guidance to explicitly redirect Bash heredoc-style Python execution (`python <<'EOF'`) to the `python` tool and clarify that the tool executes Python directly rather than shell orchestration.
+- 2026-02-26T13:55Z [TOOL] [plan:20-phase16-routing-subprocess-hardfail] Added pre-permission runtime guard in `.opencode/tool/python.ts` to reject direct `subprocess.*` usage immediately after analysis and before any `context.ask(...)`, with deterministic reroute guidance to the `bash` tool.
+- 2026-02-26T13:55Z [TOOL] [plan:20-phase16-routing-subprocess-hardfail] Expanded `.opencode/test/python.test.ts` with inline and script-mode subprocess rejection tests that assert immediate failure, zero permission asks, and explicit `bash` reroute messaging; validation passed in `.opencode`: `bun test test/python.test.ts` => `36 pass, 0 fail`; `bun test` => `73 pass, 0 fail`.
+- 2026-02-26T13:55Z [TOOL] [plan:20-phase16-routing-subprocess-hardfail] Updated `docs/python-custom-tool-plan.md` to mark Phase 16 `DONE` in both the phase section and summary table.
 - 2026-02-26T13:44Z [TOOL] [plan:19-phase15-permission-code-visibility] Implemented `.opencode/tool/python.ts` permission-preview helper + shared ask metadata payload (mode/scriptPath/preview/truncation/byte+line counters) wired into both `external_directory` and `python` asks without altering execution/permission-plan semantics.
 - 2026-02-26T13:44Z [TOOL] [plan:19-phase15-permission-code-visibility] Expanded `.opencode/test/python.test.ts` with Phase 15 runtime assertions for inline and script preview metadata, deterministic truncation marker behavior for large source, and metadata parity on external-directory asks.
 - 2026-02-26T13:44Z [TOOL] [plan:19-phase15-permission-code-visibility] Validation passed in `.opencode`: `bun test test/python.test.ts` => `34 pass, 0 fail`; `bun test` => `71 pass, 0 fail`.
@@ -88,6 +93,7 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Validation command `bun test test/python-analyze.test.ts` passed with `7 pass, 0 fail`.
 
 [DISCOVERIES]
+- 2026-02-26T13:55Z [CODE] [plan:20-phase16-routing-subprocess-hardfail] A runtime guard on analyzed event identities (`call` starts with `subprocess.`) deterministically blocks direct subprocess orchestration before permission planning/asks, preserving existing permission semantics for all non-subprocess flows and leaving alias-based forms (`import subprocess as sp`) deferred.
 - 2026-02-26T13:44Z [CODE] [plan:19-phase15-permission-code-visibility] Permission prompts now expose the exact to-be-executed source in bounded metadata with deterministic truncation marker (`...<python_permission_preview_truncated>`) plus preview/total byte and line counters, and the same preview payload is reused for both permission ask types.
 - 2026-02-26T13:40Z [CODE] [plan:20-phase16-routing-subprocess-hardfail] Current python-tool docs encourage python-vs-bash selection but do not explicitly reroute Bash heredoc-style Python execution (`python <<'EOF'`) to the python tool, and runtime does not yet enforce a hard subprocess block before permission asks.
 - 2026-02-26T13:32Z [CODE] [plan:19-phase15-permission-code-visibility] Current permission ask metadata in `.opencode/tool/python.ts` includes `source`, `description`, and `operations` but does not include the executable source text itself, so reviewers cannot inspect code directly in the permission prompt.
@@ -121,6 +127,7 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Alias deferral remains unchanged after Phase 5 checks: `import requests as rq; rq.get(...)` currently results in `unknown:no-classified-call` because alias tracking is intentionally not implemented.
 
 [OUTCOMES]
+- 2026-02-26T13:55Z [TOOL] [plan:20-phase16-routing-subprocess-hardfail] Phase 16 is implemented and validated: tool wording now routes heredoc-intent Python execution to the `python` tool, direct `subprocess.*` usage hard-fails before any permission ask with `bash` reroute guidance, runtime tests are green, and plan/continuity docs reflect `DONE` status.
 - 2026-02-26T13:44Z [TOOL] [plan:19-phase15-permission-code-visibility] Phase 15 is implemented and validated: permission asks now include execution-mode context and bounded executable-source preview metadata (with deterministic truncation + size counters), runtime behavior is unchanged, tests are green, and plan status reflects `DONE`.
 - 2026-02-26T13:40Z [TOOL] [plan:20-phase16-routing-subprocess-hardfail] Plan now includes a dedicated Phase 16 for heredoc-to-python-tool routing guidance and immediate subprocess rejection behavior prior to implementation.
 - 2026-02-26T13:32Z [TOOL] [plan:19-phase15-permission-code-visibility] Plan now includes a dedicated Phase 15 to add executable code preview metadata to Python permission asks before implementation changes.

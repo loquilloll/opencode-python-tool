@@ -155,6 +155,49 @@ describe("python tool runtime", () => {
     })
   })
 
+  describe("subprocess hard-fail", () => {
+    it("fails immediately for inline subprocess usage without permission asks", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await expect(
+          pythonTool.execute(
+            {
+              code: "import subprocess\nsubprocess.run(['echo', 'blocked'])",
+              args: [],
+              description: "inline subprocess blocked",
+            },
+            context,
+          ),
+        ).rejects.toThrow("Direct subprocess invocation is blocked in the `python` tool. Use the `bash` tool for terminal/process orchestration.")
+
+        expect(context.asks).toHaveLength(0)
+      })
+    })
+
+    it("fails immediately for script subprocess usage without permission asks", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const scriptPath = path.join(worktree, "blocked-subprocess.py")
+        await writeFile(scriptPath, "import subprocess\nsubprocess.Popen(['echo', 'blocked'])\n", "utf8")
+
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await expect(
+          pythonTool.execute(
+            {
+              scriptPath,
+              args: [],
+              description: "script subprocess blocked",
+            },
+            context,
+          ),
+        ).rejects.toThrow("Direct subprocess invocation is blocked in the `python` tool. Use the `bash` tool for terminal/process orchestration.")
+
+        expect(context.asks).toHaveLength(0)
+      })
+    })
+  })
+
   describe("permission patterns (inline code)", () => {
     it("includes inline code preview metadata in python ask", async () => {
       await withWorkspace(async ({ worktree }) => {
@@ -228,7 +271,7 @@ describe("python tool runtime", () => {
 
         await executeExpectingEnoent(
           {
-            code: "import subprocess\nsubprocess.run(['echo', 'hi'])",
+            code: "import os\nos.execv('/bin/echo', ['echo', 'hi'])",
             args: [],
             description: "exec ask",
           },
@@ -236,7 +279,7 @@ describe("python tool runtime", () => {
         )
 
         const ask = getAsk(context, "python")
-        expect(ask?.patterns).toContain("exec:subprocess.run")
+        expect(ask?.patterns).toContain("exec:os.execv")
       })
     })
 
@@ -499,7 +542,7 @@ describe("python tool runtime", () => {
 
         await executeExpectingEnoent(
           {
-            code: "import subprocess\nsubprocess.run(['echo', 'ok'])",
+            code: "import os\nos.execvp('echo', ['echo', 'ok'])",
             args: [],
             description: "always exec",
           },
@@ -507,7 +550,7 @@ describe("python tool runtime", () => {
         )
 
         const ask = getAsk(context, "python")
-        expect(ask?.always).toContain("exec:subprocess.*")
+        expect(ask?.always).toContain("exec:os.*")
       })
     })
 

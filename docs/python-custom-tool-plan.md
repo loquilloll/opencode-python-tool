@@ -1218,7 +1218,7 @@ feat: include code preview metadata in python permission asks
 tool over Bash heredoc patterns, and enforce a strict no-subprocess policy by
 failing immediately when subprocess invocation is detected.
 
-**Status:** TODO.
+**Status:** DONE (implemented and validated).
 
 **Files changed:**
 - `.opencode/tool/python.txt`
@@ -1300,7 +1300,7 @@ feat: block subprocess execution and clarify python tool routing guidance
 | 13 | Atlassian Python API Module Call Coverage | DONE | 5 | `feat` |
 | 14 | Atlassian Classification Precision Hardening | DONE | 13 | `feat` |
 | 15 | Permission Prompt Code Visibility | DONE | 4 | `feat` |
-| 16 | Python Tool Routing + Subprocess Hard-Fail | TODO | 4 | `feat` |
+| 16 | Python Tool Routing + Subprocess Hard-Fail | DONE | 4 | `feat` |
 
 ## Commit Sequence (recommended)
 
