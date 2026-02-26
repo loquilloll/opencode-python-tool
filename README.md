@@ -19,18 +19,27 @@ Use this project when you need:
 
 ## Repository File Map
 
-Core implementation lives in `.opencode/`:
+Canonical source now lives in `src/`:
 
-- `.opencode/tool/python.ts`: runtime entry point (arg validation, source load,
+- `src/python.ts`: runtime entry point (arg validation, source load,
   analyzer call, permission asks, subprocess guard, process execution,
   timeout/abort handling, metadata streaming).
-- `.opencode/tool/python-analyze.ts`: Tree-sitter analyzer that classifies
+- `src/python-analyze.ts`: Tree-sitter analyzer that classifies
   Python calls into `read | write | exec | unknown` events with optional path
   extraction.
-- `.opencode/tool/python.txt`: tool prompt that guides model usage (`code` vs
+- `src/python.txt`: tool prompt that guides model usage (`code` vs
   `scriptPath`, non-interactive constraints, safety behavior).
-- `.opencode/opencode.jsonc`: restrictive default permission policy for this
-  tool.
+- `src/env.d.ts`: `*.txt` module typing for TypeScript imports.
+
+OpenCode entrypoints remain in `.opencode/tool/` as thin wrappers:
+
+- `.opencode/tool/python.ts`: re-exports default tool from `src/python.ts`.
+- `.opencode/tool/python-analyze.ts`: re-exports analyzer symbols from
+  `src/python-analyze.ts`.
+
+Policy/test location remains in `.opencode/`:
+
+- `.opencode/opencode.jsonc`: restrictive default permission policy.
 
 Supporting files:
 
@@ -66,18 +75,25 @@ bun -e "import('./tool/python.ts').then(() => console.log('module loads ok'))"
 
 ### Option 1: Tool-only install (minimal)
 
-Copy only runtime/analyzer/prompt and dependency+permission config:
+The runtime wrappers in `.opencode/tool/` import canonical sources from `src/`,
+so keep both paths in the destination.
 
 ```bash
-# from this repo root, replace <target-repo> with destination path
-mkdir -p "<target-repo>/.opencode/tool"
-cp ".opencode/tool/python.ts" "<target-repo>/.opencode/tool/python.ts"
-cp ".opencode/tool/python-analyze.ts" "<target-repo>/.opencode/tool/python-analyze.ts"
-cp ".opencode/tool/python.txt" "<target-repo>/.opencode/tool/python.txt"
-cp ".opencode/env.d.ts" "<target-repo>/.opencode/env.d.ts"
+SRC="/path/to/opencode-python-tool"
+DST="/path/to/target-repo"
+
+mkdir -p "$DST/.opencode/tool" "$DST/src"
+
+cp "$SRC/src/python.ts" "$DST/src/python.ts"
+cp "$SRC/src/python-analyze.ts" "$DST/src/python-analyze.ts"
+cp "$SRC/src/python.txt" "$DST/src/python.txt"
+cp "$SRC/src/env.d.ts" "$DST/src/env.d.ts"
+
+cp "$SRC/.opencode/tool/python.ts" "$DST/.opencode/tool/python.ts"
+cp "$SRC/.opencode/tool/python-analyze.ts" "$DST/.opencode/tool/python-analyze.ts"
 ```
 
-Then in `<target-repo>/.opencode/package.json`, ensure these dependencies exist:
+In `$DST/.opencode/package.json`, ensure these dependencies exist:
 
 ```json
 {
@@ -89,22 +105,37 @@ Then in `<target-repo>/.opencode/package.json`, ensure these dependencies exist:
 }
 ```
 
-Install deps in the destination:
+Install dependencies and smoke-check module loading:
 
 ```bash
-cd "<target-repo>/.opencode"
+cd "$DST/.opencode"
 bun install
+bun -e "import('./tool/python.ts').then(() => console.log('module loads ok'))"
 ```
+
+Notes:
+
+- Merge dependency entries into your existing `.opencode/package.json`; do not
+  overwrite unrelated tool dependencies.
+- Do not copy `.opencode/tool/python.txt` from this repo; prompt text now lives
+  in `src/python.txt`.
+- Ensure your target config also includes the recommended `permission.python`
+  and `external_directory` rules from this README.
 
 ### Option 2: Install with tests (recommended for maintainers)
 
-In addition to Option 1, copy test files:
+In addition to Option 1, copy test files and run validation:
 
 ```bash
-mkdir -p "<target-repo>/.opencode/test/fixtures"
-cp ".opencode/test/python-analyze.test.ts" "<target-repo>/.opencode/test/python-analyze.test.ts"
-cp ".opencode/test/python.test.ts" "<target-repo>/.opencode/test/python.test.ts"
-cp ".opencode/test/fixtures/context.ts" "<target-repo>/.opencode/test/fixtures/context.ts"
+mkdir -p "$DST/.opencode/test/fixtures"
+cp "$SRC/.opencode/test/python-analyze.test.ts" "$DST/.opencode/test/python-analyze.test.ts"
+cp "$SRC/.opencode/test/python.test.ts" "$DST/.opencode/test/python.test.ts"
+cp "$SRC/.opencode/test/fixtures/context.ts" "$DST/.opencode/test/fixtures/context.ts"
+
+cd "$DST/.opencode"
+bun test test/python-analyze.test.ts
+bun test test/python.test.ts
+bun test
 ```
 
 ## Recommended Permission Configuration
@@ -243,10 +274,12 @@ When this repo changes and you need to refresh another project:
 
 1. Pull latest changes in this repository.
 2. Re-copy core files:
+   - `src/python.ts`
+   - `src/python-analyze.ts`
+   - `src/python.txt`
+   - `src/env.d.ts`
    - `.opencode/tool/python.ts`
    - `.opencode/tool/python-analyze.ts`
-   - `.opencode/tool/python.txt`
-   - `.opencode/env.d.ts`
 3. Reconcile destination `.opencode/package.json` dependency versions.
 4. Run `bun install` in destination `.opencode/`.
 5. (If tests are installed) run `bun test` in destination `.opencode/`.
