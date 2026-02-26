@@ -1143,6 +1143,144 @@ feat: harden atlassian analyzer precision and flow-sensitive classification
 
 ---
 
+### Phase 15 — Permission Prompt Code Visibility
+
+**Goal:** Ensure Python permission asks display the code that will actually be
+executed so reviewers can approve with full execution context.
+
+**Status:** DONE (implemented and validated).
+
+**Files changed:**
+- `.opencode/tool/python.ts`
+- `.opencode/test/python.test.ts`
+- `.opencode/tool/python.txt` (optional wording update)
+
+**Changes to `.opencode/tool/python.ts`:**
+
+#### 15a. Build permission code-preview metadata
+
+Add a bounded helper for permission payloads, for example
+`buildPermissionCodePreview(source)` that returns:
+- preview text shown in permission ask metadata,
+- truncation flag,
+- byte/line counts for transparency.
+
+Notes:
+- Preserve exact source text semantics; do not rewrite code before execution.
+- For very large sources, include a deterministic truncation marker so reviewers
+  know the preview is partial.
+
+#### 15b. Include code preview in permission asks
+
+Attach code preview metadata to both permission asks emitted by the tool:
+- `external_directory` ask metadata
+- `python` ask metadata
+
+Add fields such as:
+- execution mode (`inline` vs `script`)
+- resolved script path (when `scriptPath` mode is used)
+- preview text (for display)
+- truncation + size counters
+
+Keep existing permission pattern/always behavior unchanged.
+
+#### 15c. Preserve runtime behavior
+
+No changes to actual execution semantics (`python -c` vs `scriptPath`),
+permission classification, timeout, or output handling.
+
+**Changes to `.opencode/test/python.test.ts`:**
+- Add tests asserting permission asks include code preview metadata for:
+  - inline `code` mode
+  - `scriptPath` mode
+  - large source truncation behavior
+  - external-directory ask path (when triggered) includes the same preview
+
+**Optional docs update (`.opencode/tool/python.txt`):**
+- Mention that permission prompts include code preview text before execution.
+
+**Verification:**
+```bash
+cd .opencode && bun test test/python.test.ts
+cd .opencode && bun test
+```
+
+**Commit:**
+```
+feat: include code preview metadata in python permission asks
+```
+
+---
+
+### Phase 16 — Python Tool Routing + Subprocess Hard-Fail
+
+**Goal:** Improve tool-selection guidance so models choose the custom `python`
+tool over Bash heredoc patterns, and enforce a strict no-subprocess policy by
+failing immediately when subprocess invocation is detected.
+
+**Status:** TODO.
+
+**Files changed:**
+- `.opencode/tool/python.txt`
+- `.opencode/tool/python.ts`
+- `.opencode/test/python.test.ts`
+
+**Changes to `.opencode/tool/python.txt`:**
+
+#### 16a. Tool routing language for heredoc alternatives
+
+Update description/instructions to explicitly state:
+- This tool executes Python directly and does not use terminal shell orchestration.
+- If the model is about to run Python via Bash heredoc (for example,
+  `python <<'EOF'`), use this tool instead.
+- Use Bash only when shell orchestration is truly required and Python execution
+  is not the primary action.
+
+Keep wording concise and operational so it strongly influences tool choice.
+
+**Changes to `.opencode/tool/python.ts`:**
+
+#### 16b. Immediate subprocess preflight rejection
+
+Add a pre-execution guard after analysis and before permission asks:
+- Detect direct subprocess invocation events (for example `subprocess.run`,
+  `subprocess.Popen`, and other `subprocess.*` call identities surfaced by the
+  analyzer).
+- Throw a deterministic, user-facing error immediately when detected.
+- Error guidance should instruct using the `bash` tool for terminal/process
+  orchestration.
+
+Behavior constraints:
+- Rejection happens before `context.ask(...)` calls to avoid unnecessary
+  permission prompts.
+- Preserve all existing non-subprocess permission planning and execution logic.
+
+#### 16c. Known limitation note (deferred)
+
+Alias-based subprocess invocation (for example `import subprocess as sp; sp.run`)
+remains dependent on existing alias-resolution limitations unless expanded in a
+future phase.
+
+**Changes to `.opencode/test/python.test.ts`:**
+- Add runtime tests asserting immediate failure for subprocess usage in:
+  - inline `code` mode
+  - `scriptPath` mode
+- Assert no Python permission ask occurs on subprocess rejection path.
+- Assert error text includes clear reroute guidance to `bash`.
+
+**Verification:**
+```bash
+cd .opencode && bun test test/python.test.ts
+cd .opencode && bun test
+```
+
+**Commit:**
+```
+feat: block subprocess execution and clarify python tool routing guidance
+```
+
+---
+
 ## Phase Summary Table
 
 | Phase | Title | Status | Depends On | Commit Type |
@@ -1161,6 +1299,8 @@ feat: harden atlassian analyzer precision and flow-sensitive classification
 | 12 | GHAPI Module Call Coverage | DONE | 5 | `feat` |
 | 13 | Atlassian Python API Module Call Coverage | DONE | 5 | `feat` |
 | 14 | Atlassian Classification Precision Hardening | DONE | 13 | `feat` |
+| 15 | Permission Prompt Code Visibility | DONE | 4 | `feat` |
+| 16 | Python Tool Routing + Subprocess Hard-Fail | TODO | 4 | `feat` |
 
 ## Commit Sequence (recommended)
 
@@ -1179,6 +1319,8 @@ feat: harden atlassian analyzer precision and flow-sensitive classification
 12. feat: add ghapi module call classification for GitHub API permissions
 13. feat: add atlassian-python-api callable classification for API permissions
 14. feat: harden atlassian analyzer precision and flow-sensitive classification
+15. feat: include code preview metadata in python permission asks
+16. feat: block subprocess execution and clarify python tool routing guidance
 ```
 
 Each commit is independently reviewable and the repo is in a valid state after each one.

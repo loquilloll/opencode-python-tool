@@ -28,6 +28,21 @@ function getAsk(context: ReturnType<typeof createMockContext>, permission: strin
   return context.asks.find((item) => item.permission === permission)
 }
 
+function getAskMetadata(context: ReturnType<typeof createMockContext>, permission: string) {
+  return getAsk(context, permission)?.metadata as
+    | {
+        source?: string
+        mode?: string
+        scriptPath?: string
+        codePreview?: string
+        codePreviewTruncated?: boolean
+        codePreviewTruncationMarker?: string | null
+        codePreviewBytes?: { total?: number; preview?: number }
+        codePreviewLines?: { total?: number; preview?: number }
+      }
+    | undefined
+}
+
 async function executeExpectingEnoent(
   args: Parameters<typeof pythonTool.execute>[0],
   context: Parameters<typeof pythonTool.execute>[1],
@@ -141,6 +156,54 @@ describe("python tool runtime", () => {
   })
 
   describe("permission patterns (inline code)", () => {
+    it("includes inline code preview metadata in python ask", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const source = "print('phase15-inline')\n"
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: source,
+            args: [],
+            description: "inline preview metadata",
+          },
+          context,
+        )
+
+        const metadata = getAskMetadata(context, "python")
+        expect(metadata?.mode).toBe("inline")
+        expect(metadata?.source).toBe("<inline>")
+        expect(metadata?.scriptPath).toBeUndefined()
+        expect(metadata?.codePreview).toBe(source)
+        expect(metadata?.codePreviewTruncated).toBeFalse()
+        expect(metadata?.codePreviewTruncationMarker).toBeNull()
+        expect(metadata?.codePreviewBytes?.total).toBe(metadata?.codePreviewBytes?.preview)
+        expect(metadata?.codePreviewLines?.total).toBe(metadata?.codePreviewLines?.preview)
+      })
+    })
+
+    it("truncates large inline source preview deterministically", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+        const largeSource = Array.from({ length: 200 }, (_, idx) => `print(${idx})`).join("\n")
+
+        await executeExpectingEnoent(
+          {
+            code: largeSource,
+            args: [],
+            description: "inline preview truncation",
+          },
+          context,
+        )
+
+        const metadata = getAskMetadata(context, "python")
+        expect(metadata?.codePreviewTruncated).toBeTrue()
+        expect(metadata?.codePreviewTruncationMarker).toBe("\n...<python_permission_preview_truncated>")
+        expect(metadata?.codePreview?.endsWith("\n...<python_permission_preview_truncated>")).toBeTrue()
+        expect((metadata?.codePreviewLines?.total ?? 0) > (metadata?.codePreviewLines?.preview ?? 0)).toBeTrue()
+      })
+    })
+
     it("asks for read path", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -238,6 +301,31 @@ describe("python tool runtime", () => {
   })
 
   describe("script-file permission behavior", () => {
+    it("includes script code preview metadata in python ask", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const scriptPath = path.join(worktree, "preview.py")
+        const scriptSource = "print('phase15-script')\n"
+        await writeFile(scriptPath, scriptSource, "utf8")
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            scriptPath,
+            args: [],
+            description: "script preview metadata",
+          },
+          context,
+        )
+
+        const metadata = getAskMetadata(context, "python")
+        expect(metadata?.mode).toBe("script")
+        expect(metadata?.source).toBe(scriptPath)
+        expect(metadata?.scriptPath).toBe(scriptPath)
+        expect(metadata?.codePreview).toBe(scriptSource)
+        expect(metadata?.codePreviewTruncated).toBeFalse()
+      })
+    })
+
     it("does not ask external_directory when script is inside worktree", async () => {
       await withWorkspace(async ({ worktree }) => {
         const scriptPath = path.join(worktree, "inside.py")
@@ -299,6 +387,33 @@ describe("python tool runtime", () => {
   })
 
   describe("external directory detection", () => {
+    it("reuses permission code preview metadata in external_directory ask", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const source = "open('/tmp/outside.txt', 'r')\n"
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: source,
+            args: [],
+            description: "external preview metadata",
+          },
+          context,
+        )
+
+        const pythonMetadata = getAskMetadata(context, "python")
+        const externalMetadata = getAskMetadata(context, "external_directory")
+
+        expect(externalMetadata?.mode).toBe("inline")
+        expect(externalMetadata?.source).toBe("<inline>")
+        expect(externalMetadata?.codePreview).toBe(source)
+        expect(externalMetadata?.codePreviewTruncated).toBeFalse()
+        expect(externalMetadata?.codePreview).toBe(pythonMetadata?.codePreview)
+        expect(externalMetadata?.codePreviewBytes).toEqual(pythonMetadata?.codePreviewBytes)
+        expect(externalMetadata?.codePreviewLines).toEqual(pythonMetadata?.codePreviewLines)
+      })
+    })
+
     it("asks when workdir is outside worktree", async () => {
       await withWorkspace(async ({ root, worktree }) => {
         const outside = path.join(root, "outside")

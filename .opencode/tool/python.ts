@@ -10,6 +10,9 @@ import { analyze, type PythonEvent } from "./python-analyze"
 const DEFAULT_TIMEOUT = 2 * 60 * 1000
 const MAX_METADATA_LENGTH = 30_000
 const MAX_ANALYZE_BYTES = 100 * 1024
+const MAX_PERMISSION_PREVIEW_BYTES = 4_000
+const MAX_PERMISSION_PREVIEW_LINES = 120
+const PERMISSION_PREVIEW_TRUNCATION_MARKER = "\n...<python_permission_preview_truncated>"
 
 type Proc = ReturnType<typeof spawn>
 
@@ -26,6 +29,16 @@ type PermissionPlan = {
   always: string[]
   external: string[]
   operations: PermissionItem[]
+}
+
+type PermissionCodePreview = {
+  text: string
+  truncated: boolean
+  truncationMarker: string | null
+  totalBytes: number
+  previewBytes: number
+  totalLines: number
+  previewLines: number
 }
 
 function trimOutput(input: string) {
@@ -228,6 +241,42 @@ function commandPreview(python: string, script: string | undefined, args: string
   return `${python} -c <inline-code>${args.length ? " " + args.join(" ") : ""}`
 }
 
+function lineCount(input: string) {
+  if (!input) return 0
+  return input.split(/\r\n|\r|\n/).length
+}
+
+function buildPermissionCodePreview(source: string): PermissionCodePreview {
+  const totalBytes = Buffer.byteLength(source, "utf8")
+  const totalLines = lineCount(source)
+
+  let preview = source
+  let truncated = false
+
+  if (Buffer.byteLength(preview, "utf8") > MAX_PERMISSION_PREVIEW_BYTES) {
+    preview = Buffer.from(preview, "utf8").subarray(0, MAX_PERMISSION_PREVIEW_BYTES).toString("utf8")
+    truncated = true
+  }
+
+  const previewLineList = preview.split(/\r\n|\r|\n/)
+  if (previewLineList.length > MAX_PERMISSION_PREVIEW_LINES) {
+    preview = previewLineList.slice(0, MAX_PERMISSION_PREVIEW_LINES).join("\n")
+    truncated = true
+  }
+
+  if (truncated) preview += PERMISSION_PREVIEW_TRUNCATION_MARKER
+
+  return {
+    text: preview,
+    truncated,
+    truncationMarker: truncated ? PERMISSION_PREVIEW_TRUNCATION_MARKER : null,
+    totalBytes,
+    previewBytes: Buffer.byteLength(preview, "utf8"),
+    totalLines,
+    previewLines: lineCount(preview),
+  }
+}
+
 export default tool({
   description: DESCRIPTION,
   args: {
@@ -293,16 +342,32 @@ export default tool({
         : await analyze(source)
 
     const plan = buildPermissionPlan(events, cwd, context.worktree, script)
+    const mode = script ? "script" : "inline"
+    const codePreview = buildPermissionCodePreview(source)
+    const askMetadata = {
+      source: script ?? "<inline>",
+      description: args.description,
+      mode,
+      scriptPath: script,
+      codePreview: codePreview.text,
+      codePreviewTruncated: codePreview.truncated,
+      codePreviewTruncationMarker: codePreview.truncationMarker,
+      codePreviewBytes: {
+        total: codePreview.totalBytes,
+        preview: codePreview.previewBytes,
+      },
+      codePreviewLines: {
+        total: codePreview.totalLines,
+        preview: codePreview.previewLines,
+      },
+    }
 
     if (plan.external.length > 0) {
       await context.ask({
         permission: "external_directory",
         patterns: plan.external,
         always: plan.external,
-        metadata: {
-          source: script ?? "<inline>",
-          description: args.description,
-        },
+        metadata: askMetadata,
       })
     }
 
@@ -311,8 +376,7 @@ export default tool({
       patterns: plan.patterns,
       always: plan.always,
       metadata: {
-        source: script ?? "<inline>",
-        description: args.description,
+        ...askMetadata,
         operations: plan.operations,
       },
     })

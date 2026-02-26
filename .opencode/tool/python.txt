@@ -22,6 +22,7 @@ Output and metadata behavior:
 Permissions and safety:
 - The tool statically analyzes code and asks for Python permissions (`read`, `write`, `exec`, `unknown`) before execution.
 - Access outside the worktree triggers an `external_directory` permission ask.
+- Permission asks include a bounded preview of the exact source that will execute, with truncation and size metadata when large.
 - Follow least privilege: avoid unnecessary network/process execution and dynamic code execution.
 - Some dangerous operations may be denied by policy (for example high-risk `exec:*` patterns).
 
