@@ -1,0 +1,22 @@
+Use this tool to run Python code.
+
+When to use this tool vs bash:
+- Use when the primary action is executing Python code
+- Use this tool if your thinking about running `python <<'EOF'` using Bash.
+
+Choose one source mode:
+- Use `code` for small inline snippets, one-off checks, or generated Python.
+- Use `scriptPath` for existing files in the workspace.
+- Provide exactly one of `code` or `scriptPath`.
+
+Execution requirements:
+- Keep runs non-interactive (no prompts, no REPL, no editor, no waiting for stdin).
+- Use `args` to pass runtime parameters (`["--flag", "value"]`) instead of string-concatenating shell commands.
+- Use `workdir` to control path resolution and runtime context; relative `scriptPath` resolves from `workdir`.
+- DO NOT use subprocess, eval, exec, compile, subprocess, __import__, os.system, os.popen, pickle, marshal
+
+Permissions and safety:
+- Follow least privilege: avoid unnecessary network/process execution and dynamic code execution.
+- Some dangerous operations may be denied by policy (for example high-risk `exec:*` patterns).
+
+Always provide a clear `description` so approval prompts and metadata are understandable.
