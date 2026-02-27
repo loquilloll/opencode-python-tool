@@ -1,6 +1,7 @@
 # CONTINUITY
 
 [PLANS]
+- 2026-02-27T14:02Z [USER] [plan:32-finish-testing-fix-issues] Requested finishing testing and fixing any issues before user performs personal pre-PR validation.
 - 2026-02-27T13:40Z [USER] [plan:31-update-tui-plan-progress] Requested updating the TUI Python permission plan with current implementation progress.
 - 2026-02-27T13:36Z [USER] [plan:30-delegated-python-permission-implementation-sync] Directed root orchestration/delegation sync: record completed implementation evidence across root + forked `opencode`, then commit only `docs/CONTINUITY.md` in the root repo.
 - 2026-02-27T13:35Z [USER] [plan:29-opencode-python-permission-review-followup] Requested code-review follow-up in forked `./opencode` to render Python `source` in permission body, tighten Python external-directory metadata detection beyond mode-only, add focused helper tests, run focused Bun tests, and commit as a new commit (no amend).
@@ -51,6 +52,9 @@
 - 2026-02-25T16:30Z [CODE] [plan:04-comprehensive-replan] Expanded plan to 10 phases: split hardening from initial implementation, added dedicated test phases (7 analyzer tests, 8 runtime tests), added Phase 5 (analyzer hardening: network/db/tempfile/pickle), Phase 6 (runtime hardening: venv detection, env vars, error handling), Phase 9 (permission policy hardening).
 
 [PROGRESS]
+- 2026-02-27T14:02Z [TOOL] [plan:32-finish-testing-fix-issues] Re-ran root `.opencode` validation: `bun test test/python.test.ts` => `37 pass, 0 fail`; `bun test` => `74 pass, 0 fail`.
+- 2026-02-27T14:02Z [TOOL] [plan:32-finish-testing-fix-issues] Re-ran fork `packages/opencode` validation: focused suites remained green (`69 pass, 0 fail`) and full suite now passes (`1180 pass, 5 skip, 0 fail`).
+- 2026-02-27T14:02Z [CODE] [plan:32-finish-testing-fix-issues] Fixed failing unrelated full-suite test `test/pty/pty-output-isolation.test.ts` by hardening PTY subscriber identity in `opencode/packages/opencode/src/pty/index.ts` to bind both `ws.data` and `ws.send` snapshot references, preventing output leak when socket metadata mutates in-place.
 - 2026-02-27T13:40Z [TOOL] [plan:31-update-tui-plan-progress] Updated `docs/opencode-tui-python-permission-pr-plan.md` with current status: Phase 1-3 marked done with commit/test evidence (`484f0bd`, `bdc1d13`, `9f1bb60`, focused `69 pass, 0 fail`), and Phase 4-5 explicitly marked TODO.
 - 2026-02-27T13:40Z [TOOL] [plan:31-update-tui-plan-progress] Updated `docs/opencode-tui-python-permission-test-matrix.md` progress snapshot and checklists to reflect completed A1/B1/B2 work and pending C1/D1 execution.
 - 2026-02-27T13:36Z [TOOL] [plan:30-delegated-python-permission-implementation-sync] Verified root commit `484f0bd` (`feat: add bounded expanded-source metadata for python permission prompts`) implementing bounded `codeExpanded` permission metadata; associated root targeted tests were previously recorded as passing.
@@ -136,6 +140,7 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Validation command `bun test test/python-analyze.test.ts` passed with `7 pass, 0 fail`.
 
 [DISCOVERIES]
+- 2026-02-27T14:02Z [CODE] [plan:32-finish-testing-fix-issues] PTY socket identity based only on `ws.data` is insufficient when runtimes reuse the same websocket object and mutate state in-place; guarding with both `ws.data` and `ws.send` snapshot references eliminates observed cross-session output leakage in test coverage.
 - 2026-02-27T13:36Z [TOOL] [plan:30-delegated-python-permission-implementation-sync] Validation state changed from dependency-blocked to green after `bun install --frozen-lockfile` in `./opencode`; same focused permission/config suite advanced from `67 pass, 0 fail` to `69 pass, 0 fail` after follow-up fix.
 - 2026-02-27T13:35Z [CODE] [plan:29-opencode-python-permission-review-followup] Mode-only metadata (`{ mode: "inline" }`) is insufficient to reliably identify Python external_directory asks; requiring an additional Python-specific signal (`source`, `codePreview`, or `codePreviewTruncated`) avoids over-classifying generic external-directory prompts.
 - 2026-02-27T13:29Z [TOOL] [plan:27-opencode-python-permission-rendering] Validation in this environment is blocked by missing package resolution in `packages/opencode`: `bun test` fails early with module-not-found errors (for example `xdg-basedir`, `glob`, `remeda`, `@clack/prompts`, `@opencode-ai/util/*`) plus preload failure `@opentui/solid/preload` in subprocess-based tests, so helper/config assertions could not be runtime-verified here.
@@ -186,6 +191,7 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Alias deferral remains unchanged after Phase 5 checks: `import requests as rq; rq.get(...)` currently results in `unknown:no-classified-call` because alias tracking is intentionally not implemented.
 
 [OUTCOMES]
+- 2026-02-27T14:02Z [TOOL] [plan:32-finish-testing-fix-issues] Automated validation is fully green across both workspaces after one PTY isolation fix in forked `opencode`; remaining pre-PR work is user-requested manual TUI self-test/evidence capture and any follow-up cleanup/commit decisions.
 - 2026-02-27T13:40Z [TOOL] [plan:31-update-tui-plan-progress] Plan artifacts now match delivered state: implementation phases are marked complete with concrete evidence, and only tmux E2E + PR packaging remain open.
 - 2026-02-27T13:36Z [TOOL] [plan:30-delegated-python-permission-implementation-sync] Delegated Python permission implementation work is now continuity-synced across repos: root bounded `codeExpanded` metadata commit (`484f0bd`), forked TUI implementation/fix commits (`bdc1d13`, `9f1bb60`), and final focused validation evidence (`69 pass, 0 fail`) are captured in canonical history.
 - 2026-02-27T13:35Z [TOOL] [plan:29-opencode-python-permission-review-followup] Code-review follow-up is complete in forked `opencode`: Python permission body now renders `source`, external_directory Python metadata detection is stricter than mode-only, focused helper tests cover source + negative mode-only classification, focused test command is green, and a new non-amended commit (`9f1bb60`) is recorded.
