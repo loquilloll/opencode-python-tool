@@ -36,11 +36,17 @@ commit-safe phases suitable for upstream PR submission.
 
 ## Current State Summary
 
-- Python tool already emits bounded preview metadata (`codePreview`, truncation
-  + counts), but not guaranteed full source for large/script-mode display.
-- TUI permission prompt has tool-specific rendering for `bash` but no
-  `python`-specific branch; `python` falls back to generic text.
-- Fullscreen mechanics already exist in the generic prompt component.
+- Phase 1 is complete in root repo commit `484f0bd`:
+  `src/python.ts` now emits bounded `codeExpanded` / `codeExpandedAvailable`
+  metadata with the 50 KB cap, and `.opencode` runtime tests are green.
+- Phases 2-3 are complete in forked `./opencode` commits `bdc1d13` and
+  `9f1bb60`: Python helper, renderer wiring, explicit `permission.python`
+  schema key, and stricter Python external-directory detection are in place.
+- Focused fork validation is green after dependency restore:
+  `bun test test/permission-python.test.ts test/config/config.test.ts`
+  => `69 pass, 0 fail`.
+- Remaining implementation work is Phase 4 (isolated `tmux-cli` E2E capture)
+  and Phase 5 (PR packaging + final verification).
 
 ## Design Direction
 
@@ -78,9 +84,17 @@ The TUI `info()` function has access to two distinct data sources:
 3. `request.metadata.codePreview` (bounded fallback for very large scripts)
 4. fallback message if none present
 
+## Phase Status (2026-02-27)
+
+- **Phase 1**: DONE (`484f0bd`)
+- **Phase 2**: DONE (`bdc1d13`, refined by `9f1bb60`)
+- **Phase 3**: DONE (`bdc1d13`, refined by `9f1bb60`)
+- **Phase 4**: TODO (isolated `tmux-cli` manual E2E not yet captured)
+- **Phase 5**: TODO (PR packaging and final pass)
+
 ## Commit-Safe Phases
 
-### Phase 1 - Python Tool Metadata for Expanded Source
+### Phase 1 - Python Tool Metadata for Expanded Source (DONE)
 
 **Goal**: Guarantee bounded full Python source is available in permission
 metadata when truncation occurs.
@@ -122,18 +136,25 @@ metadata when truncation occurs.
 
 - Can run in parallel with Phase 2 helper extraction in `./opencode`.
 
+**Progress**:
+
+- Implemented in root repo commit `484f0bd`.
+- Recorded validation:
+  - `cd .opencode && bun test test/python.test.ts` => `37 pass, 0 fail`
+  - `cd .opencode && bun test` => `74 pass, 0 fail`
+
 ---
 
-### Phase 2 - TUI Python Permission View-Model Helper
+### Phase 2 - TUI Python Permission View-Model Helper (DONE)
 
 **Goal**: Add typed/defensive extraction of Python permission display data.
 
 **Files**:
 
 - `opencode/packages/opencode/src/cli/cmd/tui/routes/session/permission.tsx`
-  (or extracted helper module next to it)
-- `opencode/packages/opencode/test/cli/tui/permission-python.test.ts` (new)
-- `opencode/packages/opencode/src/app/config.ts` (schema addition)
+- `opencode/packages/opencode/src/cli/cmd/tui/routes/session/permission-python.ts` (new)
+- `opencode/packages/opencode/test/permission-python.test.ts` (new)
+- `opencode/packages/opencode/src/config/config.ts` (schema addition)
 
 **Changes**:
 
@@ -155,19 +176,25 @@ existing patterns to follow.
 
 **Verification**:
 
-- `cd opencode/packages/opencode && bun test test/cli/tui/permission-python.test.ts`
+- `cd opencode/packages/opencode && bun test test/permission-python.test.ts test/config/config.test.ts`
 
 **Commit message**:
 
-- `refactor(tui): add python permission view model helper and config schema key`
+- Delivered as part of `feat(tui): render python permission summary and fullscreen code view`
+  (`bdc1d13`), then tightened by follow-up `9f1bb60`.
 
 **Parallelization**:
 
 - Can run in parallel with Phase 1 once contract fields are agreed.
 
+**Progress**:
+
+- Helper + focused tests + config key are implemented and committed.
+- Final focused validation for helper/config suites is green (`69 pass, 0 fail`).
+
 ---
 
-### Phase 3 - TUI Python Permission Renderer + Fullscreen Body
+### Phase 3 - TUI Python Permission Renderer + Fullscreen Body (DONE)
 
 **Goal**: Render Python permission prompts with summary and full code body.
 
@@ -199,12 +226,12 @@ high-traffic file and stale base risks merge conflicts during PR.
   Python-specific metadata fields (`mode`, `codePreview`), render Python
   context (description, mode, script path) alongside the directory information
   instead of showing only the generic directory/filepath display. Detect via
-  presence of `request.metadata.mode` to distinguish Python-originated asks
-  from other tools' external_directory asks.
+  `request.metadata.mode` plus at least one Python-specific signal
+  (`source`, `codePreview`, or `codePreviewTruncated`) to avoid false positives.
 
 **Verification**:
 
-- `cd opencode/packages/opencode && bun test`
+- `cd opencode/packages/opencode && bun test test/permission-python.test.ts test/config/config.test.ts`
 
 **Commit message**:
 
@@ -214,9 +241,14 @@ high-traffic file and stale base risks merge conflicts during PR.
 
 - Depends on Phase 2 helper complete.
 
+**Progress**:
+
+- Implemented in `bdc1d13`, with follow-up refinement in `9f1bb60`
+  (source rendering + stricter external-directory Python detection).
+
 ---
 
-### Phase 4 - Isolated tmux-cli End-to-End Validation
+### Phase 4 - Isolated tmux-cli End-to-End Validation (TODO)
 
 **Goal**: Validate interactive TUI behavior without local global config.
 
@@ -248,9 +280,13 @@ high-traffic file and stale base risks merge conflicts during PR.
 
 - Can be executed while PR description drafting starts.
 
+**Progress**:
+
+- Not started yet. This is the primary remaining technical validation task.
+
 ---
 
-### Phase 5 - PR Packaging and Docs
+### Phase 5 - PR Packaging and Docs (TODO)
 
 **Goal**: Prepare clean upstream PR from fork branch.
 
@@ -273,21 +309,24 @@ high-traffic file and stale base risks merge conflicts during PR.
 
 - docs-only commit if needed; otherwise PR metadata only.
 
+**Progress**:
+
+- Not started yet; depends on Phase 4 evidence capture.
+
 ---
 
 ## Parallel Workstreams
 
-- **Lane A (Tool metadata)**: Phase 1 in this repo.
-- **Lane B (TUI helper + renderer)**: Phases 2-3 in `./opencode`.
-- **Lane C (Interactive QA harness)**: Phase 4 tmux isolated validation setup.
+- **Lane A (Tool metadata)**: Phase 1 in this repo. **Status: DONE**
+- **Lane B (TUI helper + renderer)**: Phases 2-3 in `./opencode`. **Status: DONE**
+- **Lane C (Interactive QA harness)**: Phase 4 tmux isolated validation setup. **Status: TODO**
+- **Lane D (PR packaging)**: Phase 5 finalization. **Status: TODO**
 
-Recommended order for minimal rework:
+Recommended order for remaining work:
 
-1. Start Lane A and Lane B Phase 2 in parallel.
-2. Merge Lane A metadata contract.
-3. Rebase Lane B against upstream `dev` (before modifying `permission.tsx`).
-4. Complete Lane B Phase 3 rendering.
-5. Execute Lane C and package PR.
+1. Execute Lane C isolated tmux runbook and capture evidence.
+2. Run final regression checks for touched packages.
+3. Complete Lane D PR packaging using captured evidence.
 
 ## Acceptance Criteria
 

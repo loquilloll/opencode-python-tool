@@ -1,6 +1,7 @@
 # CONTINUITY
 
 [PLANS]
+- 2026-02-27T13:40Z [USER] [plan:31-update-tui-plan-progress] Requested updating the TUI Python permission plan with current implementation progress.
 - 2026-02-27T13:36Z [USER] [plan:30-delegated-python-permission-implementation-sync] Directed root orchestration/delegation sync: record completed implementation evidence across root + forked `opencode`, then commit only `docs/CONTINUITY.md` in the root repo.
 - 2026-02-27T13:35Z [USER] [plan:29-opencode-python-permission-review-followup] Requested code-review follow-up in forked `./opencode` to render Python `source` in permission body, tighten Python external-directory metadata detection beyond mode-only, add focused helper tests, run focused Bun tests, and commit as a new commit (no amend).
 - 2026-02-27T13:32Z [USER] [plan:28-opencode-permission-validation-rerun] Requested dependency restore and focused test rerun in forked `./opencode` to validate new Python permission implementation without product-code edits.
@@ -50,6 +51,8 @@
 - 2026-02-25T16:30Z [CODE] [plan:04-comprehensive-replan] Expanded plan to 10 phases: split hardening from initial implementation, added dedicated test phases (7 analyzer tests, 8 runtime tests), added Phase 5 (analyzer hardening: network/db/tempfile/pickle), Phase 6 (runtime hardening: venv detection, env vars, error handling), Phase 9 (permission policy hardening).
 
 [PROGRESS]
+- 2026-02-27T13:40Z [TOOL] [plan:31-update-tui-plan-progress] Updated `docs/opencode-tui-python-permission-pr-plan.md` with current status: Phase 1-3 marked done with commit/test evidence (`484f0bd`, `bdc1d13`, `9f1bb60`, focused `69 pass, 0 fail`), and Phase 4-5 explicitly marked TODO.
+- 2026-02-27T13:40Z [TOOL] [plan:31-update-tui-plan-progress] Updated `docs/opencode-tui-python-permission-test-matrix.md` progress snapshot and checklists to reflect completed A1/B1/B2 work and pending C1/D1 execution.
 - 2026-02-27T13:36Z [TOOL] [plan:30-delegated-python-permission-implementation-sync] Verified root commit `484f0bd` (`feat: add bounded expanded-source metadata for python permission prompts`) implementing bounded `codeExpanded` permission metadata; associated root targeted tests were previously recorded as passing.
 - 2026-02-27T13:36Z [TOOL] [plan:30-delegated-python-permission-implementation-sync] Verified forked `opencode` implementation commits `bdc1d13` (initial Python permission summary/fullscreen rendering) and `9f1bb60` (follow-up source-context rendering fix).
 - 2026-02-27T13:36Z [TOOL] [plan:30-delegated-python-permission-implementation-sync] Confirmed post-install validation outcome in `./opencode`: final focused run `bun test test/permission-python.test.ts test/config/config.test.ts` => `69 pass, 0 fail`.
@@ -183,6 +186,7 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Alias deferral remains unchanged after Phase 5 checks: `import requests as rq; rq.get(...)` currently results in `unknown:no-classified-call` because alias tracking is intentionally not implemented.
 
 [OUTCOMES]
+- 2026-02-27T13:40Z [TOOL] [plan:31-update-tui-plan-progress] Plan artifacts now match delivered state: implementation phases are marked complete with concrete evidence, and only tmux E2E + PR packaging remain open.
 - 2026-02-27T13:36Z [TOOL] [plan:30-delegated-python-permission-implementation-sync] Delegated Python permission implementation work is now continuity-synced across repos: root bounded `codeExpanded` metadata commit (`484f0bd`), forked TUI implementation/fix commits (`bdc1d13`, `9f1bb60`), and final focused validation evidence (`69 pass, 0 fail`) are captured in canonical history.
 - 2026-02-27T13:35Z [TOOL] [plan:29-opencode-python-permission-review-followup] Code-review follow-up is complete in forked `opencode`: Python permission body now renders `source`, external_directory Python metadata detection is stricter than mode-only, focused helper tests cover source + negative mode-only classification, focused test command is green, and a new non-amended commit (`9f1bb60`) is recorded.
 - 2026-02-27T13:32Z [TOOL] [plan:28-opencode-permission-validation-rerun] Environment dependency resolution and focused permission/config tests are now green in forked `opencode`, increasing confidence that the recent Python permission rendering/config implementation works as intended in this workspace.

@@ -16,19 +16,28 @@ commit-safe boundaries.
 | C1 | `./opencode` | tmux isolated-env manual E2E runbook execution | B2 | QA evidence notes |
 | D1 | `./opencode` | PR prep + final verification | C1 | PR-ready branch |
 
+## Current Progress Snapshot (2026-02-27)
+
+- A1 complete in root commit `484f0bd`.
+- B1/B2 complete in fork commits `bdc1d13` and `9f1bb60`.
+- Focused fork tests pass after dependency restore:
+  `bun test test/permission-python.test.ts test/config/config.test.ts`
+  => `69 pass, 0 fail`.
+- C1 and D1 remain pending.
+
 ## Commit-Safe Checklist
 
 ### A1 - Tool Metadata Contract
 
-- [ ] Add `metadata.codeExpanded` in `src/python.ts` ask payload (only when
+- [x] Add `metadata.codeExpanded` in `src/python.ts` ask payload (only when
       `codePreviewTruncated === true` AND `totalBytes <= 50_000`).
-- [ ] Add `metadata.codeExpandedAvailable` boolean flag.
-- [ ] When `codePreviewTruncated === false`, omit both fields.
-- [ ] Keep existing preview/truncation fields unchanged.
-- [ ] Add tests in `.opencode/test/python.test.ts` for `codeExpanded` presence/absence
+- [x] Add `metadata.codeExpandedAvailable` boolean flag.
+- [x] When `codePreviewTruncated === false`, omit both fields.
+- [x] Keep existing preview/truncation fields unchanged.
+- [x] Add tests in `.opencode/test/python.test.ts` for `codeExpanded` presence/absence
       across inline, script, small, medium (truncated + ≤ 50 KB), and large (> 50 KB) modes.
-- [ ] Run `.opencode` tests.
-- [ ] Commit:
+- [x] Run `.opencode` tests.
+- [x] Commit:
 
 ```text
 feat: add bounded expanded-source metadata for python permission prompts
@@ -36,28 +45,30 @@ feat: add bounded expanded-source metadata for python permission prompts
 
 ### B1 - TUI Helper + Config Schema + Tests
 
-- [ ] Add helper for extracting python permission display data from both
+- [x] Add helper for extracting python permission display data from both
       `request.metadata` and `input()` sources.
-- [ ] Unit-test malformed and missing metadata handling.
-- [ ] Verify fullscreen source precedence (`codeExpanded` -> `input().code` -> `codePreview`).
-- [ ] Register `python` as named permission key in config schema.
-- [ ] Commit:
+- [x] Unit-test malformed and missing metadata handling.
+- [x] Verify fullscreen source precedence (`codeExpanded` -> `input().code` -> `codePreview`).
+- [x] Register `python` as named permission key in config schema.
+- [x] Commit:
 
 ```text
-refactor(tui): add python permission view model helper and config schema key
+feat(tui): render python permission summary and fullscreen code view
 ```
+
+Note: B1 shipped with B2 in `bdc1d13` and was refined in `9f1bb60`.
 
 ### B2 - TUI Renderer
 
-- [ ] Add `permission === "python"` branch in permission `info()`.
-- [ ] Render summary lines (description/mode/scriptPath/args/workdir/stats).
-- [ ] Render code body in scrollable panel using existing fullscreen prompt.
-- [ ] Fullscreen source: `codeExpanded` -> `input().code` -> `codePreview`.
+- [x] Add `permission === "python"` branch in permission `info()`.
+- [x] Render summary lines (description/mode/scriptPath/args/workdir/stats).
+- [x] Render code body in scrollable panel using existing fullscreen prompt.
+- [x] Fullscreen source: `codeExpanded` -> `input().code` -> `codePreview`.
 - [ ] Validate `ctrl+f` expand/minimize behavior.
-- [ ] Add `external_directory` sub-case for Python-originated asks (detect via
-      `metadata.mode` presence; show Python context alongside directory info).
+- [x] Add `external_directory` sub-case for Python-originated asks (detect via
+      Python-specific metadata signals; show Python context alongside directory info).
 - [ ] Rebase against upstream `dev` before modifying `permission.tsx`.
-- [ ] Commit:
+- [x] Commit:
 
 ```text
 feat(tui): render python permission summary and fullscreen code view
@@ -122,8 +133,8 @@ tmux-cli wait_idle --pane=remote-cli-session:1.0 --idle-time=2.0 --timeout=60
 
 - [ ] All listed scenarios (S1-S9) pass.
 - [ ] No regressions in permission prompt actions (`Allow once`, `Allow always`, `Reject`).
-- [ ] `external_directory` asks from Python show Python-specific context.
-- [ ] `python` permission key is registered in config schema.
-- [ ] `bun test` passes for touched packages.
+- [x] `external_directory` asks from Python show Python-specific context.
+- [x] `python` permission key is registered in config schema.
+- [x] `bun test` passes for focused touched suites (`permission-python` + config).
 - [ ] Branch is rebased against upstream `dev` before PR submission.
 - [ ] Branch is ready for PR.
