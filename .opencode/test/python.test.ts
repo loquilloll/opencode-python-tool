@@ -34,11 +34,13 @@ function getAskMetadata(context: ReturnType<typeof createMockContext>, permissio
         source?: string
         mode?: string
         scriptPath?: string
-        codePreview?: string
-        codePreviewTruncated?: boolean
-        codePreviewTruncationMarker?: string | null
-        codePreviewBytes?: { total?: number; preview?: number }
-        codePreviewLines?: { total?: number; preview?: number }
+      codePreview?: string
+      codePreviewTruncated?: boolean
+      codePreviewTruncationMarker?: string | null
+      codePreviewBytes?: { total?: number; preview?: number }
+      codePreviewLines?: { total?: number; preview?: number }
+      codeExpanded?: string
+      codeExpandedAvailable?: boolean
       }
     | undefined
 }
@@ -222,6 +224,8 @@ describe("python tool runtime", () => {
         expect(metadata?.codePreviewTruncationMarker).toBeNull()
         expect(metadata?.codePreviewBytes?.total).toBe(metadata?.codePreviewBytes?.preview)
         expect(metadata?.codePreviewLines?.total).toBe(metadata?.codePreviewLines?.preview)
+        expect(metadata?.codeExpanded).toBeUndefined()
+        expect(metadata?.codeExpandedAvailable).toBeUndefined()
       })
     })
 
@@ -244,6 +248,29 @@ describe("python tool runtime", () => {
         expect(metadata?.codePreviewTruncationMarker).toBe("\n...<python_permission_preview_truncated>")
         expect(metadata?.codePreview?.endsWith("\n...<python_permission_preview_truncated>")).toBeTrue()
         expect((metadata?.codePreviewLines?.total ?? 0) > (metadata?.codePreviewLines?.preview ?? 0)).toBeTrue()
+        expect(metadata?.codeExpanded).toBe(largeSource)
+        expect(metadata?.codeExpandedAvailable).toBeTrue()
+      })
+    })
+
+    it("omits expanded source metadata when source exceeds 50KB", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+        const veryLargeSource = `print('${"x".repeat(70_000)}')`
+
+        await executeExpectingEnoent(
+          {
+            code: veryLargeSource,
+            args: [],
+            description: "inline expanded metadata cap",
+          },
+          context,
+        )
+
+        const metadata = getAskMetadata(context, "python")
+        expect(metadata?.codePreviewTruncated).toBeTrue()
+        expect(metadata?.codeExpanded).toBeUndefined()
+        expect(metadata?.codeExpandedAvailable).toBeFalse()
       })
     })
 
@@ -454,6 +481,8 @@ describe("python tool runtime", () => {
         expect(externalMetadata?.codePreview).toBe(pythonMetadata?.codePreview)
         expect(externalMetadata?.codePreviewBytes).toEqual(pythonMetadata?.codePreviewBytes)
         expect(externalMetadata?.codePreviewLines).toEqual(pythonMetadata?.codePreviewLines)
+        expect(externalMetadata?.codeExpanded).toEqual(pythonMetadata?.codeExpanded)
+        expect(externalMetadata?.codeExpandedAvailable).toEqual(pythonMetadata?.codeExpandedAvailable)
       })
     })
 

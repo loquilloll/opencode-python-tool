@@ -12,6 +12,7 @@ const MAX_METADATA_LENGTH = 30_000
 const MAX_ANALYZE_BYTES = 100 * 1024
 const MAX_PERMISSION_PREVIEW_BYTES = 4_000
 const MAX_PERMISSION_PREVIEW_LINES = 120
+const MAX_PERMISSION_EXPANDED_BYTES = 50_000
 const PERMISSION_PREVIEW_TRUNCATION_MARKER = "\n...<python_permission_preview_truncated>"
 
 type Proc = ReturnType<typeof spawn>
@@ -277,6 +278,19 @@ function buildPermissionCodePreview(source: string): PermissionCodePreview {
   }
 }
 
+function buildPermissionCodeExpanded(source: string, preview: PermissionCodePreview) {
+  if (!preview.truncated) return {}
+  if (preview.totalBytes <= MAX_PERMISSION_EXPANDED_BYTES) {
+    return {
+      codeExpanded: source,
+      codeExpandedAvailable: true,
+    }
+  }
+  return {
+    codeExpandedAvailable: false,
+  }
+}
+
 function hasDirectSubprocessInvocation(events: PythonEvent[]) {
   return events.some((event) => event.call.startsWith("subprocess."))
 }
@@ -354,6 +368,7 @@ export default tool({
     const plan = buildPermissionPlan(events, cwd, context.worktree, script)
     const mode = script ? "script" : "inline"
     const codePreview = buildPermissionCodePreview(source)
+    const codeExpanded = buildPermissionCodeExpanded(source, codePreview)
     const askMetadata = {
       source: script ?? "<inline>",
       description: args.description,
@@ -370,6 +385,7 @@ export default tool({
         total: codePreview.totalLines,
         preview: codePreview.previewLines,
       },
+      ...codeExpanded,
     }
 
     if (plan.external.length > 0) {
