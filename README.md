@@ -1,59 +1,111 @@
 # opencode-python-tool
 
-Custom OpenCode `python` tool with static AST classification, permission-aware
-execution, and defensive runtime behavior for headless/non-interactive agent
-workflows.
+Custom [OpenCode](https://opencode.ai) `python` tool with static AST-based
+classification, permission-aware execution, and defensive runtime behavior for
+headless/non-interactive agent workflows.
 
 ## Overview
 
-This repository is an implementation source for a custom OpenCode `python` tool.
-It is designed for cases where Python execution is the primary action and you
-want stronger permission controls than ad-hoc shell execution.
+This repository provides a drop-in custom `python` tool for OpenCode. It is
+designed for cases where Python execution is the primary action and you want
+stronger permission controls than ad-hoc shell execution.
 
 Use this project when you need:
 
-- pre-execution static analysis of Python source,
-- explicit permission asks (`python` + `external_directory`) before execution,
-- guardrails for high-risk execution paths,
-- repeatable tests around analyzer and runtime behavior.
+- **Pre-execution static analysis** of Python source via Tree-sitter AST
+  parsing, classifying every call into `read`, `write`, `exec`, or `unknown`
+  events.
+- **Explicit permission asks** (`python` + `external_directory`) before any code
+  runs, with structured metadata including code preview, event patterns, and
+  always-allow suggestions.
+- **Guardrails for high-risk execution paths** -- subprocess invocations are
+  hard-blocked, dangerous builtins and deserialization calls are denied by
+  default.
+- **SDK-aware classification** for OCI, GitHub API (ghapi), and
+  Atlassian (atlassian-python-api) client libraries.
+- **Repeatable tests** around both analyzer and runtime behavior (74 tests,
+  160 assertions).
+
+## Architecture
+
+```mermaid
+flowchart TD
+    invoke["Model invokes tool(#quot;python#quot;, { code, scriptPath, args, ... })"]
+    invoke --> validate
+
+    validate["Arg Validation<br/><i>code XOR scriptPath, timeout > 0</i>"]
+    validate --> source
+
+    source["Source Resolution<br/><i>inline code or read scriptPath</i>"]
+    source --> analyzer
+
+    analyzer["AST Analyzer<br/><code>python-analyze.ts</code><br/><i>Tree-sitter parse -> classify calls<br/>-> PythonEvent[] (kind + call + path)</i>"]
+    analyzer --> guard
+
+    guard{"Subprocess Guard<br/><i>subprocess.* detected?</i>"}
+    guard -- "Yes" --> hardfail["Hard-fail error<br/><i>Use bash tool instead</i>"]
+    guard -- "No" --> plan
+
+    plan["Permission Plan<br/><i>Build patterns / always / external<br/>from classified events</i>"]
+    plan --> extcheck{"Outside paths<br/>detected?"}
+
+    extcheck -- "Yes" --> extask["Ask: <b>external_directory</b><br/><i>with code preview metadata</i>"]
+    extask --> pyask
+    extcheck -- "No" --> pyask
+
+    pyask["Ask: <b>python</b><br/><i>read:* / write:* / exec:* / unknown:*<br/>with code preview + operations metadata</i>"]
+    pyask --> exec
+
+    exec["Process Execution<br/><i>spawn python3<br/>PYTHONUNBUFFERED=1<br/>Stream stdout/stderr -> metadata<br/>Handle timeout, abort, exit code</i>"]
+    exec --> output["Tool output string"]
+
+    style invoke fill:#e8f4fd,stroke:#2980b9,color:#000
+    style hardfail fill:#fdedec,stroke:#e74c3c,color:#000
+    style extask fill:#fef9e7,stroke:#f39c12,color:#000
+    style pyask fill:#fef9e7,stroke:#f39c12,color:#000
+    style output fill:#eafaf1,stroke:#27ae60,color:#000
+    style guard fill:#fdf2e9,stroke:#e67e22,color:#000
+    style extcheck fill:#fdf2e9,stroke:#e67e22,color:#000
+```
 
 ## Repository File Map
 
-Canonical source now lives in `src/`:
+### Canonical source (`src/`)
 
-- `src/python.ts`: runtime entry point (arg validation, source load,
-  analyzer call, permission asks, subprocess guard, process execution,
-  timeout/abort handling, metadata streaming).
-- `src/python-analyze.ts`: Tree-sitter analyzer that classifies
-  Python calls into `read | write | exec | unknown` events with optional path
-  extraction.
-- `src/python.txt`: tool prompt that guides model usage (`code` vs
-  `scriptPath`, non-interactive constraints, safety behavior).
-- `src/env.d.ts`: `*.txt` module typing for TypeScript imports.
+| File | Purpose |
+|------|---------|
+| `src/python.ts` | Runtime entry point: arg validation, source loading, analyzer call, permission asks, subprocess guard, process execution, timeout/abort handling, metadata streaming. |
+| `src/python/python-analyze.ts` | Tree-sitter analyzer that classifies Python calls into `read \| write \| exec \| unknown` events with optional path extraction. Includes SDK-specific classification for OCI, ghapi, and Atlassian libraries. |
+| `src/python/python.txt` | Tool prompt that guides model usage (`code` vs `scriptPath`, non-interactive constraints, safety behavior). |
+| `src/python/env.d.ts` | `*.txt` module typing for TypeScript imports. |
 
-OpenCode entrypoints remain in `.opencode/tool/` as thin wrappers:
+### OpenCode entrypoints (`.opencode/tool/`)
 
-- `.opencode/tool/python.ts`: re-exports default tool from `src/python.ts`.
-- `.opencode/tool/python-analyze.ts`: re-exports analyzer symbols from
-  `src/python-analyze.ts`.
+Thin re-export wrappers so OpenCode discovers the tool:
 
-Policy/test location remains in `.opencode/`:
+| File | Re-exports |
+|------|------------|
+| `.opencode/tool/python.ts` | `export { default } from "../../src/python"` |
+| `.opencode/tool/python-analyze.ts` | `export * from "../../src/python/python-analyze"` |
 
-- `.opencode/opencode.jsonc`: restrictive default permission policy.
+### Configuration and tests (`.opencode/`)
 
-Supporting files:
-
-- `.opencode/test/python-analyze.test.ts`: analyzer unit coverage.
-- `.opencode/test/python.test.ts`: runtime/integration coverage.
-- `.opencode/test/fixtures/context.ts`: mock OpenCode `ToolContext` fixture.
-- `.opencode/package.json`: local dependencies for plugin SDK and parser stack.
+| File | Purpose |
+|------|---------|
+| `.opencode/opencode.jsonc` | Restrictive default permission policy. |
+| `.opencode/package.json` | Dependencies: `@opencode-ai/plugin`, `tree-sitter-python`, `web-tree-sitter`. |
+| `.opencode/test/python-analyze.test.ts` | Analyzer unit tests (13 describe blocks, comprehensive classification coverage). |
+| `.opencode/test/python.test.ts` | Runtime/integration tests (arg validation, permissions, external directory, streaming, timeout, abort). |
+| `.opencode/test/fixtures/context.ts` | Mock `ToolContext` fixture for tests. |
 
 ## Requirements
 
-- OpenCode custom tools enabled in your target project.
-- Bun available to install deps and run tests.
-- Python 3 available at runtime (`python3`), or set `OPENCODE_PYTHON_BIN`.
-- Node-compatible environment for OpenCode plugin runtime.
+| Requirement | Details |
+|-------------|---------|
+| **OpenCode** | Custom tools enabled in your target project. |
+| **Bun** | Required to install deps and run tests. |
+| **Python 3** | Available at runtime as `python3`, or set `OPENCODE_PYTHON_BIN`. |
+| **Node-compatible runtime** | For OpenCode plugin execution. |
 
 ## Setup (This Repository)
 
@@ -64,7 +116,7 @@ cd .opencode
 bun install
 ```
 
-Optional quick load check:
+Quick load check:
 
 ```bash
 cd .opencode
@@ -76,18 +128,18 @@ bun -e "import('./tool/python.ts').then(() => console.log('module loads ok'))"
 ### Option 1: Tool-only install (minimal)
 
 The runtime wrappers in `.opencode/tool/` import canonical sources from `src/`,
-so keep both paths in the destination.
+so both paths must exist in the destination.
 
 ```bash
 SRC="/path/to/opencode-python-tool"
 DST="/path/to/target-repo"
 
-mkdir -p "$DST/.opencode/tool" "$DST/src"
+mkdir -p "$DST/.opencode/tool" "$DST/src/python"
 
 cp "$SRC/src/python.ts" "$DST/src/python.ts"
-cp "$SRC/src/python-analyze.ts" "$DST/src/python-analyze.ts"
-cp "$SRC/src/python.txt" "$DST/src/python.txt"
-cp "$SRC/src/env.d.ts" "$DST/src/env.d.ts"
+cp "$SRC/src/python/python-analyze.ts" "$DST/src/python/python-analyze.ts"
+cp "$SRC/src/python/python.txt" "$DST/src/python/python.txt"
+cp "$SRC/src/python/env.d.ts" "$DST/src/python/env.d.ts"
 
 cp "$SRC/.opencode/tool/python.ts" "$DST/.opencode/tool/python.ts"
 cp "$SRC/.opencode/tool/python-analyze.ts" "$DST/.opencode/tool/python-analyze.ts"
@@ -117,8 +169,8 @@ Notes:
 
 - Merge dependency entries into your existing `.opencode/package.json`; do not
   overwrite unrelated tool dependencies.
-- Do not copy `.opencode/tool/python.txt` from this repo; prompt text now lives
-  in `src/python.txt`.
+- Do not copy `.opencode/tool/python.txt` from this repo; prompt text lives
+  in `src/python/python.txt`.
 - Ensure your target config also includes the recommended `permission.python`
   and `external_directory` rules from this README.
 
@@ -140,101 +192,367 @@ bun test
 
 ## Recommended Permission Configuration
 
-Add these rules under `permission.python` in your OpenCode config:
+Add these rules under `permission` in your OpenCode config (`opencode.jsonc`):
 
 ```jsonc
 {
-  "python": {
-    "*": "ask",
-    "exec:eval": "deny",
-    "exec:exec": "deny",
-    "exec:compile": "deny",
-    "exec:__import__": "deny",
-    "exec:os.system": "deny",
-    "exec:os.popen": "deny",
-    "exec:os.exec*": "deny",
-    "exec:pickle.load": "deny",
-    "exec:pickle.loads": "deny",
-    "exec:marshal.load": "deny",
-    "exec:marshal.loads": "deny",
-    "unknown:*": "ask"
-  },
-  "external_directory": "ask"
+  "permission": {
+    "python": {
+      "*": "ask",
+      "exec:eval": "deny",
+      "exec:exec": "deny",
+      "exec:compile": "deny",
+      "exec:subprocess": "deny",
+      "exec:__import__": "deny",
+      "exec:os.system": "deny",
+      "exec:os.popen": "deny",
+      "exec:os.exec*": "deny",
+      "exec:pickle.load": "deny",
+      "exec:pickle.loads": "deny",
+      "exec:marshal.load": "deny",
+      "exec:marshal.loads": "deny",
+      "unknown:*": "ask"
+    },
+    "external_directory": "ask"
+  }
 }
 ```
 
+> **Note:** This matches the shipped `.opencode/opencode.jsonc` exactly. The
+> `exec:subprocess` deny is a defense-in-depth complement to the runtime
+> subprocess hard-fail guard.
+
 Operational guidance:
 
-- keep `python:*` as `ask` to force explicit review,
-- keep dangerous dynamic/process/deserialization patterns on `deny`,
-- keep `unknown:*` as `ask` to avoid auto-approving unanalyzed behavior,
-- keep `external_directory` as `ask` to prevent silent cross-worktree access.
+| Rule | Rationale |
+|------|-----------|
+| `python:*` = `ask` | Forces explicit human review for all classified operations. |
+| `exec:eval`, `exec:exec`, `exec:compile`, `exec:__import__` = `deny` | Blocks dynamic code execution that bypasses static analysis. |
+| `exec:subprocess` = `deny` | Defense-in-depth alongside the runtime subprocess guard. |
+| `exec:os.system`, `exec:os.popen`, `exec:os.exec*` = `deny` | Blocks shell/process spawning that should use the `bash` tool. |
+| `exec:pickle.*`, `exec:marshal.*` = `deny` | Blocks dangerous deserialization (arbitrary code execution risk). |
+| `unknown:*` = `ask` | Prevents auto-approving unanalyzed or unrecognized behavior. |
+| `external_directory` = `ask` | Prevents silent cross-worktree file access. |
 
-## Security Rationale (Keep Denies by Default)
+## OpenCode Fork: Enhanced TUI Permission Rendering
 
-The default deny statements are there to block high-risk execution paths that
-are difficult to review safely in an automated flow.
+This tool works fully with **stock/upstream OpenCode** — no fork is required for
+core functionality. Arg validation, AST analysis, permission asks, subprocess
+guarding, and process execution all operate correctly on any OpenCode
+installation that supports custom tools.
 
-- `eval`, `exec`, `compile`, and `__import__` enable dynamic code execution or
-  dynamic module loading that can bypass normal intent review.
-- `os.system`, `os.popen`, and `os.exec*` can spawn or replace processes,
-  execute shell commands, and bypass the tool's non-terminal safety boundary.
-- `pickle.load/loads` and `marshal.load/loads` can deserialize untrusted data
-  into executable behavior, which is a known arbitrary code execution risk.
+A companion fork of OpenCode adds **Python-specific TUI enhancements** to the
+permission prompt rendering. These changes improve the operator experience when
+reviewing `python` and `external_directory` permission asks but do not affect
+runtime behavior or security posture.
 
-If these are not denied, a prompt or script can escalate from "run Python" to
-"run arbitrary commands or payloads" with much weaker review guarantees.
+### Comparison: Stock vs Forked OpenCode
 
-Concrete risk examples if denies are removed:
+| Capability | Stock OpenCode | Forked OpenCode |
+|------------|----------------|-----------------|
+| **Permission prompt rendering** | Generic/fallback prompt — shows permission patterns (`read:*`, `exec:*`, etc.) and Allow/Reject actions. No Python-specific context. | Python-specific compact summary showing description, mode (`inline`/`script`), script path, args, workdir, and code preview with line/byte counts. |
+| **Code preview in prompt body** | Not rendered. Metadata is sent by the tool but the stock TUI does not display it. | Compact code preview displayed inline with truncation status. |
+| **`ctrl+f` fullscreen view** | Generic permission info. | Full Python source code with precedence: `codeExpanded` (≤50 KB) → inline `code` → `codePreview` fallback. |
+| **`external_directory` context** | Generic directory information. | Python-aware context showing mode, description, and source preview alongside directory details. |
+| **Config schema for `python` key** | Works at runtime via `.catchall()` but `python` does not appear in config schema autocompletion. | `python` registered as a named permission key — editors provide autocompletion for `permission.python.*` rules. |
 
-- a seemingly harmless script can pull a payload string from disk/network and
-  run it via `exec`, bypassing static call-level intent checks,
-- shell-capable calls can chain from Python into broader system operations that
-  should instead be reviewed through the `bash` tool boundary,
-- unsafe deserialization can execute attacker-controlled object constructors at
+### Fork status
+
+- The fork lives at `./opencode` in this repository (gitignored; not shipped).
+- Implementation commits: `bdc1d13` (renderer + helper), `9f1bb60` (config
+  schema registration).
+- Focused tests pass: 69 pass, 0 fail (permission-python + config suites).
+- Full fork test suite: 1180 pass, 5 skip, 0 fail.
+- Phase 4 (isolated tmux E2E validation) and Phase 5 (PR packaging) are still
+  TODO before upstream submission.
+- PR plan: `docs/opencode-tui-python-permission-pr-plan.md`.
+
+### Using the fork
+
+**Option A — Local launcher:** Build the fork source and set up an
+`opencode-fork` alias/script that runs from `./opencode`. This gives the
+enhanced TUI immediately.
+
+**Option B — Wait for upstream merge:** Continue using stock OpenCode. Once the
+fork changes are accepted upstream, the enhanced rendering becomes available
+automatically on upgrade. No changes to this tool or its configuration are
+needed either way.
+
+## Security Rationale
+
+The default deny statements block high-risk execution paths that are difficult
+to review safely in an automated flow.
+
+### Why these denies matter
+
+| Category | Calls | Risk |
+|----------|-------|------|
+| **Dynamic execution** | `eval`, `exec`, `compile`, `__import__` | Arbitrary code execution or dynamic module loading bypasses static intent review. |
+| **Process spawning** | `subprocess.*`, `os.system`, `os.popen`, `os.exec*` | Spawns or replaces processes, executes shell commands, bypasses non-terminal safety boundary. |
+| **Unsafe deserialization** | `pickle.load/loads`, `marshal.load/loads` | Deserializes untrusted data into executable behavior (known arbitrary code execution vector). |
+
+### Concrete risk examples (if denies are removed)
+
+- A seemingly harmless script can pull a payload string from disk/network and
+  run it via `exec`, bypassing static call-level intent checks.
+- Shell-capable calls can chain from Python into broader system operations that
+  should instead be reviewed through the `bash` tool boundary.
+- Unsafe deserialization can execute attacker-controlled object constructors at
   load time.
 
-Least-privilege recommendations:
+### Least-privilege recommendations
 
-- start from deny + ask defaults and only relax one pattern at a time,
-- scope approvals narrowly (specific calls/paths), avoid global wildcards,
-- require explicit human review for new `exec:*` patterns,
-- periodically re-audit policy exceptions after incident/near-miss events.
+1. Start from deny + ask defaults and only relax one pattern at a time.
+2. Scope approvals narrowly (specific calls/paths); avoid global wildcards.
+3. Require explicit human review for new `exec:*` patterns.
+4. Periodically re-audit policy exceptions after incident/near-miss events.
+
+## Analyzer Classification Reference
+
+The static analyzer (`python-analyze.ts`) uses Tree-sitter to parse Python
+source and classify every function call into one of four event kinds:
+
+### Event kinds
+
+| Kind | Meaning | Permission prefix |
+|------|---------|-------------------|
+| `read` | File/data read operation | `read:` |
+| `write` | File/data write operation | `write:` |
+| `exec` | Process spawn, dynamic execution, network, database, or dangerous API call | `exec:` |
+| `unknown` | Unrecognized, dynamic, or parse-error call | `unknown:` |
+
+### Classification tables
+
+#### File I/O
+
+| Call pattern | Kind | Path extraction |
+|-------------|------|-----------------|
+| `open(path, 'r')` | read | Literal or dynamic path from 1st arg |
+| `open(path, 'w'/'a'/'x'/'r+')` | write | Literal or dynamic path from 1st arg |
+| `open(path, <dynamic_mode>)` | unknown | `open-mode-dynamic` |
+| `Path(p).read_text()`, `.read_bytes()` | read | From `Path()` constructor arg |
+| `Path(p).write_text()`, `.write_bytes()`, `.mkdir()`, `.unlink()`, `.touch()`, `.rename()`, `.replace()`, `.rmdir()`, `.append_text()` | write | From `Path()` constructor arg |
+
+#### OS / shutil writes
+
+| Call | Kind | Path source |
+|------|------|-------------|
+| `os.remove(path)`, `os.unlink(path)` | write | 1st positional or `path` keyword |
+| `os.makedirs(name)` | write | 1st positional or `name`/`path` keyword |
+| `os.rename(src, dst)`, `os.replace(src, dst)` | write | 2nd positional or `dst` keyword |
+| `shutil.copy(src, dst)`, `.copy2()`, `.copytree()`, `.move()` | write | 2nd positional or `dst` keyword |
+| `shutil.rmtree(path)` | write | 1st positional or `path` keyword |
+
+#### Serialization I/O
+
+| Call | Kind |
+|------|------|
+| `json.load`, `yaml.load`, `yaml.safe_load` | read |
+| `json.dump`, `yaml.dump`, `yaml.safe_dump` | write |
+
+#### Tempfile
+
+| Call | Kind |
+|------|------|
+| `tempfile.NamedTemporaryFile`, `tempfile.mkdtemp`, `tempfile.mkstemp`, `tempfile.TemporaryDirectory` | write |
+
+#### Dangerous builtins and process execution
+
+| Call | Kind |
+|------|------|
+| `eval`, `exec`, `compile`, `__import__` | exec |
+| `os.system`, `os.popen`, `os.exec*` | exec |
+| `subprocess.*` (any method) | exec |
+
+#### Dangerous deserialization
+
+| Call | Kind |
+|------|------|
+| `pickle.load`, `pickle.loads` | exec |
+| `marshal.load`, `marshal.loads` | exec |
+
+#### Network / HTTP
+
+| Call | Kind |
+|------|------|
+| `requests.get/post/put/delete/patch/head/options` | exec |
+| `urllib.request.urlopen`, `urllib.request.urlretrieve` | exec |
+| `http.client.HTTPConnection`, `http.client.HTTPSConnection` | exec |
+| `aiohttp.ClientSession` | exec |
+| `httpx.get/post/put/delete/patch`, `httpx.Client`, `httpx.AsyncClient` | exec |
+| `socket.socket`, `socket.create_connection` | exec |
+
+#### Database
+
+| Call | Kind |
+|------|------|
+| `sqlite3.connect` | exec |
+| `psycopg2.connect` | exec |
+| `pymysql.connect` | exec |
+| `sqlalchemy.create_engine` | exec |
+
+### SDK-specific classification
+
+#### OCI (Oracle Cloud Infrastructure)
+
+| Call | Kind | Notes |
+|------|------|-------|
+| `oci.identity.IdentityClient`, `oci.core.ComputeClient`, `oci.core.VirtualNetworkClient`, `oci.object_storage.ObjectStorageClient`, `oci.database.DatabaseClient`, `oci.secrets.SecretsClient`, `oci.key_management.KmsManagementClient` | exec | Constructor calls |
+| `oci.pagination.list_call_get_all_results`, `oci.pagination.list_call_get_all_results_generator` | exec | Pagination helpers |
+| `oci.<client>.<method>()` | exec | Chained client method calls via prefix matching |
+| `oci.config.from_file(path)` | read | Config file read with path extraction |
+
+#### GitHub API (ghapi)
+
+| Call | Kind | Notes |
+|------|------|-------|
+| `ghapi.all.GhApi`, `ghapi.core.GhApi` | exec | Constructors; also tracked as instance sources |
+| `ghapi.graphql.gh_query`, `ghapi.page.paged`, `ghapi.page.pages` | exec | Query/pagination helpers |
+| `ghapi.auth.GhDeviceAuth`, `ghapi.auth.github_auth_device` | exec | Auth helpers |
+| `GhApi.create_gist`, `GhApi.create_release`, `GhApi.delete_release`, `GhApi.upload_file`, `GhApi.enable_pages` | exec | Convenience methods |
+| `ghapi.actions.create_workflow_files`, `ghapi.actions.create_workflow`, `ghapi.actions.gh_create_workflow` | write | Workflow file helpers |
+| `<instance>.<group>.<method>()` | exec | Instance variable tracking: `api = GhApi(); api.git.get_ref()` -> `ghapi.git.get_ref` |
+
+#### Atlassian (atlassian-python-api)
+
+| Call | Kind | Notes |
+|------|------|-------|
+| `Jira()`, `Confluence()`, `Bitbucket()`, `ServiceDesk()`, `Crowd()`, `Xray()`, `CloudAdminOrgs()`, `CloudAdminUsers()` | exec | Bare constructors (require `from atlassian import ...` provenance) |
+| `atlassian.Jira()`, `atlassian.confluence.Confluence()`, etc. | exec | Module-qualified constructors (always classified) |
+| `<instance>.jql()`, `<instance>.create_page()`, etc. | exec | Tracked instance methods normalized to `atlassian.<family>.<method>` |
+
+Atlassian instance tracking supports four client families (`jira`, `confluence`,
+`bitbucket`, `servicedesk`) with known method sets per family. Unrecognized
+methods on tracked instances fall back to `unknown:callable:<instance>.<method>`.
+
+### Fallback behavior
+
+| Scenario | Event |
+|----------|-------|
+| Empty source | `unknown:empty-source` |
+| Parse error | `unknown:parse-error` |
+| Source > 100 KB | `unknown:large-script` (skips analysis) |
+| Calls present but none classified | `unknown:no-classified-call` |
+| No calls detected in source | `unknown:no-calls-detected` |
+| Unrecognized call with resolvable name | `unknown:callable:<name>` |
+| Dynamic/lambda call (no resolvable name) | `unknown:dynamic-call` |
+| `open()` with dynamic mode variable | `unknown:open-mode-dynamic` |
 
 ## Runtime Behavior
 
 ### Source modes
 
-- `code`: execute inline Python via `python -c <source>`.
-- `scriptPath`: read script content first (for analysis/preview), then execute
-  file path directly.
-- exactly one of `code` or `scriptPath` must be provided.
+| Mode | Execution | When |
+|------|-----------|------|
+| `code` | `python -c <source>` | Inline Python snippets |
+| `scriptPath` | `python <path>` | Existing script files |
+
+Exactly one of `code` or `scriptPath` must be provided.
+
+### Tool arguments
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `code` | `string` | One of | -- | Inline Python source code |
+| `scriptPath` | `string` | these | -- | Path to a Python script file |
+| `args` | `string[]` | No | `[]` | Arguments passed to the Python program |
+| `workdir` | `string` | No | Project directory | Working directory for execution |
+| `timeout` | `number` | No | `120000` (2 min) | Timeout in milliseconds |
+| `description` | `string` | Yes | -- | Human-readable description for approval prompts |
+
+### Python interpreter resolution
+
+The runtime resolves a Python interpreter in this order:
+
+1. `OPENCODE_PYTHON_BIN` environment variable (if set).
+2. `$VIRTUAL_ENV/bin/python3` (if `VIRTUAL_ENV` is set and binary exists).
+3. `<worktree>/.venv/bin/python3` (if exists).
+4. `<worktree>/venv/bin/python3` (if exists).
+5. System `python3`.
 
 ### Permission asks and code preview metadata
 
-Before execution, runtime analyzes source and asks permissions with metadata:
+Before execution, the runtime analyzes source and asks permissions with metadata:
 
-- asks `external_directory` when `workdir`, `scriptPath`, or literal file paths
-  resolve outside worktree,
-- asks `python` with event-derived patterns (`read:*`, `write:*`, `exec:*`,
-  `unknown:*`),
-- includes bounded executable-source preview in ask metadata with truncation,
-  byte counters, and line counters.
+- Asks `external_directory` when `workdir`, `scriptPath`, or literal file paths
+  resolve outside the worktree.
+- Asks `python` with event-derived patterns (`read:*`, `write:*`, `exec:*`,
+  `unknown:*`).
+- Includes bounded executable-source preview in ask metadata.
 
-Current preview limits in runtime:
+#### Preview limits
 
-- max preview bytes: `4000`,
-- max preview lines: `120`,
-- truncation marker: `...<python_permission_preview_truncated>`.
+| Limit | Value |
+|-------|-------|
+| Max preview bytes | `4,000` |
+| Max preview lines | `120` |
+| Truncation marker | `...<python_permission_preview_truncated>` |
+| Max expanded bytes | `50,000` (only when preview is truncated) |
+| Max metadata output | `30,000` characters |
+| Max analysis input | `100 KB` (larger sources skip analysis) |
+
+When source exceeds the preview limit, the ask metadata includes:
+- `codePreview`: truncated preview text
+- `codePreviewTruncated`: `true`
+- `codeExpanded`: full source (only if <= 50 KB)
+- `codeExpandedAvailable`: `boolean` indicating whether expanded source was included
 
 ### Subprocess hard-fail behavior
 
-Direct `subprocess.*` invocation is rejected before any permission ask. Runtime
-returns an error that reroutes terminal/process orchestration to the `bash`
+Direct `subprocess.*` invocation is rejected **before** any permission ask. The
+runtime returns an error redirecting terminal/process orchestration to the `bash`
 tool.
 
 This keeps the `python` tool focused on Python execution and avoids blending it
 with shell orchestration behavior.
+
+### Process execution environment
+
+The spawned Python process runs with:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `PYTHONDONTWRITEBYTECODE` | `1` | Prevents `.pyc` file creation |
+| `PYTHONUNBUFFERED` | `1` | Ensures real-time stdout/stderr streaming |
+| `stdio` | `['ignore', 'pipe', 'pipe']` | stdin closed; stdout/stderr captured |
+| `detached` | `true` (non-Windows) | Enables process group cleanup on kill |
+
+### Kill behavior
+
+On timeout or abort, the runtime sends `SIGTERM` to the process group, then
+`SIGKILL` after 1 second if the process hasn't exited.
+
+### Output metadata
+
+Structured metadata is streamed incrementally as output arrives:
+
+```json
+{
+  "output": "<captured stdout+stderr>",
+  "description": "<tool description>",
+  "command": "<reconstructed command line>",
+  "cwd": "<resolved working directory>",
+  "exit": 0
+}
+```
+
+Output longer than 30,000 characters is truncated in metadata (full output is
+still returned as the tool result).
+
+Terminal conditions append `<python_metadata>` to the output:
+
+| Condition | Metadata line |
+|-----------|---------------|
+| Timeout exceeded | `python tool terminated command after exceeding timeout <ms> ms` |
+| User abort | `User aborted the command` |
+| Non-zero exit | `Exit code: <code>` |
+
+## Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `OPENCODE_PYTHON_BIN` | Override Python interpreter path | `python3` (after venv resolution) |
+| `VIRTUAL_ENV` | Standard venv activation indicator; used for interpreter resolution | -- |
 
 ## Testing and Verification
 
@@ -247,37 +565,49 @@ bun test test/python-analyze.test.ts
 # runtime-focused tests
 bun test test/python.test.ts
 
-# full suite
+# full suite (74 tests, 160 assertions)
 bun test
 ```
 
-Optional smoke check:
+Module load check:
 
 ```bash
 bun -e "import('./tool/python.ts').then(() => console.log('module loads ok'))"
 ```
 
+### Test coverage summary
+
+| Suite | Tests | Coverage |
+|-------|-------|----------|
+| **Analyzer** | ~40 | `open()` modes/paths, Path methods, os/shutil writes, json/yaml, exec builtins, network/HTTP, database, tempfile, deserialization, OCI constructors/methods/config, ghapi direct/instance/workflow, Atlassian constructors/instances/provenance, edge cases, decorators/nested contexts |
+| **Runtime** | ~34 | Arg validation (XOR, timeout, empty), subprocess hard-fail, permission patterns (read/write/exec/unknown/callable), script-file permissions, external directory detection, always patterns, ENOENT handling, workdir semantics, process execution, timeout, abort, streaming, metadata capping |
+
+> **Note:** Runtime process-execution tests require `python3` on PATH and are
+> automatically skipped if unavailable.
+
 ## Known Limitations and Tradeoffs
 
-- import alias resolution is intentionally bounded; some alias forms remain
-  `unknown:callable:<...>` instead of normalized known calls,
-- subprocess hard-fail is based on direct `subprocess.*` call identity from the
-  analyzer; alias-based subprocess forms may not be normalized,
-- very large sources are not fully analyzed (`unknown:large-script` fallback),
-- static analysis is call-pattern based and not a full data-flow sandbox,
-- metadata preview is intentionally truncated for safety/usability and does not
-  include full source in ask payload for large scripts.
+| Limitation | Details |
+|------------|---------|
+| **Import alias resolution** | Intentionally bounded. `import requests as rq; rq.get(...)` produces `unknown:callable:rq.get` instead of `exec:requests.get`. Full alias resolution requires scope analysis (deferred). |
+| **Subprocess alias bypass** | The subprocess hard-fail is based on direct `subprocess.*` call identity from the analyzer. Aliased forms (e.g., `import subprocess as sp; sp.run()`) produce a callable-unknown rather than triggering the guard. The permission deny rule provides defense-in-depth. |
+| **Large script fallback** | Sources > 100 KB skip AST analysis entirely and produce `unknown:large-script`. |
+| **Static analysis depth** | Call-pattern based, not a full data-flow sandbox. Cannot track values across assignments beyond known SDK instance patterns (ghapi, Atlassian). |
+| **Metadata preview truncation** | Permission ask preview is intentionally truncated (4 KB / 120 lines). Expanded source capped at 50 KB. Very large scripts have no source in ask payload. |
+| **OCI alias forms** | `import oci as cloud; cloud.object_storage.ObjectStorageClient(config)` produces callable-unknown. Only canonical `oci.*` prefixes are classified. |
+| **Atlassian bare constructor ambiguity** | Bare `Jira()`, `Confluence()`, etc. are only classified as Atlassian constructors when `from atlassian import ...` provenance is detected in the source. Without the import, they fall back to `unknown:callable:Jira`. |
+| **Instance tracking is position-dependent** | ghapi and Atlassian instance tracking is based on assignment order in source. Calls before the assignment or after reassignment to a non-constructor value are not tracked. |
 
-## Update / Upgrade Workflow (Sync Into Other Projects)
+## Update / Upgrade Workflow
 
 When this repo changes and you need to refresh another project:
 
 1. Pull latest changes in this repository.
 2. Re-copy core files:
    - `src/python.ts`
-   - `src/python-analyze.ts`
-   - `src/python.txt`
-   - `src/env.d.ts`
+   - `src/python/python-analyze.ts`
+   - `src/python/python.txt`
+   - `src/python/env.d.ts`
    - `.opencode/tool/python.ts`
    - `.opencode/tool/python-analyze.ts`
 3. Reconcile destination `.opencode/package.json` dependency versions.
@@ -287,3 +617,56 @@ When this repo changes and you need to refresh another project:
 
 For low-drift maintenance, keep this repository as the canonical source and
 avoid editing copied files independently in downstream projects.
+
+## Development
+
+### Project structure
+
+```
+opencode-python-tool/
+  src/
+    python.ts                    # Runtime entry point
+    python/
+      python-analyze.ts          # AST analyzer
+      python.txt                 # Tool prompt
+      env.d.ts                   # .txt module declaration
+  .opencode/
+    tool/
+      python.ts                  # Re-export wrapper
+      python-analyze.ts          # Re-export wrapper
+    test/
+      python-analyze.test.ts     # Analyzer tests
+      python.test.ts             # Runtime tests
+      fixtures/
+        context.ts               # Mock ToolContext
+    opencode.jsonc               # Permission policy
+    package.json                 # Dependencies
+  docs/                          # Plans, continuity, design docs
+  opencode/                      # Reference only (gitignored)
+```
+
+### Adding new call classifications
+
+1. Add the call pattern to the appropriate `Set` or `Record` in
+   `src/python/python-analyze.ts`.
+2. Add a classification branch in the `classify()` function if the existing
+   branches don't cover the new pattern.
+3. Add test cases in `.opencode/test/python-analyze.test.ts`.
+4. If the new pattern should be denied by default, add the corresponding
+   `exec:<pattern>` deny rule to both `.opencode/opencode.jsonc` and the
+   README's recommended configuration.
+5. Run `bun test` from `.opencode/` to validate.
+
+### Adding new SDK coverage
+
+For SDK-specific instance tracking (like ghapi/Atlassian patterns):
+
+1. Define constructor sets and method allowlists in the analyzer.
+2. Add instance tracking logic in the `analyze()` function's timeline loop.
+3. Pass the instance map to `classify()` for method resolution.
+4. Add comprehensive tests covering: direct calls, instance method calls,
+   reassignment invalidation, alias deferral, and provenance requirements.
+
+## License
+
+This project is not yet licensed. Contact the maintainer for usage terms.
