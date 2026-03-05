@@ -54,6 +54,9 @@
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Added `.opencode/test/python-analyze.test.ts` with 7 Phase 5 checks (network, DB, tempfile, deserialization, with-statement call detection, decorator/class-level detection, alias deferral).
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Validation command `bun test test/python-analyze.test.ts` passed with `7 pass, 0 fail`.
 - 2026-03-05T15:07Z [CODE] Added 'OpenCode Fork: Enhanced TUI Permission Rendering' section to README.md (lines 237-279) with stock-vs-fork comparison table, fork status, and usage options. Inserted after 'Recommended Permission Configuration' and before 'Security Rationale'.
+- 2026-03-05T15:27Z [TOOL] 2026-03-05T15:30Z Committed 3 atomic commits: (1) src/python/ refactor `6e9c72d`, (2) README rewrite `c4b42ec`, (3) PII remediation `63ef52c`. All 74 tests pass.
+- 2026-03-05T15:27Z [TOOL] 2026-03-05T15:32Z P0 completed: git-filter-repo --mailmap rewrote all 21 commits from 'Sanchez, Alvin <alvin.sanchez@claritev.com>' to 'loquilloll <loquilloll@users.noreply.github.com>'. Origin re-added.
+- 2026-03-05T15:27Z [TOOL] 2026-03-05T15:33Z P1 completed: scrubbed /home/alvins/ paths from CONTINUITY.md, MEMORY.md, python-custom-tool-plan.md, test-matrix.md. P2 completed: anonymized loquilloll/anomalyco refs in MEMORY.md.
 
 ## [DISCOVERIES]
 - 2026-02-25T16:25Z [CODE] [plan:06-callable-unknown-fallback] Existing `unknown:*` permissive allow in `buildPermissionPlan` can be narrowed safely for callable-derived unknown events by tagging analyzer fallback calls with a deterministic `callable:` prefix, while keeping parser/meta unknown markers on `unknown:*`.
@@ -83,3 +86,4 @@
 - 2026-02-25T15:47Z [TOOL] CWD workspace now contains both implementation and plan artifacts; `opencode/` remains reference-only and ignored by root git.
 - 2026-02-25T16:18Z [TOOL] [plan:05-analyzer-hardening] Phase 5 is implemented and validated; Phase 6+ intentionally not started pending user review gate.
 - 2026-02-25T16:17Z [TOOL] [plan:05-analyzer-hardening] Phase 5 analyzer hardening completed and validated without implementing Phase 6+ work.
+- 2026-03-05T15:27Z [TOOL] 2026-03-05T15:35Z PII remediation complete (P0-P3 all done). Final verification scan PASS: no real names, corporate emails, absolute home paths, GitHub account refs, or secrets in tracked files or git history. Repo is ready for public push.
