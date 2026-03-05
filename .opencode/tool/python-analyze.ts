@@ -1,1 +1,1 @@
-export * from "../../src/python-analyze"
+export * from "../../src/python/python-analyze"

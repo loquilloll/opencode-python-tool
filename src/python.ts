@@ -1,11 +1,11 @@
-/// <reference path="./env.d.ts" />
+/// <reference path="./python/env.d.ts" />
 import { tool } from "../.opencode/node_modules/@opencode-ai/plugin/dist/index.js"
 import { spawn } from "child_process"
 import { access, readFile } from "fs/promises"
 import os from "os"
 import path from "path"
-import DESCRIPTION from "./python.txt"
-import { analyze, type PythonEvent } from "./python-analyze"
+import DESCRIPTION from "./python/python.txt"
+import { analyze, type PythonEvent } from "./python/python-analyze"
 
 const DEFAULT_TIMEOUT = 2 * 60 * 1000
 const MAX_METADATA_LENGTH = 30_000

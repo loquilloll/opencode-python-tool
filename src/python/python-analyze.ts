@@ -1,4 +1,6 @@
-import { fileURLToPath } from "url"
+import { access } from "fs/promises"
+import path from "path"
+import { fileURLToPath, pathToFileURL } from "url"
 
 type Node = {
   type: string
@@ -238,14 +240,27 @@ const resolveWasm = (asset: string) => {
   return fileURLToPath(url)
 }
 
+const resolveNodeModules = async () => {
+  const dir = fileURLToPath(new URL(".", import.meta.url))
+  const candidates = [
+    path.resolve(dir, "..", "..", ".opencode", "node_modules"),
+    path.resolve(dir, "..", "..", "node_modules"),
+  ]
+  for (const candidate of candidates) {
+    if (await access(candidate).then(() => true, () => false)) return candidate
+  }
+  return candidates[0]
+}
+
 let parser: Promise<Parser> | undefined
 
 async function initParser() {
-  const tree = (await import("../.opencode/node_modules/web-tree-sitter/tree-sitter.js")) as unknown as {
+  const modules = await resolveNodeModules()
+  const tree = (await import(pathToFileURL(path.join(modules, "web-tree-sitter/tree-sitter.js")).href)) as unknown as {
     Parser: ParserCtor
     Language: LanguageCtor
   }
-  const treeWasm = (await import("../.opencode/node_modules/web-tree-sitter/tree-sitter.wasm" as string, {
+  const treeWasm = (await import(pathToFileURL(path.join(modules, "web-tree-sitter/tree-sitter.wasm")).href, {
     with: { type: "wasm" },
   })) as { default: string }
   await tree.Parser.init({
@@ -253,7 +268,7 @@ async function initParser() {
       return resolveWasm(treeWasm.default)
     },
   })
-  const pythonWasm = (await import("../.opencode/node_modules/tree-sitter-python/tree-sitter-python.wasm" as string, {
+  const pythonWasm = (await import(pathToFileURL(path.join(modules, "tree-sitter-python/tree-sitter-python.wasm")).href, {
     with: { type: "wasm" },
   })) as { default: string }
   const language = await tree.Language.load(resolveWasm(pythonWasm.default))

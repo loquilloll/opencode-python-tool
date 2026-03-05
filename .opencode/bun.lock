@@ -4,16 +4,16 @@
   "workspaces": {
     "": {
       "dependencies": {
-        "@opencode-ai/plugin": "1.2.12",
+        "@opencode-ai/plugin": "1.2.15",
         "tree-sitter-python": "0.25.0",
         "web-tree-sitter": "0.25.10",
       },
     },
   },
   "packages": {
-    "@opencode-ai/plugin": ["@opencode-ai/plugin@1.2.12", "", { "dependencies": { "@opencode-ai/sdk": "1.2.12", "zod": "4.1.8" } }, "sha512-7JI/Non1P87P73GKEGBaC6VjStTW8eCevXN0MyG+quxyA8VgnJhutgSmkRKj+3hFI8ASC52TVYJUBOsurA9Utg=="],
+    "@opencode-ai/plugin": ["@opencode-ai/plugin@1.2.15", "", { "dependencies": { "@opencode-ai/sdk": "1.2.15", "zod": "4.1.8" } }, "sha512-mh9S05W+CZZmo6q3uIEBubS66QVgiev7fRafX7vemrCfz+3pEIkSwipLjU/sxIewC9yLiDWLqS73DH/iEQzVDw=="],
 
-    "@opencode-ai/sdk": ["@opencode-ai/sdk@1.2.12", "", {}, "sha512-j5yVFoGvT3FVWJrZPWHgUcoDl38bB8gZF5NJ30PeqDPoS6kEfFIS4LzJmibNxD/rRM79C5KKgnQAQNet8JB8CQ=="],
+    "@opencode-ai/sdk": ["@opencode-ai/sdk@1.2.15", "", {}, "sha512-NUJNlyBCdZ4R0EBLjJziEQOp2XbRPJosaMcTcWSWO5XJPKGUpz0u8ql+5cR8K+v2RJ+hp2NobtNwpjEYfe6BRQ=="],
 
     "node-addon-api": ["node-addon-api@8.5.0", "", {}, "sha512-/bRZty2mXUIFY/xU5HLvveNHlswNJej+RnxBjOMkidWfwZzgTbPG1E3K5TOxRLOR+5hX7bSofy8yf1hZevMS8A=="],
 

@@ -6,6 +6,7 @@
       "exec:eval": "deny",
       "exec:exec": "deny",
       "exec:compile": "deny",
+      "exec:subprocess": "deny",
       "exec:__import__": "deny",
       "exec:os.system": "deny",
       "exec:os.popen": "deny",
