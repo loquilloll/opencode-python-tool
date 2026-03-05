@@ -109,7 +109,7 @@ metadata when truncation occurs.
 
 - `src/python.ts`
 - `.opencode/test/python.test.ts`
-- (if needed) `src/python.txt`
+- (if needed) `src/python/python.txt`
 
 **Changes**:
 

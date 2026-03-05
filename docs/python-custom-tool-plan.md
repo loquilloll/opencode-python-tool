@@ -4,8 +4,7 @@
 
 Build a no-fork `python` custom tool for OpenCode with bash-like permission controls,
 AST-based behavior classification (read/write/exec/unknown), safe defaults, and
-a comprehensive test suite. All development lives in cwd
-(`/home/alvins/Documents/pgit/opencode-python-tool`); the `./opencode` directory is
+a comprehensive test suite. All development lives in the repository root; the `./opencode` directory is
 reference-only and git-ignored.
 
 ## Constraints
@@ -24,15 +23,19 @@ reference-only and git-ignored.
 ## Architecture Overview
 
 ```
+src/
+├── python.ts                  # main tool entrypoint (imports from src/python/)
+└── python/
+    ├── env.d.ts               # *.txt module declaration
+    ├── python.txt             # LLM-facing tool description prompt
+    └── python-analyze.ts      # tree-sitter AST analyzer: classify Python code behavior
 .opencode/
-├── env.d.ts                   # *.txt module declaration
 ├── package.json               # local deps (plugin SDK, tree-sitter)
 ├── bun.lock                   # lockfile
 ├── opencode.jsonc             # permission policy
 ├── tool/
-│   ├── python.ts              # main tool: arg validation, permissions, spawn, streaming
-│   ├── python.txt             # LLM-facing tool description prompt
-│   └── python-analyze.ts      # tree-sitter AST analyzer: classify Python code behavior
+│   ├── python.ts              # OpenCode entrypoint wrapper
+│   └── python-analyze.ts      # analyzer wrapper
 └── test/
     ├── fixtures/              # shared test helpers, mock context, temp dirs
     │   └── context.ts         # mock ToolContext factory
@@ -80,7 +83,7 @@ before any behavioral code.
 **Status:** DONE (already implemented, uncommitted).
 
 **Files changed:**
-- `.opencode/env.d.ts` — `*.txt` module typing
+- `src/python/env.d.ts` — `*.txt` module typing
 - `.opencode/package.json` — dependencies:
   - `@opencode-ai/plugin` (tool SDK)
   - `web-tree-sitter` (parser runtime)

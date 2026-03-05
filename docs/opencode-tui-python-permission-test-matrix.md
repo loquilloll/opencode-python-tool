@@ -104,8 +104,8 @@ tmux-cli send 'ISO=$(mktemp -d) && mkdir -p "$ISO"/{home,config,data,state,cache
 tmux-cli send 'export OPENCODE_TEST_HOME="$ISO/home"' --pane=remote-cli-session:1.0
 tmux-cli send 'export XDG_CONFIG_HOME="$ISO/config" XDG_DATA_HOME="$ISO/data" XDG_STATE_HOME="$ISO/state" XDG_CACHE_HOME="$ISO/cache"' --pane=remote-cli-session:1.0
 tmux-cli send 'unset OPENCODE_CONFIG OPENCODE_CONFIG_DIR OPENCODE_CONFIG_CONTENT' --pane=remote-cli-session:1.0
-tmux-cli send 'cd /home/alvins/Documents/pgit/opencode-python-tool/opencode/packages/opencode' --pane=remote-cli-session:1.0
-tmux-cli send 'bun run --conditions=browser ./src/index.ts /home/alvins/Documents/pgit/opencode-python-tool' --pane=remote-cli-session:1.0
+tmux-cli send 'cd $REPO_ROOT/opencode/packages/opencode' --pane=remote-cli-session:1.0
+tmux-cli send 'bun run --conditions=browser ./src/index.ts $REPO_ROOT' --pane=remote-cli-session:1.0
 ```
 
 After TUI interactions:
