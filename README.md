@@ -75,9 +75,11 @@ flowchart TD
 | File | Purpose |
 |------|---------|
 | `src/python.ts` | Runtime entry point: arg validation, source loading, analyzer call, permission asks, subprocess guard, process execution, timeout/abort handling, metadata streaming. |
-| `src/python/python-analyze.ts` | Tree-sitter analyzer that classifies Python calls into `read \| write \| exec \| unknown` events with optional path extraction. Includes SDK-specific classification for OCI, ghapi, and Atlassian libraries. |
+| `src/python/python-analyze.ts` | Tree-sitter analyzer that classifies Python calls into `read \| write \| exec \| unknown` events with optional path extraction. Loads cached declarative rules from `src/python/python-rules.json` and keeps procedural heuristics in TypeScript. |
+| `src/python/python-rules.json` | Declarative call/method/path rule inventory consumed by the analyzer. `candidates.unknown` is review-only evidence, not live classification. |
 | `src/python/python.txt` | Tool prompt that guides model usage (`code` vs `scriptPath`, non-interactive constraints, safety behavior). |
 | `src/python/env.d.ts` | `*.txt` module typing for TypeScript imports. |
+| `src/python-session-report.ts` | Saved-session utility that re-analyzes inline Python snippets from the OpenCode SQLite database and can update `candidates.unknown` in the rules file. |
 
 ### OpenCode entrypoints (`.opencode/tool/`)
 
@@ -96,6 +98,7 @@ Thin re-export wrappers so OpenCode discovers the tool:
 | `.opencode/package.json` | Dependencies: `@opencode-ai/plugin`, `tree-sitter-python`, `web-tree-sitter`. |
 | `.opencode/test/python-analyze.test.ts` | Analyzer unit tests (13 describe blocks, comprehensive classification coverage). |
 | `.opencode/test/python.test.ts` | Runtime/integration tests (arg validation, permissions, external directory, streaming, timeout, abort). |
+| `.opencode/test/python-session-report.test.ts` | Saved-session report regression tests (scan, filtering, malformed-row handling, candidate updates). |
 | `.opencode/test/fixtures/context.ts` | Mock `ToolContext` fixture for tests. |
 
 ## Requirements
@@ -138,6 +141,7 @@ mkdir -p "$DST/.opencode/tool" "$DST/src/python"
 
 cp "$SRC/src/python.ts" "$DST/src/python.ts"
 cp "$SRC/src/python/python-analyze.ts" "$DST/src/python/python-analyze.ts"
+cp "$SRC/src/python/python-rules.json" "$DST/src/python/python-rules.json"
 cp "$SRC/src/python/python.txt" "$DST/src/python/python.txt"
 cp "$SRC/src/python/env.d.ts" "$DST/src/python/env.d.ts"
 
@@ -182,6 +186,7 @@ In addition to Option 1, copy test files and run validation:
 mkdir -p "$DST/.opencode/test/fixtures"
 cp "$SRC/.opencode/test/python-analyze.test.ts" "$DST/.opencode/test/python-analyze.test.ts"
 cp "$SRC/.opencode/test/python.test.ts" "$DST/.opencode/test/python.test.ts"
+cp "$SRC/.opencode/test/python-session-report.test.ts" "$DST/.opencode/test/python-session-report.test.ts"
 cp "$SRC/.opencode/test/fixtures/context.ts" "$DST/.opencode/test/fixtures/context.ts"
 
 cd "$DST/.opencode"
@@ -203,6 +208,7 @@ mkdir -p "$OPENCODE_HOME/tools/python"
 
 cp "$SRC/src/python.ts" "$OPENCODE_HOME/tools/python.ts"
 cp "$SRC/src/python/python-analyze.ts" "$OPENCODE_HOME/tools/python/python-analyze.ts"
+cp "$SRC/src/python/python-rules.json" "$OPENCODE_HOME/tools/python/python-rules.json"
 cp "$SRC/src/python/python.txt" "$OPENCODE_HOME/tools/python/python.txt"
 cp "$SRC/src/python/env.d.ts" "$OPENCODE_HOME/tools/python/env.d.ts"
 ```
@@ -584,7 +590,28 @@ Terminal conditions append `<python_metadata>` to the output:
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `OPENCODE_PYTHON_BIN` | Override Python interpreter path | `python3` (after venv resolution) |
+| `OPENCODE_PYTHON_RULES` | Override analyzer rules JSON path | bundled `src/python/python-rules.json` |
 | `VIRTUAL_ENV` | Standard venv activation indicator; used for interpreter resolution | -- |
+
+## JSON Rules and Session Report
+
+- The analyzer loads declarative rule data from `src/python/python-rules.json` by default. Set `OPENCODE_PYTHON_RULES` to point at a different rules file.
+- `src/python-session-report.ts` scans saved OpenCode sessions, re-analyzes inline `state.input.code`, and skips `scriptPath` entries.
+- `--update-candidates` only updates `candidates.unknown` in the rules JSON. It does not automatically change live `methods`, `calls`, or `pathCalls` classifier buckets.
+- Candidate updates are deterministic by callable name and keep bounded example session IDs.
+
+Example report commands:
+
+```bash
+cd .opencode
+bundle="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db"
+
+bun run ../src/python-session-report.ts --db "$bundle"
+bun run ../src/python-session-report.ts --db "$bundle" --since 2026-03-01T00:00:00Z --samples 5
+bun run ../src/python-session-report.ts --db "$bundle" --json
+bun run ../src/python-session-report.ts --db "$bundle" --update-candidates
+bun run ../src/python-session-report.ts --db "$bundle" --rules ../src/python/python-rules.json --update-candidates
+```
 
 ## Testing and Verification
 
@@ -594,10 +621,13 @@ Run from `.opencode/`:
 # analyzer-focused tests
 bun test test/python-analyze.test.ts
 
+# report utility tests
+bun test test/python-session-report.test.ts
+
 # runtime-focused tests
 bun test test/python.test.ts
 
-# full suite (74 tests, 160 assertions)
+# full suite
 bun test
 ```
 
@@ -613,6 +643,13 @@ Global install smoke check:
 OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
 cd "$OPENCODE_HOME"
 bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok'))"
+```
+
+Session report smoke check:
+
+```bash
+cd .opencode
+bun run ../src/python-session-report.ts --help
 ```
 
 ### Test coverage summary
@@ -648,14 +685,17 @@ When this repo changes, use one of these refresh paths.
 2. Re-copy core files:
    - `src/python.ts`
    - `src/python/python-analyze.ts`
+   - `src/python/python-rules.json`
    - `src/python/python.txt`
    - `src/python/env.d.ts`
    - `.opencode/tool/python.ts`
    - `.opencode/tool/python-analyze.ts`
+   - Optional for operators: `src/python-session-report.ts`
 3. Reconcile destination `.opencode/package.json` dependency versions.
 4. Run `bun install` in destination `.opencode/`.
 5. (If tests are installed) run `bun test` in destination `.opencode/`.
 6. Re-validate permission policy contains recommended denies + asks.
+7. If you use candidate updates downstream, reconcile `src/python/python-rules.json` before overwriting local edits.
 
 ### Global refresh (`~/.config/opencode/tools`)
 
@@ -663,12 +703,15 @@ When this repo changes, use one of these refresh paths.
 2. Re-copy core files:
    - `src/python.ts` -> `tools/python.ts`
    - `src/python/python-analyze.ts` -> `tools/python/python-analyze.ts`
+   - `src/python/python-rules.json` -> `tools/python/python-rules.json`
    - `src/python/python.txt` -> `tools/python/python.txt`
    - `src/python/env.d.ts` -> `tools/python/env.d.ts`
+   - Optional for operators: `src/python-session-report.ts` -> `tools/python-session-report.ts`
 3. Ensure `tools/python.ts` imports the plugin from `@opencode-ai/plugin`.
 4. Run `bun install` in `~/.config/opencode`.
 5. Run module-load smoke check:
-   - `bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok'))"`
+    - `bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok'))"`
+6. If you use candidate updates globally, reconcile `tools/python/python-rules.json` before overwriting local edits.
 
 For low-drift maintenance, keep this repository as the canonical source and
 avoid editing copied files independently in downstream projects.
@@ -681,8 +724,10 @@ avoid editing copied files independently in downstream projects.
 opencode-python-tool/
   src/
     python.ts                    # Runtime entry point
+    python-session-report.ts     # Saved-session reporting utility
     python/
       python-analyze.ts          # AST analyzer
+      python-rules.json          # Declarative classifier rules
       python.txt                 # Tool prompt
       env.d.ts                   # .txt module declaration
   .opencode/
@@ -691,6 +736,7 @@ opencode-python-tool/
       python-analyze.ts          # Re-export wrapper
     test/
       python-analyze.test.ts     # Analyzer tests
+      python-session-report.test.ts # Report utility tests
       python.test.ts             # Runtime tests
       fixtures/
         context.ts               # Mock ToolContext
@@ -702,15 +748,14 @@ opencode-python-tool/
 
 ### Adding new call classifications
 
-1. Add the call pattern to the appropriate `Set` or `Record` in
-   `src/python/python-analyze.ts`.
-2. Add a classification branch in the `classify()` function if the existing
-   branches don't cover the new pattern.
-3. Add test cases in `.opencode/test/python-analyze.test.ts`.
-4. If the new pattern should be denied by default, add the corresponding
+1. Add declarative call, method, or path rules to `src/python/python-rules.json` when the pattern fits the existing rule model.
+2. Use `bun run ../src/python-session-report.ts --update-candidates` from `.opencode/` to gather unknown-call evidence into `candidates.unknown`, then manually promote reviewed entries into live rule buckets.
+3. Edit `src/python/python-analyze.ts` only when the new behavior needs procedural logic or heuristics beyond the JSON rule model.
+4. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.
+5. If the new pattern should be denied by default, add the corresponding
    `exec:<pattern>` deny rule to both `.opencode/opencode.jsonc` and the
    README's recommended configuration.
-5. Run `bun test` from `.opencode/` to validate.
+6. Run `bun test` from `.opencode/` to validate.
 
 ### Adding new SDK coverage
 

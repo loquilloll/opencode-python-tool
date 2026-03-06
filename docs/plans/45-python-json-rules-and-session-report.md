@@ -1,11 +1,11 @@
 ---
 title: JSON-Backed Python Rules and Session Report Plan
-status: in-progress
+status: done
 plan: 45-python-json-rules-and-session-report
 created: 2026-03-06
 tags:
   - type/plan
-  - status/in-progress
+  - status/done
   - project/opencode-python-tool
   - topic/python-analyzer
   - topic/session-report
@@ -290,7 +290,7 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 - Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `docs/plans/45-python-json-rules-and-session-report.md`
 - Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test test/python-analyze.test.ts test/python-session-report.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --help`
 - Follow-ups: Phase 5 should document `--update-candidates` usage and refresh/copy steps for `src/python/python-rules.json`.
-- Commit: Not committed
+- Commit: `89902a5`
 - PR/Jira: None
 
 ### Phase 5 - Document the operator workflow
@@ -318,6 +318,16 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 
 - `docs: add json-backed python rules workflow`
 
+#### Notes
+
+- Status: Done (2026-03-06)
+- Summary: Documented the JSON-backed analyzer workflow in `README.md`, including rules-file copying, session-report usage, candidate-update behavior, refreshed test commands, and the JSON-first classifier maintenance flow.
+- Files: `README.md`, `docs/plans/45-python-json-rules-and-session-report.md`
+- Tests: `cd .opencode && bun test`; `cd .opencode && bun -e "import('./tool/python.ts').then(() => console.log('module loads ok'))"`; `cd .opencode && bun run ../src/python-session-report.ts --help`
+- Follow-ups: None
+- Commit: Not committed
+- PR/Jira: None
+
 ## Acceptance Criteria
 
 - Declarative analyzer rules are loaded from `src/python/python-rules.json` instead of being hardcoded in TypeScript.
@@ -344,4 +354,4 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 - Phase 2: DONE (2026-03-06)
 - Phase 3: DONE (2026-03-06)
 - Phase 4: DONE (2026-03-06)
-- Phase 5: TODO
+- Phase 5: DONE (2026-03-06)
