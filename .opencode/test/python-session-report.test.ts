@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdtemp, readFile, rm, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
-import { render, scan, update } from "../../src/python-session-report"
+import { recordDecision, render, review, scan, update } from "../../src/python-session-report"
 
 async function db() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "python-session-report-"))
@@ -317,6 +317,7 @@ describe("python session report", () => {
               skippedRows: 0,
             },
             unknown: [],
+            occurrences: [],
           },
           { rules, samples: 3 },
         ),
@@ -352,10 +353,111 @@ describe("python session report", () => {
               skippedRows: 0,
             },
             unknown: [],
+            occurrences: [],
           },
           { rules, samples: 3 },
         ),
       ).rejects.toThrow(/^Invalid python rules candidates:/)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("builds a snippet-centric review queue and reuses prior decisions", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const code = "rq.get('x')\nwriter.append('y')"
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000), ('s2', 'Beta', 3000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code }),
+      })
+      put(tmp.db, {
+        id: "p2",
+        messageID: "m2",
+        sessionID: "s2",
+        created: 2000,
+        updated: 3000,
+        data: data("python", { code }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const initial = await review(report, { ledger })
+      expect(initial.totals.snippets).toBe(1)
+      expect(initial.totals.pendingCandidates).toBe(2)
+      expect(initial.snippets[0]?.code).toBe(code)
+      expect(initial.snippets[0]?.occurrences).toHaveLength(2)
+
+      const rq = initial.snippets[0]?.candidates.find((item) => item.call === "rq.get")
+      const append = initial.snippets[0]?.candidates.find((item) => item.call === "writer.append")
+      expect(rq?.readConfidence).toBeGreaterThan(rq?.writeConfidence ?? 1)
+      expect(append?.writeConfidence).toBeGreaterThan(append?.readConfidence ?? 1)
+
+      await recordDecision({ ledger, fingerprint: rq!.fingerprint, decision: "read", call: rq!.call })
+
+      const merged = await review(report, { ledger })
+      const decided = merged.snippets[0]?.candidates.find((item) => item.call === "rq.get")
+      const pending = merged.snippets[0]?.candidates.find((item) => item.call === "writer.append")
+      expect(merged.totals.snippets).toBe(1)
+      expect(merged.totals.pendingCandidates).toBe(1)
+      expect(merged.totals.decidedCandidates).toBe(1)
+      expect(decided?.decision).toBe("read")
+      expect(pending?.decision).toBeUndefined()
+
+      const ledgerData = JSON.parse(await readFile(ledger, "utf8")) as Record<string, any>
+      expect(ledgerData.decisions).toEqual([
+        expect.objectContaining({
+          fingerprint: rq?.fingerprint,
+          call: "rq.get",
+          decision: "read",
+        }),
+      ])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps the same callable reviewable across different snippet contexts", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000), ('s2', 'Beta', 3000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get(source_path)" }),
+      })
+      put(tmp.db, {
+        id: "p2",
+        messageID: "m2",
+        sessionID: "s2",
+        created: 2000,
+        updated: 3000,
+        data: data("python", { code: "rq.get(target_path)\nwriter.append('y')" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const initial = await review(report, { ledger })
+      const first = initial.snippets.find((item) => item.code === "rq.get(source_path)")
+      const second = initial.snippets.find((item) => item.code === "rq.get(target_path)\nwriter.append('y')")
+      await recordDecision({ ledger, fingerprint: first!.candidates[0]!.fingerprint, decision: "read", call: "rq.get" })
+
+      const merged = await review(report, { ledger })
+      const pending = merged.snippets.find((item) => item.code === second!.code)
+      const unresolved = pending?.candidates.find((item) => item.call === "rq.get")
+      expect(unresolved?.decision).toBeUndefined()
     } finally {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })

@@ -328,6 +328,16 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 - Commit: Not committed
 - PR/Jira: None
 
+#### Notes
+
+- Status: Done (2026-03-06)
+- Summary: Added a standalone operator guide for running `src/python-session-report.ts` from this repo against global OpenCode session and rules paths, including candidate-update, promotion, and validation steps.
+- Files: `docs/python-session-report-operator-guide.md`, `docs/plans/45-python-json-rules-and-session-report.md`
+- Tests: Not run
+- Follow-ups: None
+- Commit: Not committed
+- PR/Jira: None
+
 ## Acceptance Criteria
 
 - Declarative analyzer rules are loaded from `src/python/python-rules.json` instead of being hardcoded in TypeScript.
