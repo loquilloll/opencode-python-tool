@@ -190,6 +190,38 @@ bun test test/python.test.ts
 bun test
 ```
 
+### Option 3: Global OpenCode install (`~/.config/opencode`)
+
+Use this when your custom tools live in the global OpenCode config instead of a
+project-local `.opencode/` folder.
+
+```bash
+SRC="/path/to/opencode-python-tool"
+OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
+
+mkdir -p "$OPENCODE_HOME/tools/python"
+
+cp "$SRC/src/python.ts" "$OPENCODE_HOME/tools/python.ts"
+cp "$SRC/src/python/python-analyze.ts" "$OPENCODE_HOME/tools/python/python-analyze.ts"
+cp "$SRC/src/python/python.txt" "$OPENCODE_HOME/tools/python/python.txt"
+cp "$SRC/src/python/env.d.ts" "$OPENCODE_HOME/tools/python/env.d.ts"
+```
+
+Global installs use package-based imports. Ensure this line exists in
+`$OPENCODE_HOME/tools/python.ts`:
+
+```ts
+import { tool } from "@opencode-ai/plugin"
+```
+
+Then install dependencies and smoke-check:
+
+```bash
+cd "$OPENCODE_HOME"
+bun install
+bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok'))"
+```
+
 ## Recommended Permission Configuration
 
 Add these rules under `permission` in your OpenCode config (`opencode.jsonc`):
@@ -575,6 +607,14 @@ Module load check:
 bun -e "import('./tool/python.ts').then(() => console.log('module loads ok'))"
 ```
 
+Global install smoke check:
+
+```bash
+OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
+cd "$OPENCODE_HOME"
+bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok'))"
+```
+
 ### Test coverage summary
 
 | Suite | Tests | Coverage |
@@ -600,7 +640,9 @@ bun -e "import('./tool/python.ts').then(() => console.log('module loads ok'))"
 
 ## Update / Upgrade Workflow
 
-When this repo changes and you need to refresh another project:
+When this repo changes, use one of these refresh paths.
+
+### Project-local refresh (`<repo>/.opencode` + `src/`)
 
 1. Pull latest changes in this repository.
 2. Re-copy core files:
@@ -614,6 +656,19 @@ When this repo changes and you need to refresh another project:
 4. Run `bun install` in destination `.opencode/`.
 5. (If tests are installed) run `bun test` in destination `.opencode/`.
 6. Re-validate permission policy contains recommended denies + asks.
+
+### Global refresh (`~/.config/opencode/tools`)
+
+1. Pull latest changes in this repository.
+2. Re-copy core files:
+   - `src/python.ts` -> `tools/python.ts`
+   - `src/python/python-analyze.ts` -> `tools/python/python-analyze.ts`
+   - `src/python/python.txt` -> `tools/python/python.txt`
+   - `src/python/env.d.ts` -> `tools/python/env.d.ts`
+3. Ensure `tools/python.ts` imports the plugin from `@opencode-ai/plugin`.
+4. Run `bun install` in `~/.config/opencode`.
+5. Run module-load smoke check:
+   - `bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok'))"`
 
 For low-drift maintenance, keep this repository as the canonical source and
 avoid editing copied files independently in downstream projects.

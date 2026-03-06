@@ -10,6 +10,7 @@
 - 2026-02-25T16:18Z [USER] [plan:05-phasewise-review] Requested phase-by-phase implementation via `@general` agents with a review stop after each phase.
 - 2026-02-25T16:17Z [USER] [plan:05-analyzer-hardening] Implement Phase 5 only from `docs/python-custom-tool-plan.md` in `.opencode/tool/python-analyze.ts`, add/adjust analyzer tests for network/db/tempfile/deserialization + with/decorator/class detection, and keep import-alias resolution deferred.
 - 2026-03-05T19:45Z [USER] [plan:42-python-tool-output-visibility] Requested writing the Python output-visibility implementation plan to a markdown file.
+- 2026-03-05T22:00Z [USER] [plan:43-readme-global-install-docs] Requested read-only planning for minimal README.md edits that help users update global OpenCode Python tool installs, including exact section names, rationale, and verification command snippets.
 
 ## [DECISIONS]
 - 2026-02-27T13:15Z [CODE] [plan:26-tui-pr-plan-review] External_directory asks from Python will get a dedicated sub-case rendering Python context (mode/description/source) alongside directory info, detected via `metadata.mode` presence.
@@ -23,6 +24,7 @@
 - 2026-03-05T19:49Z [USER] [plan:42-python-tool-output-visibility] Scope narrowed to CLI TUI only; exclude web UI changes for this plan.
 - 2026-03-05T21:27Z [CODE] [plan:42-python-tool-output-visibility] Phase 2 uses pure helper extraction (`python-output.ts`) to unit-test Python TUI renderer behavior without component harnessing; `index.tsx` now consumes helper outputs for command/output/visibility/readiness/limit logic.
 - 2026-03-05T21:42Z [CODE] [plan:42-python-tool-output-visibility] Phase 2 commit was scoped to Python output renderer/helper/test files only; existing unrelated changes in `packages/opencode/src/cli/cmd/tui/routes/session/permission.tsx` were intentionally excluded from staging.
+- 2026-03-05T22:03Z [CODE] README install docs now explicitly cover global OpenCode deployments under `~/.config/opencode/tools` and require `@opencode-ai/plugin` import in `tools/python.ts` for global module resolution.
 
 ## [PROGRESS]
 - 2026-02-25T20:39Z [TOOL] [plan:15-phase11-oci-coverage] Updated `.opencode/tool/python-analyze.ts` with `OCI_EXEC_CALLS` and `OCI_CLIENT_METHOD_PREFIXES`, added OCI exec classification for known SDK entrypoints and chained constructor->method calls, and added `oci.config.from_file` read classification with first positional or `file_location` argument path extraction.
@@ -71,6 +73,10 @@
 - 2026-03-05T21:22Z [TOOL] [plan:42-python-tool-output-visibility] Completed read-only Phase 2 planning analysis for Python TUI renderer using `session/index.tsx`, existing test suites, and plan doc; prepared low-risk options and concrete test matrix.
 - 2026-03-05T21:27Z [TOOL] [plan:42-python-tool-output-visibility] Implemented Phase 2 by adding `opencode/packages/opencode/src/cli/cmd/tui/routes/session/python-output.ts`, wiring `index.tsx` to helper functions, and adding focused tests at `opencode/packages/opencode/test/cli/tui/python-output.test.ts`.
 - 2026-03-05T21:42Z [TOOL] [plan:42-python-tool-output-visibility] Created opencode commit `660893e` (`test(tui): add python output visibility helper coverage`) with changes in `session/index.tsx`, new `session/python-output.ts`, and new `test/cli/tui/python-output.test.ts`.
+- 2026-03-05T21:58Z [TOOL] Synced latest Python tool runtime/analyzer/prompt files from this repo (`src/python.ts`, `src/python/python-analyze.ts`, `src/python/python.txt`, `src/python/env.d.ts`) into global OpenCode config at `~/.config/opencode/tools/`.
+- 2026-03-05T22:03Z [TOOL] Updated `README.md` with a new global install option, global smoke-check commands in Testing/Verification, and split Update/Upgrade Workflow paths for project-local vs global refresh.
+- 2026-03-05T22:27Z [TOOL] Pushed root repository branch `main` to `origin` (`b55cb7a..2e1ea67`) and set upstream tracking (`origin/main`).
+- 2026-03-05T22:27Z [TOOL] Pushed nested `opencode` repository branch `dev` to `origin` (`715b844..4958e69`); pre-push hook ran `bun turbo typecheck` and completed successfully.
 
 ## [DISCOVERIES]
 - 2026-02-25T16:25Z [CODE] [plan:06-callable-unknown-fallback] Existing `unknown:*` permissive allow in `buildPermissionPlan` can be narrowed safely for callable-derived unknown events by tagging analyzer fallback calls with a deterministic `callable:` prefix, while keeping parser/meta unknown markers on `unknown:*`.
@@ -120,3 +126,7 @@
 - 2026-03-05T21:22Z [TOOL] [plan:42-python-tool-output-visibility] Prepared recommended Phase 2 approach: extract/test pure Python renderer helpers, add focused Bun tests for precedence/inline-script/empty-long output behavior, and update plan/docs notes with validation commands and acceptance mapping.
 - 2026-03-05T21:27Z [TOOL] [plan:42-python-tool-output-visibility] Plan 42 is complete: both phases are done, focused validation passed (`bun test test/cli/tui/python-output.test.ts test/permission-python.test.ts`, `bun run typecheck`), and no new commit was created for Phase 2.
 - 2026-03-05T21:42Z [TOOL] [plan:42-python-tool-output-visibility] Plan 42 is implemented in two commits: Phase 1 `806ee27` and Phase 2 `660893e`; focused validation remains green and `permission.tsx` local edits remain uncommitted/out-of-scope.
+- 2026-03-05T21:58Z [TOOL] Updated global Python tool import path in `~/.config/opencode/tools/python.ts` to `@opencode-ai/plugin` and verified load success with `cd ~/.config/opencode && bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok'))"`.
+- 2026-03-05T22:00Z [TOOL] [plan:43-readme-global-install-docs] Reviewed README.md install and update sections and prepared minimal documentation edit recommendations focused on global install update workflow under ~/.config/opencode without modifying files.
+- 2026-03-05T22:03Z [TOOL] Documentation now includes copy/install/verify commands for global Python tool sync (`~/.config/opencode`) and reduces ambiguity between `.opencode/tool` wrapper installs and direct `tools/` global installs.
+- 2026-03-05T22:27Z [TOOL] Remote push succeeded for both repositories; root working tree still has uncommitted documentation edits in `README.md` and `docs/CONTINUITY.md` that were not included in the push.
