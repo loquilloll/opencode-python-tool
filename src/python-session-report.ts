@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite"
 import os from "os"
 import path from "path"
+import { fileURLToPath } from "url"
 import { analyze } from "./python/python-analyze"
 
 type Opts = {
@@ -8,6 +9,8 @@ type Opts = {
   since?: number
   json: boolean
   samples: number
+  rules: string
+  update: boolean
   help: boolean
 }
 
@@ -76,14 +79,30 @@ export type Report = {
   }>
 }
 
+type Candidate = {
+  call: string
+  count: number
+  lastSeen: string
+  examples: string[]
+}
+
+type RulesDoc = {
+  candidates?: {
+    unknown?: Candidate[]
+  }
+  [key: string]: unknown
+}
+
 function usage() {
   return [
     "Usage: bun src/python-session-report.ts [options]",
     "",
     "Options:",
     "  --db <path>      Override OpenCode session database path",
+    "  --rules <path>   Override python rules JSON path",
     "  --since <iso>    Only scan rows updated at or after this ISO timestamp",
     "  --samples <n>    Sample sessions/previews per unknown callable (default: 3)",
+    "  --update-candidates  Write findings into candidates.unknown",
     "  --json           Emit JSON instead of text",
     "  --help           Show this message",
   ].join("\n")
@@ -96,6 +115,10 @@ function fail(msg: string): never {
 function defdb() {
   const root = process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share")
   return path.join(root, "opencode", "opencode.db")
+}
+
+function defrules() {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "python", "python-rules.json")
 }
 
 function when(time: number) {
@@ -132,6 +155,8 @@ export function parse(args: string[]) {
     db: defdb(),
     json: false,
     samples: 3,
+    rules: defrules(),
+    update: false,
     help: false,
   }
 
@@ -145,10 +170,20 @@ export function parse(args: string[]) {
       opts.json = true
       continue
     }
+    if (arg === "--update-candidates") {
+      opts.update = true
+      continue
+    }
     if (arg === "--db") {
       const val = args[++i]
       if (!val) fail("Missing value for --db")
       opts.db = path.resolve(val)
+      continue
+    }
+    if (arg === "--rules") {
+      const val = args[++i]
+      if (!val) fail("Missing value for --rules")
+      opts.rules = path.resolve(val)
       continue
     }
     if (arg === "--samples") {
@@ -297,6 +332,63 @@ export async function scan(opts: { db: string; since?: number; samples?: number 
   }
 }
 
+function entry(item: Report["unknown"][number], sample: number): Candidate {
+  return {
+    call: item.call,
+    count: item.count,
+    lastSeen: item.lastSeen,
+    examples: [...new Set(item.samples.map((sample) => sample.sessionID))].sort().slice(0, sample),
+  }
+}
+
+export async function update(report: Report, opts: { rules: string; samples?: number }) {
+  const file = Bun.file(opts.rules)
+  if (!(await file.exists())) fail(`Python rules file not found: ${opts.rules}`)
+
+  let doc: RulesDoc
+  try {
+    doc = (JSON.parse(await file.text()) as RulesDoc) ?? {}
+  } catch {
+    fail(`Invalid python rules JSON: ${opts.rules}`)
+  }
+
+  const sample = opts.samples ?? 3
+  const known = new Map<string, Candidate>()
+  if (doc.candidates !== undefined && (typeof doc.candidates !== "object" || doc.candidates === null || Array.isArray(doc.candidates))) {
+    fail(`Invalid python rules candidates: ${opts.rules}`)
+  }
+  const items = doc.candidates?.unknown
+  if (items !== undefined && !Array.isArray(items)) fail(`Invalid python rules candidates: ${opts.rules}`)
+  for (const item of items ?? []) {
+    if (!item || typeof item.call !== "string") continue
+    known.set(item.call, {
+      call: item.call,
+      count: typeof item.count === "number" ? item.count : 0,
+      lastSeen: typeof item.lastSeen === "string" ? item.lastSeen : new Date(0).toISOString(),
+      examples: Array.isArray(item.examples) ? item.examples.filter((item) => typeof item === "string") : [],
+    })
+  }
+
+  for (const item of report.unknown) {
+    const prev = known.get(item.call)
+    const next = entry(item, sample)
+    if (!prev) {
+      known.set(item.call, next)
+      continue
+    }
+    known.set(item.call, {
+      call: item.call,
+      count: prev.count + next.count,
+      lastSeen: prev.lastSeen > next.lastSeen ? prev.lastSeen : next.lastSeen,
+      examples: [...new Set([...prev.examples, ...next.examples])].sort().slice(0, sample),
+    })
+  }
+
+  doc.candidates = doc.candidates ?? {}
+  doc.candidates.unknown = [...known.values()].sort((a, b) => a.call.localeCompare(b.call))
+  await Bun.write(opts.rules, `${JSON.stringify(doc, null, 2)}\n`)
+}
+
 export function render(report: Report) {
   const out = [
     `Database: ${report.db}`,
@@ -333,6 +425,7 @@ export async function main(args = process.argv.slice(2)) {
     since: opts.since,
     samples: opts.samples,
   })
+  if (opts.update) await update(report, { rules: opts.rules, samples: opts.samples })
   console.log(opts.json ? JSON.stringify(report, null, 2) : render(report))
 }
 

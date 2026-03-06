@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdtemp, rm } from "fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
-import { render, scan } from "../../src/python-session-report"
+import { render, scan, update } from "../../src/python-session-report"
 
 async function db() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "python-session-report-"))
@@ -236,5 +236,129 @@ describe("python session report", () => {
     await expect(scan({ db: path.join(os.tmpdir(), `missing-${Date.now()}.db`) })).rejects.toThrow(
       /^OpenCode session database not found:/,
     )
+  })
+
+  it("updates candidate rules deterministically", async () => {
+    const tmp = await db()
+    const rules = path.join(tmp.dir, "python-rules.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000), ('s2', 'Beta', 3000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "zeta.call()" }),
+      })
+      put(tmp.db, {
+        id: "p2",
+        messageID: "m2",
+        sessionID: "s2",
+        created: 2000,
+        updated: 3000,
+        data: data("python", { code: "alpha.call()" }),
+      })
+
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      const base = JSON.parse(await readFile(src, "utf8")) as Record<string, any>
+      base.candidates = {
+        unknown: [{ call: "zeta.call", count: 1, lastSeen: new Date(1000).toISOString(), examples: ["s0"] }],
+      }
+      await writeFile(rules, JSON.stringify(base))
+
+      const report = await scan({ db: tmp.file, samples: 2 })
+      await update(report, { rules, samples: 2 })
+
+      const next = JSON.parse(await readFile(rules, "utf8")) as Record<string, any>
+      expect(next.candidates.unknown).toEqual([
+        {
+          call: "alpha.call",
+          count: 1,
+          lastSeen: new Date(3000).toISOString(),
+          examples: ["s2"],
+        },
+        {
+          call: "zeta.call",
+          count: 2,
+          lastSeen: new Date(2000).toISOString(),
+          examples: ["s0", "s1"],
+        },
+      ])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("fails clearly for malformed candidate shapes", async () => {
+    const tmp = await db()
+    const rules = path.join(tmp.dir, "python-rules.json")
+
+    try {
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      const base = JSON.parse(await readFile(src, "utf8")) as Record<string, any>
+      base.candidates = { unknown: {} }
+      await writeFile(rules, JSON.stringify(base))
+
+      await expect(
+        update(
+          {
+            generatedAt: new Date(0).toISOString(),
+            db: tmp.file,
+            filters: { samples: 3 },
+            totals: {
+              sessions: 0,
+              toolParts: 0,
+              inlineSnippets: 0,
+              unknownEvents: 0,
+              uniqueUnknownCalls: 0,
+              skippedRows: 0,
+            },
+            unknown: [],
+          },
+          { rules, samples: 3 },
+        ),
+      ).rejects.toThrow(/^Invalid python rules candidates:/)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("fails clearly for malformed candidate containers", async () => {
+    const tmp = await db()
+    const rules = path.join(tmp.dir, "python-rules.json")
+
+    try {
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      const base = JSON.parse(await readFile(src, "utf8")) as Record<string, any>
+      base.candidates = 1
+      await writeFile(rules, JSON.stringify(base))
+
+      await expect(
+        update(
+          {
+            generatedAt: new Date(0).toISOString(),
+            db: tmp.file,
+            filters: { samples: 3 },
+            totals: {
+              sessions: 0,
+              toolParts: 0,
+              inlineSnippets: 0,
+              unknownEvents: 0,
+              uniqueUnknownCalls: 0,
+              skippedRows: 0,
+            },
+            unknown: [],
+          },
+          { rules, samples: 3 },
+        ),
+      ).rejects.toThrow(/^Invalid python rules candidates:/)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
   })
 })

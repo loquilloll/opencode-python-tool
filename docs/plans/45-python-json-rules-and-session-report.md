@@ -255,7 +255,7 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 - Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `docs/plans/45-python-json-rules-and-session-report.md`
 - Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test test/python-analyze.test.ts test/python-session-report.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --help`
 - Follow-ups: Phase 4 can build on this utility by writing findings into `src/python/python-rules.json` candidates.
-- Commit: Not committed
+- Commit: `eb9cb7f`
 - PR/Jira: None
 
 ### Phase 4 - Add JSON update mode for report findings
@@ -282,6 +282,16 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 **Commit message:**
 
 - `feat: let session report update python rule candidates`
+
+#### Notes
+
+- Status: Done (2026-03-06)
+- Summary: Added explicit `--update-candidates` and `--rules` modes so `src/python-session-report.ts` can merge unknown-call findings into `candidates.unknown` with deterministic ordering, bounded examples, and malformed-shape validation.
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `docs/plans/45-python-json-rules-and-session-report.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test test/python-analyze.test.ts test/python-session-report.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --help`
+- Follow-ups: Phase 5 should document `--update-candidates` usage and refresh/copy steps for `src/python/python-rules.json`.
+- Commit: Not committed
+- PR/Jira: None
 
 ### Phase 5 - Document the operator workflow
 
@@ -333,5 +343,5 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 - Phase 1: DONE (2026-03-06)
 - Phase 2: DONE (2026-03-06)
 - Phase 3: DONE (2026-03-06)
-- Phase 4: TODO
+- Phase 4: DONE (2026-03-06)
 - Phase 5: TODO
