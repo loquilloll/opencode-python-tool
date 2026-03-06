@@ -598,20 +598,28 @@ Terminal conditions append `<python_metadata>` to the output:
 - The analyzer loads declarative rule data from `src/python/python-rules.json` by default. Set `OPENCODE_PYTHON_RULES` to point at a different rules file.
 - `src/python-session-report.ts` scans saved OpenCode sessions, re-analyzes inline `state.input.code`, and skips `scriptPath` entries.
 - `--update-candidates` only updates `candidates.unknown` in the rules JSON. It does not automatically change live `methods`, `calls`, or `pathCalls` classifier buckets.
-- Candidate updates are deterministic by callable name and keep bounded example session IDs.
+- `--review-next` and `--decide` provide a snippet-centric human review loop backed by a sidecar ledger.
+- `--promote-reviewed` promotes consistently reviewed callables into `calls.read`, `calls.write`, or `calls.exec`.
+- `src/python-session-report.ts` is an operator utility run from this repo checkout; it is not an OpenCode tool that belongs in `~/.config/opencode/tools/`.
 
 Example report commands:
 
 ```bash
 cd .opencode
 bundle="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db"
+ledger="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-review.json"
 
 bun run ../src/python-session-report.ts --db "$bundle"
 bun run ../src/python-session-report.ts --db "$bundle" --since 2026-03-01T00:00:00Z --samples 5
 bun run ../src/python-session-report.ts --db "$bundle" --json
 bun run ../src/python-session-report.ts --db "$bundle" --update-candidates
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --decide 1=read,2=write
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --rules ../src/python/python-rules.json --promote-reviewed
 bun run ../src/python-session-report.ts --db "$bundle" --rules ../src/python/python-rules.json --update-candidates
 ```
+
+Use a full scan for `--promote-reviewed`; it intentionally rejects `--since` so older unresolved contexts cannot be skipped during promotion.
 
 ## Testing and Verification
 
@@ -690,7 +698,6 @@ When this repo changes, use one of these refresh paths.
    - `src/python/env.d.ts`
    - `.opencode/tool/python.ts`
    - `.opencode/tool/python-analyze.ts`
-   - Optional for operators: `src/python-session-report.ts`
 3. Reconcile destination `.opencode/package.json` dependency versions.
 4. Run `bun install` in destination `.opencode/`.
 5. (If tests are installed) run `bun test` in destination `.opencode/`.
@@ -706,12 +713,11 @@ When this repo changes, use one of these refresh paths.
    - `src/python/python-rules.json` -> `tools/python/python-rules.json`
    - `src/python/python.txt` -> `tools/python/python.txt`
    - `src/python/env.d.ts` -> `tools/python/env.d.ts`
-   - Optional for operators: `src/python-session-report.ts` -> `tools/python-session-report.ts`
 3. Ensure `tools/python.ts` imports the plugin from `@opencode-ai/plugin`.
 4. Run `bun install` in `~/.config/opencode`.
 5. Run module-load smoke check:
     - `bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok'))"`
-6. If you use candidate updates globally, reconcile `tools/python/python-rules.json` before overwriting local edits.
+6. If you use the session-report workflow with a global install, run the repo's `src/python-session-report.ts` against `tools/python/python-rules.json` rather than copying the utility into `tools/`.
 
 For low-drift maintenance, keep this repository as the canonical source and
 avoid editing copied files independently in downstream projects.
@@ -749,13 +755,14 @@ opencode-python-tool/
 ### Adding new call classifications
 
 1. Add declarative call, method, or path rules to `src/python/python-rules.json` when the pattern fits the existing rule model.
-2. Use `bun run ../src/python-session-report.ts --update-candidates` from `.opencode/` to gather unknown-call evidence into `candidates.unknown`, then manually promote reviewed entries into live rule buckets.
-3. Edit `src/python/python-analyze.ts` only when the new behavior needs procedural logic or heuristics beyond the JSON rule model.
-4. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.
-5. If the new pattern should be denied by default, add the corresponding
+2. Use `bun run ../src/python-session-report.ts --update-candidates` from `.opencode/` to gather unknown-call evidence into `candidates.unknown`.
+3. Use `--review-next` and `--decide` to classify snippet contexts in the sidecar review ledger, then `--promote-reviewed` to move consistently reviewed callables into `calls.read`, `calls.write`, or `calls.exec`.
+4. Edit `src/python/python-analyze.ts` only when the new behavior needs procedural logic or heuristics beyond the JSON rule model.
+5. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.
+6. If the new pattern should be denied by default, add the corresponding
    `exec:<pattern>` deny rule to both `.opencode/opencode.jsonc` and the
    README's recommended configuration.
-6. Run `bun test` from `.opencode/` to validate.
+7. Run `bun test` from `.opencode/` to validate.
 
 ### Adding new SDK coverage
 

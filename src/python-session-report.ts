@@ -15,8 +15,11 @@ type Opts = {
   samples: number
   rules: string
   update: boolean
+  promoteReviewed: boolean
   ledger: string
   reviewJson: boolean
+  reviewNext: boolean
+  decide?: string
   recordDecision?: string
   help: boolean
 }
@@ -146,9 +149,34 @@ export type ReviewQueue = {
   }>
 }
 
+export type ReviewSnippet = ReviewQueue["snippets"][number]
+
+type PromotionBucket = "read" | "write" | "exec"
+
+export type PromotionPlan = {
+  generatedAt: string
+  db: string
+  ledger: string
+  rules: string
+  promotable: Record<PromotionBucket, string[]>
+  blocked: Array<{
+    call: string
+    reason: string
+    decisions: ReviewDecision[]
+    pendingContexts: number
+  }>
+}
+
 type RulesDoc = {
+  calls?: {
+    read?: string[]
+    write?: string[]
+    exec?: string[]
+    [key: string]: unknown
+  }
   candidates?: {
     unknown?: Candidate[]
+    [key: string]: unknown
   }
   [key: string]: unknown
 }
@@ -167,7 +195,10 @@ function usage() {
     "  --since <iso>    Only scan rows updated at or after this ISO timestamp",
     "  --samples <n>    Sample sessions/previews per unknown callable (default: 3)",
     "  --update-candidates  Write findings into candidates.unknown",
+    "  --promote-reviewed  Promote consistently reviewed callables into calls.read/write/exec",
     "  --review-json    Emit snippet-centric review queue JSON",
+    "  --review-next    Show the next pending snippet review item",
+    "  --decide <spec>  Apply decisions like 1=read,2=write or fp=ignore",
     "  --record-decision <fp=decision>  Upsert a ledger decision",
     "  --json           Emit JSON instead of text",
     "  --help           Show this message",
@@ -284,7 +315,9 @@ export function parse(args: string[]) {
     ledger: defledger(),
     rules: defrules(),
     reviewJson: false,
+    reviewNext: false,
     update: false,
+    promoteReviewed: false,
     help: false,
   }
 
@@ -302,8 +335,16 @@ export function parse(args: string[]) {
       opts.update = true
       continue
     }
+    if (arg === "--promote-reviewed") {
+      opts.promoteReviewed = true
+      continue
+    }
     if (arg === "--review-json") {
       opts.reviewJson = true
+      continue
+    }
+    if (arg === "--review-next") {
+      opts.reviewNext = true
       continue
     }
     if (arg === "--db") {
@@ -330,6 +371,12 @@ export function parse(args: string[]) {
       opts.recordDecision = val
       continue
     }
+    if (arg === "--decide") {
+      const val = args[++i]
+      if (!val) fail("Missing value for --decide")
+      opts.decide = val
+      continue
+    }
     if (arg === "--samples") {
       const val = args[++i]
       if (!val) fail("Missing value for --samples")
@@ -349,7 +396,18 @@ export function parse(args: string[]) {
     fail(`Unknown argument: ${arg}`)
   }
 
-  if (opts.json && opts.reviewJson) fail("Use either --json or --review-json, not both")
+  if (opts.json && (opts.reviewJson || opts.reviewNext || opts.promoteReviewed)) fail("Use --json only with the report output")
+  if (opts.reviewJson && opts.reviewNext) fail("Use either --review-json or --review-next, not both")
+  if (opts.decide && !opts.reviewNext) fail("--decide requires --review-next")
+  if (opts.update && (opts.reviewJson || opts.reviewNext || opts.promoteReviewed)) {
+    fail("--update-candidates cannot be combined with review or promotion modes")
+  }
+  if (opts.promoteReviewed && (opts.reviewJson || opts.reviewNext)) {
+    fail("--promote-reviewed cannot be combined with review modes")
+  }
+  if (opts.promoteReviewed && opts.since !== undefined) {
+    fail("--promote-reviewed requires a full scan; omit --since")
+  }
 
   return opts
 }
@@ -545,6 +603,26 @@ async function saveLedger(filePath: string, data: ReviewLedger) {
   await Bun.write(filePath, `${JSON.stringify(data, null, 2)}\n`)
 }
 
+async function writeDecisions(opts: {
+  ledger: string
+  decisions: Array<{ fingerprint: string; decision: ReviewDecision; call?: string }>
+}) {
+  const data = await ledger(opts.ledger)
+  const next = data.decisions.filter((item) => !opts.decisions.some((decision) => decision.fingerprint === item.fingerprint))
+  for (const item of opts.decisions) {
+    next.push({
+      fingerprint: item.fingerprint,
+      call: item.call,
+      decision: item.decision,
+      decidedAt: new Date().toISOString(),
+    })
+  }
+  next.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint))
+  const out = { version: REVIEW_LEDGER_VERSION, decisions: next }
+  await saveLedger(opts.ledger, out)
+  return out
+}
+
 function recordSpec(input: string) {
   const pivot = input.lastIndexOf("=")
   if (pivot <= 0 || pivot === input.length - 1) fail("--record-decision must be fingerprint=decision")
@@ -555,18 +633,7 @@ function recordSpec(input: string) {
 }
 
 export async function recordDecision(opts: { ledger: string; fingerprint: string; decision: ReviewDecision; call?: string }) {
-  const data = await ledger(opts.ledger)
-  const next = data.decisions.filter((item) => item.fingerprint !== opts.fingerprint)
-  next.push({
-    fingerprint: opts.fingerprint,
-    call: opts.call,
-    decision: opts.decision,
-    decidedAt: new Date().toISOString(),
-  })
-  next.sort((a, b) => a.fingerprint.localeCompare(b.fingerprint))
-  const out = { version: REVIEW_LEDGER_VERSION, decisions: next }
-  await saveLedger(opts.ledger, out)
-  return out
+  return writeDecisions({ ledger: opts.ledger, decisions: [opts] })
 }
 
 export async function review(report: Report, opts: { ledger: string }): Promise<ReviewQueue> {
@@ -664,6 +731,203 @@ export async function review(report: Report, opts: { ledger: string }): Promise<
   }
 }
 
+export function nextReview(queue: ReviewQueue): ReviewSnippet | undefined {
+  return queue.snippets[0]
+}
+
+function parsePair(input: string) {
+  const pivot = input.lastIndexOf("=")
+  if (pivot <= 0 || pivot === input.length - 1) fail("--decide must use item=decision pairs")
+  const left = input.slice(0, pivot).trim()
+  const right = input.slice(pivot + 1).trim()
+  if (!left) fail("--decide must use item=decision pairs")
+  if (!isDecision(right)) fail("--decide must use read, write, exec, ignore, or needs-code")
+  return { left, decision: right }
+}
+
+export function parseDecide(input: string) {
+  return input
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const pair = parsePair(item)
+      const index = Number.parseInt(pair.left, 10)
+      if (String(index) === pair.left && Number.isInteger(index) && index >= 1) {
+        return { kind: "index" as const, index, decision: pair.decision }
+      }
+      return { kind: "fingerprint" as const, fingerprint: pair.left, decision: pair.decision }
+    })
+}
+
+export async function applyDecisions(opts: { ledger: string; item: ReviewSnippet; decide: string }) {
+  const actions = parseDecide(opts.decide)
+  const seen = new Set<string>()
+  const resolved: Array<{ fingerprint: string; decision: ReviewDecision; call?: string }> = []
+  for (const action of actions) {
+    const target =
+      action.kind === "index"
+        ? opts.item.candidates[action.index - 1]
+        : opts.item.candidates.find((item) => item.fingerprint === action.fingerprint)
+    if (!target) fail(`Decision target not found: ${action.kind === "index" ? action.index : action.fingerprint}`)
+    if (seen.has(target.fingerprint)) fail(`Duplicate decision target: ${target.fingerprint}`)
+    seen.add(target.fingerprint)
+    resolved.push({ fingerprint: target.fingerprint, decision: action.decision, call: target.call })
+  }
+  await writeDecisions({ ledger: opts.ledger, decisions: resolved })
+}
+
+export function renderReview(item: ReviewSnippet) {
+  const out = [
+    `Snippet: ${item.snippetFingerprint}`,
+    `Last seen: ${item.lastSeen}`,
+    `Occurrences: ${item.occurrences.length}`,
+    "",
+    "Code:",
+    item.code,
+    "",
+    "Candidates:",
+  ]
+
+  item.candidates.forEach((candidate, i) => {
+    const decision = candidate.decision ? ` decided=${candidate.decision}` : ""
+    out.push(`${i + 1}. ${candidate.call} [${candidate.fingerprint}] read=${candidate.readConfidence} write=${candidate.writeConfidence}${decision}`)
+    if (candidate.reasons.length) out.push(`   reasons: ${candidate.reasons.join("; ")}`)
+  })
+
+  out.push("")
+  out.push("Apply decisions with --review-next --decide 1=read,2=write")
+  return out.join("\n")
+}
+
+function bucketFor(decision: ReviewDecision): PromotionBucket | undefined {
+  if (decision === "read" || decision === "write" || decision === "exec") return decision
+}
+
+function strings(input: unknown) {
+  return Array.isArray(input) ? input.filter((item): item is string => typeof item === "string") : []
+}
+
+function callBuckets(doc: RulesDoc) {
+  const root = typeof doc.calls === "object" && doc.calls !== null && !Array.isArray(doc.calls) ? (doc.calls as Record<string, unknown>) : {}
+  return {
+    read: strings(root.read),
+    write: strings(root.write),
+    exec: strings(root.exec),
+  }
+}
+
+function ledgerDecisions(data: ReviewLedger) {
+  return new Map(data.decisions.map((item) => [item.fingerprint, item.decision]))
+}
+
+export async function promotions(report: Report, opts: { ledger: string; rules: string }): Promise<PromotionPlan> {
+  const data = await ledger(opts.ledger)
+  const decided = ledgerDecisions(data)
+  const byCall = new Map<
+    string,
+    {
+      decisions: Map<string, ReviewDecision>
+      pending: Set<string>
+    }
+  >()
+
+  for (const item of report.occurrences) {
+    const row = byCall.get(item.call) ?? { decisions: new Map<string, ReviewDecision>(), pending: new Set<string>() }
+    const outcome = decided.get(item.fingerprint)
+    if (outcome) row.decisions.set(item.fingerprint, outcome)
+    else row.pending.add(item.fingerprint)
+    byCall.set(item.call, row)
+  }
+
+  const promotable: Record<PromotionBucket, string[]> = { read: [], write: [], exec: [] }
+  const blocked: PromotionPlan["blocked"] = []
+
+  for (const [call, row] of [...byCall.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const outcomes = [...new Set(row.decisions.values())]
+    if (!outcomes.length) {
+      blocked.push({ call, reason: "no reviewed contexts", decisions: [], pendingContexts: row.pending.size })
+      continue
+    }
+    if (row.pending.size) {
+      blocked.push({ call, reason: "unresolved contexts remain", decisions: outcomes, pendingContexts: row.pending.size })
+      continue
+    }
+    const buckets = outcomes.map(bucketFor).filter((item): item is PromotionBucket => Boolean(item))
+    if (buckets.length !== outcomes.length) {
+      blocked.push({ call, reason: "contains non-promotable decisions", decisions: outcomes, pendingContexts: 0 })
+      continue
+    }
+    const uniq = [...new Set(buckets)]
+    if (uniq.length !== 1) {
+      blocked.push({ call, reason: "conflicting reviewed decisions", decisions: outcomes, pendingContexts: 0 })
+      continue
+    }
+    promotable[uniq[0]].push(call)
+  }
+
+  for (const bucket of ["read", "write", "exec"] as const) promotable[bucket].sort((a, b) => a.localeCompare(b))
+
+  return {
+    generatedAt: new Date().toISOString(),
+    db: report.db,
+    ledger: opts.ledger,
+    rules: opts.rules,
+    promotable,
+    blocked,
+  }
+}
+
+export function renderPromotions(plan: PromotionPlan) {
+  const out = [`Rules: ${plan.rules}`, `Ledger: ${plan.ledger}`]
+  for (const bucket of ["read", "write", "exec"] as const) {
+    out.push("")
+    out.push(`${bucket}: ${plan.promotable[bucket].length}`)
+    for (const call of plan.promotable[bucket]) out.push(`  - ${call}`)
+  }
+  if (plan.blocked.length) {
+    out.push("")
+    out.push(`blocked: ${plan.blocked.length}`)
+    for (const item of plan.blocked) {
+      out.push(`  - ${item.call}: ${item.reason}`)
+    }
+  }
+  return out.join("\n")
+}
+
+export async function promote(report: Report, opts: { ledger: string; rules: string }) {
+  const plan = await promotions(report, opts)
+  const file = Bun.file(opts.rules)
+  if (!(await file.exists())) fail(`Python rules file not found: ${opts.rules}`)
+
+  let doc: RulesDoc
+  try {
+    doc = (JSON.parse(await file.text()) as RulesDoc) ?? {}
+  } catch {
+    fail(`Invalid python rules JSON: ${opts.rules}`)
+  }
+
+  const calls = callBuckets(doc)
+  const remove = new Set([...plan.promotable.read, ...plan.promotable.write, ...plan.promotable.exec])
+  const nextCalls = {
+    read: [...new Set([...calls.read.filter((item) => !remove.has(item)), ...plan.promotable.read])].sort((a, b) => a.localeCompare(b)),
+    write: [...new Set([...calls.write.filter((item) => !remove.has(item)), ...plan.promotable.write])].sort((a, b) => a.localeCompare(b)),
+    exec: [...new Set([...calls.exec.filter((item) => !remove.has(item)), ...plan.promotable.exec])].sort((a, b) => a.localeCompare(b)),
+  }
+
+  doc.calls = {
+    ...(typeof doc.calls === "object" && doc.calls !== null && !Array.isArray(doc.calls) ? (doc.calls as Record<string, unknown>) : {}),
+    ...nextCalls,
+  }
+
+  if (doc.candidates && typeof doc.candidates === "object" && !Array.isArray(doc.candidates) && Array.isArray(doc.candidates.unknown)) {
+    doc.candidates.unknown = doc.candidates.unknown.filter((item) => !remove.has(item.call))
+  }
+
+  await Bun.write(opts.rules, `${JSON.stringify(doc, null, 2)}\n`)
+  return plan
+}
+
 export async function update(report: Report, opts: { rules: string; samples?: number }) {
   const file = Bun.file(opts.rules)
   if (!(await file.exists())) fail(`Python rules file not found: ${opts.rules}`)
@@ -746,7 +1010,7 @@ export async function main(args = process.argv.slice(2)) {
   if (opts.recordDecision) {
     const next = recordSpec(opts.recordDecision)
     await recordDecision({ ledger: opts.ledger, ...next })
-    if (!opts.reviewJson) {
+    if (!opts.reviewJson && !opts.reviewNext) {
       console.log(`Recorded ${next.decision} for ${next.fingerprint} in ${opts.ledger}`)
       return
     }
@@ -759,6 +1023,21 @@ export async function main(args = process.argv.slice(2)) {
   })
   if (opts.reviewJson) {
     console.log(JSON.stringify(await review(report, { ledger: opts.ledger }), null, 2))
+    return
+  }
+  if (opts.reviewNext) {
+    const queue = await review(report, { ledger: opts.ledger })
+    let item = nextReview(queue)
+    if (opts.decide) {
+      if (!item) fail("No pending review items")
+      await applyDecisions({ ledger: opts.ledger, item, decide: opts.decide })
+      item = nextReview(await review(report, { ledger: opts.ledger }))
+    }
+    console.log(item ? renderReview(item) : "No pending review items.")
+    return
+  }
+  if (opts.promoteReviewed) {
+    console.log(renderPromotions(await promote(report, { ledger: opts.ledger, rules: opts.rules })))
     return
   }
   if (opts.update) await update(report, { rules: opts.rules, samples: opts.samples })

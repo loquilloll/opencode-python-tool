@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdtemp, readFile, rm, writeFile } from "fs/promises"
+import { access, mkdtemp, readFile, rm, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
-import { recordDecision, render, review, scan, update } from "../../src/python-session-report"
+import { applyDecisions, nextReview, parse, promote, promotions, recordDecision, render, renderPromotions, renderReview, review, scan, update } from "../../src/python-session-report"
 
 async function db() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "python-session-report-"))
@@ -462,5 +462,222 @@ describe("python session report", () => {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })
     }
+  })
+
+  it("renders and advances the next review item after batch decisions", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000), ('s2', 'Beta', 3000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 4000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+      put(tmp.db, {
+        id: "p2",
+        messageID: "m2",
+        sessionID: "s2",
+        created: 2000,
+        updated: 3000,
+        data: data("python", { code: "other.fetch()" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const queue = await review(report, { ledger })
+      const first = nextReview(queue)
+      expect(renderReview(first!)).toContain("Candidates:")
+      expect(renderReview(first!)).toContain("1. rq.get")
+      expect(renderReview(first!)).toContain("2. writer.append")
+
+      await applyDecisions({ ledger, item: first!, decide: "1=read,2=write" })
+
+      const next = nextReview(await review(report, { ledger }))
+      expect(next?.code).toBe("other.fetch()")
+      expect(next?.candidates[0]?.call).toBe("other.fetch")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("supports fingerprint-based batch decisions", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+
+      const item = nextReview(await review(await scan({ db: tmp.file, samples: 3 }), { ledger }))
+      const decide = item!.candidates.map((candidate, i) => `${candidate.fingerprint}=${i === 0 ? "read" : "write"}`).join(",")
+      await applyDecisions({ ledger, item: item!, decide })
+
+      const ledgerData = JSON.parse(await readFile(ledger, "utf8")) as Record<string, any>
+      expect(ledgerData.decisions).toHaveLength(2)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps batch decisions atomic for duplicate targets", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+
+      const item = nextReview(await review(await scan({ db: tmp.file, samples: 3 }), { ledger }))
+      await expect(applyDecisions({ ledger, item: item!, decide: "1=read,1=write" })).rejects.toThrow(/Duplicate decision target/)
+      await expect(access(ledger)).rejects.toBeDefined()
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps batch decisions atomic for invalid later targets", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+
+      const item = nextReview(await review(await scan({ db: tmp.file, samples: 3 }), { ledger }))
+      await expect(applyDecisions({ ledger, item: item!, decide: "1=read,99=write" })).rejects.toThrow(/Decision target not found/)
+      await expect(access(ledger)).rejects.toBeDefined()
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("promotes consistently reviewed callables into live rule buckets", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const rules = path.join(tmp.dir, "python-rules.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      const base = JSON.parse(await readFile(src, "utf8")) as Record<string, any>
+      base.candidates = {
+        unknown: [
+          { call: "rq.get", count: 1, lastSeen: new Date(2000).toISOString(), examples: ["s1"] },
+          { call: "writer.append", count: 1, lastSeen: new Date(2000).toISOString(), examples: ["s1"] },
+        ],
+      }
+      await writeFile(rules, JSON.stringify(base))
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const item = nextReview(await review(report, { ledger }))
+      await applyDecisions({ ledger, item: item!, decide: "1=read,2=write" })
+
+      const plan = await promotions(report, { ledger, rules })
+      expect(plan.promotable.read).toEqual(["rq.get"])
+      expect(plan.promotable.write).toEqual(["writer.append"])
+      expect(plan.blocked).toEqual([])
+      expect(renderPromotions(plan)).toContain("read: 1")
+
+      await promote(report, { ledger, rules })
+      const next = JSON.parse(await readFile(rules, "utf8")) as Record<string, any>
+      expect(next.calls.read).toContain("rq.get")
+      expect(next.calls.write).toContain("writer.append")
+      expect(next.candidates.unknown).toEqual([])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("blocks promotion when unresolved contexts remain", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const rules = path.join(tmp.dir, "python-rules.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000), ('s2', 'Beta', 3000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get(source_path)" }),
+      })
+      put(tmp.db, {
+        id: "p2",
+        messageID: "m2",
+        sessionID: "s2",
+        created: 2000,
+        updated: 3000,
+        data: data("python", { code: "rq.get(target_path)" }),
+      })
+
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      await writeFile(rules, await readFile(src, "utf8"))
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const queue = await review(report, { ledger })
+      const second = queue.snippets.find((item) => item.code === "rq.get(source_path)")
+      await recordDecision({ ledger, fingerprint: second!.candidates[0]!.fingerprint, decision: "read", call: "rq.get" })
+
+      const plan = await promotions(report, { ledger, rules })
+      expect(plan.promotable.read).toEqual([])
+      expect(plan.blocked).toEqual([
+        {
+          call: "rq.get",
+          reason: "unresolved contexts remain",
+          decisions: ["read"],
+          pendingContexts: 1,
+        },
+      ])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects partial-window promotion", () => {
+    expect(() => parse(["--promote-reviewed", "--since", "2026-03-01T00:00:00Z"])).toThrow(
+      "--promote-reviewed requires a full scan; omit --since",
+    )
   })
 })

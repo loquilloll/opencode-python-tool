@@ -1,11 +1,11 @@
 ---
 title: Python HITL Candidate Review Plan
-status: in-progress
+status: done
 plan: 46-python-hitl-candidate-review
 created: 2026-03-06
 tags:
   - type/plan
-  - status/in-progress
+  - status/done
   - project/opencode-python-tool
   - topic/python-analyzer
   - topic/session-report
@@ -117,7 +117,7 @@ That allows:
 
 - `src/python-session-report.ts`
 - `.opencode/test/python-session-report.test.ts`
-- `docs/python-session-report-operator-guide.md`
+- `docs/plans/46-python-hitl-candidate-review.md`
 
 **Changes:**
 
@@ -132,6 +132,16 @@ That allows:
 **Commit message:**
 
 - `feat: add python hitl review loop`
+
+#### Notes
+
+- Status: Done (2026-03-06)
+- Summary: Added a practical next-item review loop on top of the snippet-centric queue with `--review-next`, human-readable snippet/candidate rendering, and batch decision application via `--decide` so one snippet can be reviewed in a single pass.
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `docs/plans/46-python-hitl-candidate-review.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test test/python-analyze.test.ts test/python-session-report.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --help`
+- Follow-ups: Phase 3 should document the end-to-end review loop and add explicit promotion helpers or guidance for moving reviewed decisions into live rule buckets.
+- Commit: Not committed
+- PR/Jira: None
 
 ### Phase 3 - Promotion helpers and docs
 
@@ -157,6 +167,16 @@ That allows:
 
 - `docs: add python hitl review workflow`
 
+#### Notes
+
+- Status: Done (2026-03-06)
+- Summary: Added promotion helpers and end-to-end operator documentation for the review-ledger workflow, including `--promote-reviewed` for consistent call-level promotions into `calls.read`, `calls.write`, or `calls.exec`, plus updated repo-to-global guidance in the operator guide and README.
+- Files: `src/python-session-report.ts`, `docs/python-session-report-operator-guide.md`, `README.md`, `docs/plans/46-python-hitl-candidate-review.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test test/python-analyze.test.ts test/python-session-report.test.ts`; `cd .opencode && bun test`; `cd .opencode && bun run ../src/python-session-report.ts --help`
+- Follow-ups: None
+- Commit: Not committed
+- PR/Jira: None
+
 ## Acceptance Criteria
 
 - The utility can export a snippet-centric queue of unresolved unknown candidates.
@@ -176,5 +196,5 @@ That allows:
 ## Phase Status
 
 - Phase 1: DONE (2026-03-06)
-- Phase 2: TODO
-- Phase 3: TODO
+- Phase 2: DONE (2026-03-06)
+- Phase 3: DONE (2026-03-06)
