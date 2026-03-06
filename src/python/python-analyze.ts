@@ -1,4 +1,4 @@
-import { access } from "fs/promises"
+import { access, readFile } from "fs/promises"
 import path from "path"
 import { fileURLToPath, pathToFileURL } from "url"
 
@@ -50,188 +50,216 @@ export type PythonEvent = {
   dynamicPath?: boolean
 }
 
-const CALLABLE_UNKNOWN_PREFIX = "callable:"
-
-const READ_METHODS = new Set(["read_text", "read_bytes"])
-const WRITE_METHODS = new Set([
-  "append_text",
-  "mkdir",
-  "rename",
-  "replace",
-  "rmdir",
-  "touch",
-  "unlink",
-  "write_bytes",
-  "write_text",
-])
-
-const WRITE_PATH_CALLS: Record<string, { index: number; names: string[] }> = {
-  "os.makedirs": { index: 0, names: ["name", "path"] },
-  "os.remove": { index: 0, names: ["path"] },
-  "os.rename": { index: 1, names: ["dst", "dst_dir_fd"] },
-  "os.replace": { index: 1, names: ["dst", "dst_dir_fd"] },
-  "os.unlink": { index: 0, names: ["path"] },
-  "shutil.copy": { index: 1, names: ["dst"] },
-  "shutil.copy2": { index: 1, names: ["dst"] },
-  "shutil.copytree": { index: 1, names: ["dst"] },
-  "shutil.move": { index: 1, names: ["dst"] },
-  "shutil.rmtree": { index: 0, names: ["path"] },
+type PathSpec = {
+  index: number
+  names: string[]
 }
-
-const READ_CALLS = new Set(["json.load", "yaml.load", "yaml.safe_load"])
-const WRITE_CALLS = new Set(["json.dump", "yaml.dump", "yaml.safe_dump"])
-const EXEC_CALLS = new Set(["__import__", "compile", "eval", "exec", "os.popen", "os.system"])
-const NETWORK_EXEC_CALLS = new Set([
-  "requests.get",
-  "requests.post",
-  "requests.put",
-  "requests.delete",
-  "requests.patch",
-  "requests.head",
-  "requests.options",
-  "urllib.request.urlopen",
-  "urllib.request.urlretrieve",
-  "http.client.HTTPConnection",
-  "http.client.HTTPSConnection",
-  "aiohttp.ClientSession",
-  "httpx.get",
-  "httpx.post",
-  "httpx.put",
-  "httpx.delete",
-  "httpx.patch",
-  "httpx.Client",
-  "httpx.AsyncClient",
-  "socket.socket",
-  "socket.create_connection",
-])
-const DB_EXEC_CALLS = new Set([
-  "sqlite3.connect",
-  "psycopg2.connect",
-  "pymysql.connect",
-  "sqlalchemy.create_engine",
-])
-const TEMPFILE_WRITE_CALLS = new Set([
-  "tempfile.NamedTemporaryFile",
-  "tempfile.mkdtemp",
-  "tempfile.mkstemp",
-  "tempfile.TemporaryDirectory",
-])
-const DANGEROUS_DESERIALIZE_EXEC_CALLS = new Set([
-  "pickle.load",
-  "pickle.loads",
-  "marshal.load",
-  "marshal.loads",
-])
-const OCI_EXEC_CALLS = new Set([
-  "oci.identity.IdentityClient",
-  "oci.core.ComputeClient",
-  "oci.core.VirtualNetworkClient",
-  "oci.object_storage.ObjectStorageClient",
-  "oci.database.DatabaseClient",
-  "oci.secrets.SecretsClient",
-  "oci.key_management.KmsManagementClient",
-  "oci.pagination.list_call_get_all_results",
-  "oci.pagination.list_call_get_all_results_generator",
-])
-const OCI_CLIENT_METHOD_PREFIXES = [
-  "oci.identity.IdentityClient.",
-  "oci.core.ComputeClient.",
-  "oci.core.VirtualNetworkClient.",
-  "oci.object_storage.ObjectStorageClient.",
-  "oci.database.DatabaseClient.",
-  "oci.secrets.SecretsClient.",
-  "oci.key_management.KmsManagementClient.",
-]
-const GHAPI_EXEC_CALLS = new Set([
-  "ghapi.all.GhApi",
-  "ghapi.core.GhApi",
-  "ghapi.graphql.gh_query",
-  "ghapi.page.paged",
-  "ghapi.page.pages",
-  "ghapi.auth.GhDeviceAuth",
-  "ghapi.auth.github_auth_device",
-  "GhApi.create_gist",
-  "GhApi.create_release",
-  "GhApi.delete_release",
-  "GhApi.upload_file",
-  "GhApi.enable_pages",
-])
-const GHAPI_WRITE_CALLS = new Set([
-  "ghapi.actions.create_workflow_files",
-  "ghapi.actions.create_workflow",
-  "ghapi.actions.gh_create_workflow",
-])
-const GHAPI_INSTANCE_CONSTRUCTORS = new Set(["GhApi", "ghapi.all.GhApi", "ghapi.core.GhApi"])
 
 type AtlassianClientFamily = "jira" | "confluence" | "bitbucket" | "servicedesk"
 
-const ATLASSIAN_CONSTRUCTOR_COVERAGE: Array<{ family?: AtlassianClientFamily; variants: string[] }> = [
-  { family: "jira", variants: ["Jira", "atlassian.Jira", "atlassian.jira.Jira"] },
-  {
-    family: "confluence",
-    variants: [
-      "Confluence",
-      "atlassian.Confluence",
-      "atlassian.confluence.Confluence",
-      "ConfluenceCloud",
-      "atlassian.ConfluenceCloud",
-      "atlassian.confluence.ConfluenceCloud",
-      "ConfluenceServer",
-      "atlassian.ConfluenceServer",
-      "atlassian.confluence.ConfluenceServer",
-    ],
-  },
-  {
-    family: "bitbucket",
-    variants: [
-      "Bitbucket",
-      "atlassian.Bitbucket",
-      "atlassian.bitbucket.Bitbucket",
-      "Cloud",
-      "atlassian.Cloud",
-      "atlassian.bitbucket.Cloud",
-    ],
-  },
-  {
-    family: "servicedesk",
-    variants: ["ServiceDesk", "atlassian.ServiceDesk", "atlassian.servicedesk.ServiceDesk", "atlassian.service_desk.ServiceDesk"],
-  },
-  { variants: ["Crowd", "atlassian.Crowd"] },
-  { variants: ["Xray", "atlassian.Xray"] },
-  { variants: ["CloudAdminOrgs", "atlassian.CloudAdminOrgs"] },
-  { variants: ["CloudAdminUsers", "atlassian.CloudAdminUsers"] },
-]
+type AtlassianCtor = {
+  family?: AtlassianClientFamily
+  variants: string[]
+}
 
-const ATLASSIAN_CONSTRUCTOR_METADATA = new Map<
-  string,
-  {
-    family?: AtlassianClientFamily
-    bare: boolean
+type Rules = {
+  methods: {
+    read: Set<string>
+    write: Set<string>
   }
->()
-
-for (const constructor of ATLASSIAN_CONSTRUCTOR_COVERAGE) {
-  for (const variant of constructor.variants) {
-    ATLASSIAN_CONSTRUCTOR_METADATA.set(variant, {
-      family: constructor.family,
-      bare: !variant.includes("."),
-    })
+  calls: {
+    read: Set<string>
+    write: Set<string>
+    exec: Set<string>
+    networkExec: Set<string>
+    dbExec: Set<string>
+    tempfileWrite: Set<string>
+    dangerousDeserializeExec: Set<string>
+  }
+  pathCalls: {
+    read: Record<string, PathSpec>
+    write: Record<string, PathSpec>
+  }
+  sdk: {
+    oci: {
+      execCalls: Set<string>
+      clientMethodPrefixes: string[]
+    }
+    ghapi: {
+      execCalls: Set<string>
+      writeCalls: Set<string>
+      instanceConstructors: Set<string>
+    }
+    atlassian: {
+      constructorMetadata: Map<string, { family?: AtlassianClientFamily; bare: boolean }>
+      clientMethods: Record<AtlassianClientFamily, Set<string>>
+    }
   }
 }
 
-const ATLASSIAN_CLIENT_METHODS = {
-  jira: new Set(["jql", "issue", "create_issue", "issue_create", "issue_transition", "issue_add_comment"]),
-  confluence: new Set(["get_page_by_id", "get_page_by_title", "create_page", "update_page", "cql", "attach_file"]),
-  bitbucket: new Set([
-    "get_repo",
-    "create_repo",
-    "open_pull_request",
-    "get_pull_requests",
-    "get_pipelines",
-    "trigger_pipeline",
-  ]),
-  servicedesk: new Set(["get_service_desks", "create_customer_request", "get_queues", "create_request_comment"]),
-} satisfies Record<AtlassianClientFamily, Set<string>>
+const CALLABLE_UNKNOWN_PREFIX = "callable:"
+const RULES_VERSION = 1
+const RULES_URL = new URL("./python-rules.json", import.meta.url)
+const FAMILIES = ["jira", "confluence", "bitbucket", "servicedesk"] as const
+
+let parser: Promise<Parser> | undefined
+let rules: Promise<Rules> | undefined
+let rulesKey: string | undefined
+
+function fail(label: string, msg: string): never {
+  throw new Error(`Invalid python-rules.json: ${label} ${msg}`)
+}
+
+function record(input: unknown, label: string) {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) fail(label, "must be an object")
+  return input as Record<string, unknown>
+}
+
+function list(input: unknown, label: string) {
+  if (!Array.isArray(input)) fail(label, "must be a string[]")
+  const out: string[] = []
+  for (const [i, item] of input.entries()) {
+    if (typeof item !== "string") fail(`${label}[${i}]`, "must be a string")
+    out.push(item)
+  }
+  return out
+}
+
+function num(input: unknown, label: string) {
+  if (typeof input !== "number" || !Number.isInteger(input)) fail(label, "must be an integer")
+  if (input < 0) fail(label, "must be >= 0")
+  return input
+}
+
+function spec(input: unknown, label: string): PathSpec {
+  const obj = record(input, label)
+  return {
+    index: num(obj.index, `${label}.index`),
+    names: list(obj.names, `${label}.names`),
+  }
+}
+
+function specs(input: unknown, label: string) {
+  const obj = record(input, label)
+  const out = Object.create(null) as Record<string, PathSpec>
+  for (const [key, value] of Object.entries(obj)) out[key] = spec(value, `${label}.${key}`)
+  return out
+}
+
+function family(input: unknown, label: string) {
+  if (input === undefined) return
+  if (typeof input !== "string") fail(label, "must be a supported family")
+  if (!FAMILIES.includes(input as AtlassianClientFamily)) fail(label, "must be a supported family")
+  return input as AtlassianClientFamily
+}
+
+function ctors(input: unknown, label: string) {
+  if (!Array.isArray(input)) fail(label, "must be an array")
+  return input.map((item, i) => {
+    const obj = record(item, `${label}[${i}]`)
+    return {
+      family: family(obj.family, `${label}[${i}].family`),
+      variants: list(obj.variants, `${label}[${i}].variants`),
+    } satisfies AtlassianCtor
+  })
+}
+
+async function loadRules() {
+  const source = process.env.OPENCODE_PYTHON_RULES ? path.resolve(process.env.OPENCODE_PYTHON_RULES) : RULES_URL
+  const key = typeof source === "string" ? source : source.href
+  if (rules && rulesKey === key) return rules
+  rulesKey = key
+  rules = readRules(source).catch((err) => {
+    if (rulesKey === key) {
+      rules = undefined
+      rulesKey = undefined
+    }
+    throw err
+  })
+  return rules
+}
+
+async function readRules(source: string | URL): Promise<Rules> {
+  let text = ""
+  try {
+    text = await readFile(source, "utf8")
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "could not be read"
+    fail("file", msg)
+  }
+
+  let data: unknown
+  try {
+    data = JSON.parse(text) as unknown
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "contains invalid JSON"
+    fail("file", `contains invalid JSON (${msg})`)
+  }
+
+  const raw = record(data, "root")
+  if (num(raw.version, "version") !== RULES_VERSION) fail("version", `must be ${RULES_VERSION}`)
+
+  const methods = record(raw.methods, "methods")
+  const calls = record(raw.calls, "calls")
+  const pathCalls = record(raw.pathCalls, "pathCalls")
+  const sdk = record(raw.sdk, "sdk")
+  const oci = record(sdk.oci, "sdk.oci")
+  const ghapi = record(sdk.ghapi, "sdk.ghapi")
+  const atlassian = record(sdk.atlassian, "sdk.atlassian")
+
+  const constructors = ctors(atlassian.constructors, "sdk.atlassian.constructors")
+  const constructorMetadata = new Map<string, { family?: AtlassianClientFamily; bare: boolean }>()
+  for (const item of constructors) {
+    for (const variant of item.variants) {
+      constructorMetadata.set(variant, {
+        family: item.family,
+        bare: !variant.includes("."),
+      })
+    }
+  }
+
+  const clientMethods = record(atlassian.clientMethods, "sdk.atlassian.clientMethods")
+
+  return {
+    methods: {
+      read: new Set(list(methods.read, "methods.read")),
+      write: new Set(list(methods.write, "methods.write")),
+    },
+    calls: {
+      read: new Set(list(calls.read, "calls.read")),
+      write: new Set(list(calls.write, "calls.write")),
+      exec: new Set(list(calls.exec, "calls.exec")),
+      networkExec: new Set(list(calls.networkExec, "calls.networkExec")),
+      dbExec: new Set(list(calls.dbExec, "calls.dbExec")),
+      tempfileWrite: new Set(list(calls.tempfileWrite, "calls.tempfileWrite")),
+      dangerousDeserializeExec: new Set(list(calls.dangerousDeserializeExec, "calls.dangerousDeserializeExec")),
+    },
+    pathCalls: {
+      read: specs(pathCalls.read, "pathCalls.read"),
+      write: specs(pathCalls.write, "pathCalls.write"),
+    },
+    sdk: {
+      oci: {
+        execCalls: new Set(list(oci.execCalls, "sdk.oci.execCalls")),
+        clientMethodPrefixes: list(oci.clientMethodPrefixes, "sdk.oci.clientMethodPrefixes"),
+      },
+      ghapi: {
+        execCalls: new Set(list(ghapi.execCalls, "sdk.ghapi.execCalls")),
+        writeCalls: new Set(list(ghapi.writeCalls, "sdk.ghapi.writeCalls")),
+        instanceConstructors: new Set(list(ghapi.instanceConstructors, "sdk.ghapi.instanceConstructors")),
+      },
+      atlassian: {
+        constructorMetadata,
+        clientMethods: {
+          jira: new Set(list(clientMethods.jira, "sdk.atlassian.clientMethods.jira")),
+          confluence: new Set(list(clientMethods.confluence, "sdk.atlassian.clientMethods.confluence")),
+          bitbucket: new Set(list(clientMethods.bitbucket, "sdk.atlassian.clientMethods.bitbucket")),
+          servicedesk: new Set(list(clientMethods.servicedesk, "sdk.atlassian.clientMethods.servicedesk")),
+        },
+      },
+    },
+  }
+}
 
 const resolveWasm = (asset: string) => {
   if (asset.startsWith("file://")) return fileURLToPath(asset)
@@ -251,8 +279,6 @@ const resolveNodeModules = async () => {
   }
   return candidates[0]
 }
-
-let parser: Promise<Parser> | undefined
 
 async function initParser() {
   const modules = await resolveNodeModules()
@@ -338,7 +364,7 @@ function value(node: Node | null): Value {
 
 function args(node: Node): Args {
   const positional: Value[] = []
-  const keyword: Record<string, Value> = {}
+  const keyword = Object.create(null) as Record<string, Value>
   const input = node.childForFieldName("arguments")
   if (!input) return { positional, keyword }
 
@@ -405,6 +431,7 @@ function classifyOpen(input: Args): PythonEvent {
 
 function classify(
   node: Node,
+  rules: Rules,
   hasAtlassianImportProvenance: boolean,
   ghapiInstances: Set<string>,
   atlassianInstances: Map<string, AtlassianClientFamily>,
@@ -417,26 +444,28 @@ function classify(
   if (call === "open") return classifyOpen(input)
 
   const method = tail(call)
-  if (READ_METHODS.has(method)) return pathEvent("read", call, pathFromPathMethod(fn))
-  if (WRITE_METHODS.has(method)) return pathEvent("write", call, pathFromPathMethod(fn))
+  if (rules.methods.read.has(method)) return pathEvent("read", call, pathFromPathMethod(fn))
+  if (rules.methods.write.has(method)) return pathEvent("write", call, pathFromPathMethod(fn))
 
-  const writeSpec = WRITE_PATH_CALLS[call]
+  const readSpec = rules.pathCalls.read[call]
+  if (readSpec) return pathEvent("read", call, pick(input, readSpec.index, readSpec.names))
+
+  const writeSpec = rules.pathCalls.write[call]
   if (writeSpec) return pathEvent("write", call, pick(input, writeSpec.index, writeSpec.names))
 
-  if (READ_CALLS.has(call)) return { kind: "read", call }
-  if (WRITE_CALLS.has(call)) return { kind: "write", call }
-  if (GHAPI_WRITE_CALLS.has(call)) return { kind: "write", call }
-  if (TEMPFILE_WRITE_CALLS.has(call)) return { kind: "write", call }
-  if (call === "oci.config.from_file") return pathEvent("read", call, pick(input, 0, ["file_location"]))
+  if (rules.calls.read.has(call)) return { kind: "read", call }
+  if (rules.calls.write.has(call)) return { kind: "write", call }
+  if (rules.sdk.ghapi.writeCalls.has(call)) return { kind: "write", call }
+  if (rules.calls.tempfileWrite.has(call)) return { kind: "write", call }
 
-  if (EXEC_CALLS.has(call)) return { kind: "exec", call }
-  if (NETWORK_EXEC_CALLS.has(call)) return { kind: "exec", call }
-  if (DB_EXEC_CALLS.has(call)) return { kind: "exec", call }
-  if (DANGEROUS_DESERIALIZE_EXEC_CALLS.has(call)) return { kind: "exec", call }
-  if (OCI_EXEC_CALLS.has(call)) return { kind: "exec", call }
-  if (GHAPI_EXEC_CALLS.has(call)) return { kind: "exec", call }
-  if (isAtlassianConstructorCall(call, hasAtlassianImportProvenance)) return { kind: "exec", call }
-  if (OCI_CLIENT_METHOD_PREFIXES.some((prefix) => call.startsWith(prefix))) return { kind: "exec", call }
+  if (rules.calls.exec.has(call)) return { kind: "exec", call }
+  if (rules.calls.networkExec.has(call)) return { kind: "exec", call }
+  if (rules.calls.dbExec.has(call)) return { kind: "exec", call }
+  if (rules.calls.dangerousDeserializeExec.has(call)) return { kind: "exec", call }
+  if (rules.sdk.oci.execCalls.has(call)) return { kind: "exec", call }
+  if (rules.sdk.ghapi.execCalls.has(call)) return { kind: "exec", call }
+  if (isAtlassianConstructorCall(call, rules, hasAtlassianImportProvenance)) return { kind: "exec", call }
+  if (rules.sdk.oci.clientMethodPrefixes.some((prefix) => call.startsWith(prefix))) return { kind: "exec", call }
 
   const parts = call.split(".")
   const instance = parts[0]
@@ -447,7 +476,7 @@ function classify(
   const atlassianClient = instance ? atlassianInstances.get(instance) : undefined
   if (atlassianClient && parts.length >= 2) {
     const method = parts[1]
-    if (ATLASSIAN_CLIENT_METHODS[atlassianClient].has(method)) {
+    if (rules.sdk.atlassian.clientMethods[atlassianClient].has(method)) {
       return { kind: "exec", call: `atlassian.${atlassianClient}.${method}` }
     }
   }
@@ -477,15 +506,15 @@ function isAtlassianImportStatement(node: Node) {
   return false
 }
 
-function isAtlassianConstructorCall(call: string, hasAtlassianImportProvenance: boolean) {
-  const metadata = ATLASSIAN_CONSTRUCTOR_METADATA.get(call)
+function isAtlassianConstructorCall(call: string, rules: Rules, hasAtlassianImportProvenance: boolean) {
+  const metadata = rules.sdk.atlassian.constructorMetadata.get(call)
   if (!metadata) return false
   if (!metadata.bare) return true
   return hasAtlassianImportProvenance
 }
 
-function atlassianFamilyForConstructor(call: string, hasAtlassianImportProvenance: boolean) {
-  const metadata = ATLASSIAN_CONSTRUCTOR_METADATA.get(call)
+function atlassianFamilyForConstructor(call: string, rules: Rules, hasAtlassianImportProvenance: boolean) {
+  const metadata = rules.sdk.atlassian.constructorMetadata.get(call)
   if (!metadata) return
   if (metadata.bare && !hasAtlassianImportProvenance) return
   return metadata.family
@@ -495,6 +524,7 @@ export async function analyze(source: string) {
   if (!source.trim()) return [{ kind: "unknown", call: "empty-source" }] satisfies PythonEvent[]
 
   let tree: Tree | null = null
+  const rules = await loadRules()
 
   try {
     const p = await getParser()
@@ -543,13 +573,13 @@ export async function analyze(source: string) {
         continue
       }
 
-      if (GHAPI_INSTANCE_CONSTRUCTORS.has(assignedCall)) {
+      if (rules.sdk.ghapi.instanceConstructors.has(assignedCall)) {
         ghapiInstances.add(left.text)
       } else {
         ghapiInstances.delete(left.text)
       }
 
-      const atlassianClient = atlassianFamilyForConstructor(assignedCall, hasAtlassianImportProvenance)
+      const atlassianClient = atlassianFamilyForConstructor(assignedCall, rules, hasAtlassianImportProvenance)
       if (atlassianClient) {
         atlassianInstances.set(left.text, atlassianClient)
       } else {
@@ -559,7 +589,7 @@ export async function analyze(source: string) {
       continue
     }
 
-    const event = classify(entry.node, hasAtlassianImportProvenance, ghapiInstances, atlassianInstances)
+    const event = classify(entry.node, rules, hasAtlassianImportProvenance, ghapiInstances, atlassianInstances)
     if (event) events.push(event)
   }
 

@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "methods": {
+    "read": ["read_text", "read_bytes"],
+    "write": [
+      "append_text",
+      "mkdir",
+      "rename",
+      "replace",
+      "rmdir",
+      "touch",
+      "unlink",
+      "write_bytes",
+      "write_text"
+    ]
+  },
+  "calls": {
+    "read": ["json.load", "yaml.load", "yaml.safe_load"],
+    "write": ["json.dump", "yaml.dump", "yaml.safe_dump"],
+    "exec": ["__import__", "compile", "eval", "exec", "os.popen", "os.system"],
+    "networkExec": [
+      "requests.get",
+      "requests.post",
+      "requests.put",
+      "requests.delete",
+      "requests.patch",
+      "requests.head",
+      "requests.options",
+      "urllib.request.urlopen",
+      "urllib.request.urlretrieve",
+      "http.client.HTTPConnection",
+      "http.client.HTTPSConnection",
+      "aiohttp.ClientSession",
+      "httpx.get",
+      "httpx.post",
+      "httpx.put",
+      "httpx.delete",
+      "httpx.patch",
+      "httpx.Client",
+      "httpx.AsyncClient",
+      "socket.socket",
+      "socket.create_connection"
+    ],
+    "dbExec": ["sqlite3.connect", "psycopg2.connect", "pymysql.connect", "sqlalchemy.create_engine"],
+    "tempfileWrite": [
+      "tempfile.NamedTemporaryFile",
+      "tempfile.mkdtemp",
+      "tempfile.mkstemp",
+      "tempfile.TemporaryDirectory"
+    ],
+    "dangerousDeserializeExec": ["pickle.load", "pickle.loads", "marshal.load", "marshal.loads"]
+  },
+  "pathCalls": {
+    "read": {
+      "oci.config.from_file": { "index": 0, "names": ["file_location"] }
+    },
+    "write": {
+      "os.makedirs": { "index": 0, "names": ["name", "path"] },
+      "os.remove": { "index": 0, "names": ["path"] },
+      "os.rename": { "index": 1, "names": ["dst", "dst_dir_fd"] },
+      "os.replace": { "index": 1, "names": ["dst", "dst_dir_fd"] },
+      "os.unlink": { "index": 0, "names": ["path"] },
+      "shutil.copy": { "index": 1, "names": ["dst"] },
+      "shutil.copy2": { "index": 1, "names": ["dst"] },
+      "shutil.copytree": { "index": 1, "names": ["dst"] },
+      "shutil.move": { "index": 1, "names": ["dst"] },
+      "shutil.rmtree": { "index": 0, "names": ["path"] }
+    }
+  },
+  "sdk": {
+    "oci": {
+      "execCalls": [
+        "oci.identity.IdentityClient",
+        "oci.core.ComputeClient",
+        "oci.core.VirtualNetworkClient",
+        "oci.object_storage.ObjectStorageClient",
+        "oci.database.DatabaseClient",
+        "oci.secrets.SecretsClient",
+        "oci.key_management.KmsManagementClient",
+        "oci.pagination.list_call_get_all_results",
+        "oci.pagination.list_call_get_all_results_generator"
+      ],
+      "clientMethodPrefixes": [
+        "oci.identity.IdentityClient.",
+        "oci.core.ComputeClient.",
+        "oci.core.VirtualNetworkClient.",
+        "oci.object_storage.ObjectStorageClient.",
+        "oci.database.DatabaseClient.",
+        "oci.secrets.SecretsClient.",
+        "oci.key_management.KmsManagementClient."
+      ]
+    },
+    "ghapi": {
+      "execCalls": [
+        "ghapi.all.GhApi",
+        "ghapi.core.GhApi",
+        "ghapi.graphql.gh_query",
+        "ghapi.page.paged",
+        "ghapi.page.pages",
+        "ghapi.auth.GhDeviceAuth",
+        "ghapi.auth.github_auth_device",
+        "GhApi.create_gist",
+        "GhApi.create_release",
+        "GhApi.delete_release",
+        "GhApi.upload_file",
+        "GhApi.enable_pages"
+      ],
+      "writeCalls": [
+        "ghapi.actions.create_workflow_files",
+        "ghapi.actions.create_workflow",
+        "ghapi.actions.gh_create_workflow"
+      ],
+      "instanceConstructors": ["GhApi", "ghapi.all.GhApi", "ghapi.core.GhApi"]
+    },
+    "atlassian": {
+      "constructors": [
+        { "family": "jira", "variants": ["Jira", "atlassian.Jira", "atlassian.jira.Jira"] },
+        {
+          "family": "confluence",
+          "variants": [
+            "Confluence",
+            "atlassian.Confluence",
+            "atlassian.confluence.Confluence",
+            "ConfluenceCloud",
+            "atlassian.ConfluenceCloud",
+            "atlassian.confluence.ConfluenceCloud",
+            "ConfluenceServer",
+            "atlassian.ConfluenceServer",
+            "atlassian.confluence.ConfluenceServer"
+          ]
+        },
+        {
+          "family": "bitbucket",
+          "variants": [
+            "Bitbucket",
+            "atlassian.Bitbucket",
+            "atlassian.bitbucket.Bitbucket",
+            "Cloud",
+            "atlassian.Cloud",
+            "atlassian.bitbucket.Cloud"
+          ]
+        },
+        {
+          "family": "servicedesk",
+          "variants": [
+            "ServiceDesk",
+            "atlassian.ServiceDesk",
+            "atlassian.servicedesk.ServiceDesk",
+            "atlassian.service_desk.ServiceDesk"
+          ]
+        },
+        { "variants": ["Crowd", "atlassian.Crowd"] },
+        { "variants": ["Xray", "atlassian.Xray"] },
+        { "variants": ["CloudAdminOrgs", "atlassian.CloudAdminOrgs"] },
+        { "variants": ["CloudAdminUsers", "atlassian.CloudAdminUsers"] }
+      ],
+      "clientMethods": {
+        "jira": ["jql", "issue", "create_issue", "issue_create", "issue_transition", "issue_add_comment"],
+        "confluence": ["get_page_by_id", "get_page_by_title", "create_page", "update_page", "cql", "attach_file"],
+        "bitbucket": [
+          "get_repo",
+          "create_repo",
+          "open_pull_request",
+          "get_pull_requests",
+          "get_pipelines",
+          "trigger_pipeline"
+        ],
+        "servicedesk": ["get_service_desks", "create_customer_request", "get_queues", "create_request_comment"]
+      }
+    }
+  },
+  "candidates": {
+    "unknown": []
+  }
+}
