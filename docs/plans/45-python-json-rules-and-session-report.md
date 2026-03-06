@@ -187,7 +187,7 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 - Files: `src/python/python-analyze.ts`, `src/python/python-rules.json`, `.opencode/test/python-analyze.test.ts`
 - Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `bun -e "import('./src/python/python-analyze.ts').then((m) => m.analyze(\"open('f')\").then(() => console.log('analyzer loads ok')) )"`
 - Follow-ups: Phase 5 must document shipping `src/python/python-rules.json` with copied installs; future utility work can now target the shared JSON file instead of TypeScript constants.
-- Commit: Not committed
+- Commit: `aceca95`
 - PR/Jira: None
 
 ### Phase 2 - Refactor analyzer to consume JSON-backed rules
@@ -213,6 +213,16 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 
 - `refactor: route python classification through json rules`
 
+#### Notes
+
+- Status: Done (2026-03-06)
+- Summary: Declarative analyzer lookups were fully rerouted through loaded JSON during Phase 1 implementation, so no separate behavior-changing refactor was needed after `aceca95` landed.
+- Files: `src/python/python-analyze.ts`, `src/python/python-rules.json`, `.opencode/test/python-analyze.test.ts`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`
+- Follow-ups: Phase 3 can consume `analyze()` directly without any remaining hardcoded rule-table dependency.
+- Commit: `aceca95`
+- PR/Jira: None
+
 ### Phase 3 - Add saved-session report utility
 
 **Goal:** Periodically mine unknown callables from saved inline Python snippets.
@@ -237,6 +247,16 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 **Commit message:**
 
 - `feat: add saved-session python callable report`
+
+#### Notes
+
+- Status: Done (2026-03-06)
+- Summary: Added a read-only `src/python-session-report.ts` utility that scans saved inline Python tool snippets from the OpenCode SQLite database, re-runs the analyzer, and reports grouped unknown callables in text or JSON form.
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `docs/plans/45-python-json-rules-and-session-report.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test test/python-analyze.test.ts test/python-session-report.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --help`
+- Follow-ups: Phase 4 can build on this utility by writing findings into `src/python/python-rules.json` candidates.
+- Commit: Not committed
+- PR/Jira: None
 
 ### Phase 4 - Add JSON update mode for report findings
 
@@ -311,7 +331,7 @@ Avoid adding new dependencies just to parse the rule file. The `.opencode/packag
 ## Phase Status
 
 - Phase 1: DONE (2026-03-06)
-- Phase 2: TODO
-- Phase 3: TODO
+- Phase 2: DONE (2026-03-06)
+- Phase 3: DONE (2026-03-06)
 - Phase 4: TODO
 - Phase 5: TODO
