@@ -34,13 +34,16 @@ function getAskMetadata(context: ReturnType<typeof createMockContext>, permissio
         source?: string
         mode?: string
         scriptPath?: string
-      codePreview?: string
-      codePreviewTruncated?: boolean
-      codePreviewTruncationMarker?: string | null
-      codePreviewBytes?: { total?: number; preview?: number }
-      codePreviewLines?: { total?: number; preview?: number }
-      codeExpanded?: string
-      codeExpandedAvailable?: boolean
+        codePreview?: string
+        codePreviewTruncated?: boolean
+        codePreviewTruncationMarker?: string | null
+        codePreviewBytes?: { total?: number; preview?: number }
+        codePreviewLines?: { total?: number; preview?: number }
+        codeExpanded?: string
+        codeExpandedAvailable?: boolean
+        operations?: Array<{ kind?: string; call?: string; pattern?: string; always?: string }>
+        permissionPatterns?: string[]
+        permissionAlways?: string[]
       }
     | undefined
 }
@@ -203,7 +206,7 @@ describe("python tool runtime", () => {
   describe("permission patterns (inline code)", () => {
     it("includes inline code preview metadata in python ask", async () => {
       await withWorkspace(async ({ worktree }) => {
-        const source = "print('phase15-inline')\n"
+        const source = "mypkg.do_thing()\n"
         const context = createMockContext({ worktree, directory: worktree })
 
         await executeExpectingEnoent(
@@ -232,7 +235,7 @@ describe("python tool runtime", () => {
     it("truncates large inline source preview deterministically", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
-        const largeSource = Array.from({ length: 200 }, (_, idx) => `print(${idx})`).join("\n")
+        const largeSource = Array.from({ length: 200 }, () => "mypkg.do_thing()").join("\n")
 
         await executeExpectingEnoent(
           {
@@ -256,7 +259,7 @@ describe("python tool runtime", () => {
     it("omits expanded source metadata when source exceeds 50KB", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
-        const veryLargeSource = `print('${"x".repeat(70_000)}')`
+        const veryLargeSource = `mypkg.do_thing('${"x".repeat(70_000)}')`
 
         await executeExpectingEnoent(
           {
@@ -368,13 +371,113 @@ describe("python tool runtime", () => {
         expect(ask?.patterns).toContain("unknown:callable:mypkg.do_thing")
       })
     })
+
+    it("skips python ask for emit-only code and keeps emit operations in runtime metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "print('hello')",
+            args: [],
+            description: "emit only",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([expect.objectContaining({ kind: "emit", call: "print", pattern: "emit:print" })]),
+        )
+      })
+    })
+
+    it("skips python ask for pure-only code and keeps pure operations in runtime metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import re\nre.search('a+', text)",
+            args: [],
+            description: "pure only",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([expect.objectContaining({ kind: "pure", call: "re.search", pattern: "pure:re.search" })]),
+        )
+      })
+    })
+
+    it("keeps emit non-blocking when mixed with write patterns", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "print('hello')\nopen('a.txt', 'w')",
+            args: [],
+            description: "emit and write",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toContain(`write:${toSlash(path.join(worktree, "a.txt"))}`)
+        expect(ask?.patterns).not.toContain("emit:print")
+        expect(ask?.always).not.toEqual(expect.arrayContaining([expect.stringMatching(/^emit:/)]))
+
+        const metadata = getAskMetadata(context, "python")
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "emit", call: "print" }),
+            expect.objectContaining({ kind: "write", call: "open" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps pure non-blocking when mixed with unknown patterns", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import re\nre.search('a+', text)\nmypkg.do_thing()",
+            args: [],
+            description: "pure and unknown",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toContain("unknown:callable:mypkg.do_thing")
+        expect(ask?.patterns).not.toContain("pure:re.search")
+        expect(ask?.always).not.toEqual(expect.arrayContaining([expect.stringMatching(/^pure:/)]))
+
+        const metadata = getAskMetadata(context, "python")
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "re.search" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:mypkg.do_thing" }),
+          ]),
+        )
+      })
+    })
   })
 
   describe("script-file permission behavior", () => {
     it("includes script code preview metadata in python ask", async () => {
       await withWorkspace(async ({ worktree }) => {
         const scriptPath = path.join(worktree, "preview.py")
-        const scriptSource = "print('phase15-script')\n"
+        const scriptSource = "open('preview.txt', 'r')\n"
         await writeFile(scriptPath, scriptSource, "utf8")
 
         const context = createMockContext({ worktree, directory: worktree })
@@ -504,6 +607,33 @@ describe("python tool runtime", () => {
 
         const ask = getAsk(context, "external_directory")
         expect(ask?.patterns).toContain(`${toSlash(outside)}/*`)
+      })
+    })
+
+    it("asks external_directory without python ask for emit-only outside workdir", async () => {
+      await withWorkspace(async ({ root, worktree }) => {
+        const outside = path.join(root, "outside")
+        await mkdir(outside, { recursive: true })
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "print('outside')",
+            workdir: outside,
+            args: [],
+            description: "emit outside workdir",
+          },
+          context,
+        )
+
+        const externalAsk = getAsk(context, "external_directory")
+        expect(externalAsk?.patterns).toContain(`${toSlash(outside)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([expect.objectContaining({ kind: "emit", call: "print" })]),
+        )
       })
     })
 

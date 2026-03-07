@@ -112,11 +112,15 @@ function execAlways(call: string) {
   return `${parts[0]}.*`
 }
 
-function callAlways(kind: "read" | "write", call: string) {
+function callAlways(kind: "read" | "write" | "emit" | "pure", call: string) {
   const parts = call.split(".")
   if (!parts[0]) return `${kind}:*`
   if (parts.length <= 1) return `${kind}:${parts[0]}`
   return `${kind}:${parts[0]}.*`
+}
+
+function isPermissionKind(kind: PythonEvent["kind"]): kind is "read" | "write" | "exec" | "unknown" {
+  return kind === "read" || kind === "write" || kind === "exec" || kind === "unknown"
 }
 
 function unknownAlways(call: string) {
@@ -157,8 +161,6 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
       const pattern = `${event.kind}:${toSlash(resolved)}`
       const allow = `${event.kind}:${asGlob(resolved, "file")}`
       if (!isInside(worktree, resolved)) external.add(asGlob(resolved, "file"))
-      patterns.add(pattern)
-      always.add(allow)
       operations.push({
         kind: event.kind,
         call: event.call,
@@ -166,26 +168,34 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
         pattern,
         always: allow,
       })
+      if (isPermissionKind(event.kind)) {
+        patterns.add(pattern)
+        always.add(allow)
+      }
       continue
     }
 
     if (event.dynamicPath) {
       const pattern = `${event.kind}:<dynamic>`
       const allow = `${event.kind}:*`
-      patterns.add(pattern)
-      always.add(allow)
       operations.push({ kind: event.kind, call: event.call, pattern, always: allow })
+      if (isPermissionKind(event.kind)) {
+        patterns.add(pattern)
+        always.add(allow)
+      }
       continue
     }
 
     const pattern = `${event.kind}:${event.call}`
     const allow = callAlways(event.kind, event.call)
-    patterns.add(pattern)
-    always.add(allow)
     operations.push({ kind: event.kind, call: event.call, pattern, always: allow })
+    if (isPermissionKind(event.kind)) {
+      patterns.add(pattern)
+      always.add(allow)
+    }
   }
 
-  if (patterns.size === 0) {
+  if (patterns.size === 0 && operations.length === 0) {
     patterns.add("unknown:empty-analysis")
     always.add("unknown:*")
     operations.push({
@@ -388,6 +398,12 @@ export default tool({
       ...codeExpanded,
     }
 
+    const permissionMetadata = {
+      operations: plan.operations,
+      permissionPatterns: plan.patterns,
+      permissionAlways: plan.always,
+    }
+
     if (plan.external.length > 0) {
       await context.ask({
         permission: "external_directory",
@@ -397,15 +413,17 @@ export default tool({
       })
     }
 
-    await context.ask({
-      permission: "python",
-      patterns: plan.patterns,
-      always: plan.always,
-      metadata: {
-        ...askMetadata,
-        operations: plan.operations,
-      },
-    })
+    if (plan.patterns.length > 0) {
+      await context.ask({
+        permission: "python",
+        patterns: plan.patterns,
+        always: plan.always,
+        metadata: {
+          ...askMetadata,
+          ...permissionMetadata,
+        },
+      })
+    }
 
     const runArgs = hasCode ? ["-c", source, ...args.args] : [script!, ...args.args]
     const command = commandPreview(python, script, args.args)
@@ -433,6 +451,7 @@ export default tool({
         description: args.description,
         command,
         cwd,
+        ...permissionMetadata,
       },
     })
 
@@ -444,6 +463,7 @@ export default tool({
           description: args.description,
           command,
           cwd,
+          ...permissionMetadata,
         },
       })
     }
@@ -514,6 +534,7 @@ export default tool({
         command,
         cwd,
         exit: proc.exitCode,
+        ...permissionMetadata,
       },
     })
 

@@ -173,6 +173,16 @@ Calls that cannot be reliably classified.
 
 - `feat: honor emit and pure runtime semantics`
 
+#### Notes
+
+- Status: Done (2026-03-07)
+- Summary: Updated runtime permission planning so `emit`/`pure` are non-blocking for `python` asks, while preserving these events in runtime metadata operations for observability.
+- Files: `src/python.ts`, `.opencode/test/python.test.ts`
+- Tests: `cd .opencode && bun test test/python.test.ts`
+- Follow-ups: Phase 3 should ensure review/report defaults mirror runtime behavior by including `emit` and suppressing `pure` unless explicitly requested.
+- Commit: Not committed
+- PR/Jira: None
+
 ### Phase 3 - Review/report/TUI taxonomy update
 
 **Goal:** Integrate `emit` in review and suppress `pure` by default.
@@ -241,6 +251,6 @@ Calls that cannot be reliably classified.
 ## Phase Status
 
 - Phase 1: DONE
-- Phase 2: TODO
+- Phase 2: DONE
 - Phase 3: TODO
 - Phase 4: TODO
