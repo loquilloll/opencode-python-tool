@@ -13,18 +13,17 @@ stronger permission controls than ad-hoc shell execution.
 Use this project when you need:
 
 - **Pre-execution static analysis** of Python source via Tree-sitter AST
-  parsing, classifying every call into `read`, `write`, `exec`, or `unknown`
-  events.
+  parsing, classifying every call into `read`, `write`, `emit`, `exec`,
+  `pure`, or `unknown` events.
 - **Explicit permission asks** (`python` + `external_directory`) before any code
-  runs, with structured metadata including code preview, event patterns, and
-  always-allow suggestions.
+  runs, with structured metadata including code preview, event patterns,
+  always-allow suggestions, and non-blocking `emit`/`pure` observability.
 - **Guardrails for high-risk execution paths** -- subprocess invocations are
   hard-blocked, dangerous builtins and deserialization calls are denied by
   default.
 - **SDK-aware classification** for OCI, GitHub API (ghapi), and
   Atlassian (atlassian-python-api) client libraries.
-- **Repeatable tests** around both analyzer and runtime behavior (74 tests,
-  160 assertions).
+- **Repeatable tests** around analyzer, runtime, and session-review workflows.
 
 ## Architecture
 
@@ -75,7 +74,7 @@ flowchart TD
 | File | Purpose |
 |------|---------|
 | `src/python.ts` | Runtime entry point: arg validation, source loading, analyzer call, permission asks, subprocess guard, process execution, timeout/abort handling, metadata streaming. |
-| `src/python/python-analyze.ts` | Tree-sitter analyzer that classifies Python calls into `read \| write \| exec \| unknown` events with optional path extraction. Loads cached declarative rules from `src/python/python-rules.json` and keeps procedural heuristics in TypeScript. |
+| `src/python/python-analyze.ts` | Tree-sitter analyzer that classifies Python calls into `read \| write \| emit \| exec \| pure \| unknown` events with optional path extraction. Loads cached declarative rules from `src/python/python-rules.json` and keeps procedural heuristics in TypeScript. |
 | `src/python/python-rules.json` | Declarative call/method/path rule inventory consumed by the analyzer. `candidates.unknown` is review-only evidence, not live classification. |
 | `src/python/python.txt` | Tool prompt that guides model usage (`code` vs `scriptPath`, non-interactive constraints, safety behavior). |
 | `src/python/env.d.ts` | `*.txt` module typing for TypeScript imports. |
@@ -348,7 +347,7 @@ to review safely in an automated flow.
 ## Analyzer Classification Reference
 
 The static analyzer (`python-analyze.ts`) uses Tree-sitter to parse Python
-source and classify every function call into one of four event kinds:
+source and classify every function call into one of six event kinds:
 
 ### Event kinds
 
@@ -356,8 +355,16 @@ source and classify every function call into one of four event kinds:
 |------|---------|-------------------|
 | `read` | File/data read operation | `read:` |
 | `write` | File/data write operation | `write:` |
+| `emit` | Outward reporting/signaling (stdout/logging/metrics) without durable state mutation | `emit:` |
 | `exec` | Process spawn, dynamic execution, network, database, or dangerous API call | `exec:` |
+| `pure` | In-memory-only computation with no external interaction | `pure:` |
 | `unknown` | Unrecognized, dynamic, or parse-error call | `unknown:` |
+
+Runtime ask policy:
+
+- `read`, `write`, `exec`, and `unknown` participate in `python` permission asks.
+- `emit` is analyzer/report visible and included in runtime operation metadata, but non-blocking by default.
+- `pure` is analyzer-visible and review-optional, but excluded from permission asks by default.
 
 ### Classification tables
 
@@ -387,6 +394,15 @@ source and classify every function call into one of four event kinds:
 |------|------|
 | `json.load`, `yaml.load`, `yaml.safe_load` | read |
 | `json.dump`, `yaml.dump`, `yaml.safe_dump` | write |
+
+#### Emit and pure defaults
+
+| Call | Kind |
+|------|------|
+| `print`, `logging.debug/info/warning/error/critical/exception/log`, `warnings.warn` | emit |
+| `re.compile`, `re.search`, `re.match`, `re.fullmatch`, `re.findall`, `re.finditer`, `re.split`, `re.escape` | pure |
+
+`re.sub` is intentionally not classified as `pure` by default because callable replacements can hide side effects.
 
 #### Tempfile
 
@@ -516,6 +532,8 @@ Before execution, the runtime analyzes source and asks permissions with metadata
   resolve outside the worktree.
 - Asks `python` with event-derived patterns (`read:*`, `write:*`, `exec:*`,
   `unknown:*`).
+- Keeps `emit`/`pure` in runtime `operations` metadata for observability, but does
+  not ask `python` permissions for those kinds by default.
 - Includes bounded executable-source preview in ask metadata.
 
 #### Preview limits
@@ -598,8 +616,11 @@ Terminal conditions append `<python_metadata>` to the output:
 - The analyzer loads declarative rule data from `src/python/python-rules.json` by default. Set `OPENCODE_PYTHON_RULES` to point at a different rules file.
 - `src/python-session-report.ts` scans saved OpenCode sessions, re-analyzes inline `state.input.code`, and skips `scriptPath` entries.
 - `--update-candidates` only updates `candidates.unknown` in the rules JSON. It does not automatically change live `methods`, `calls`, or `pathCalls` classifier buckets.
-- `--review-next` and `--decide` provide a snippet-centric human review loop backed by a sidecar ledger.
-- `--promote-reviewed` promotes consistently reviewed callables into `calls.read`, `calls.write`, or `calls.exec`.
+- `--review-next` and `--decide` provide a snippet-centric human review loop backed by a sidecar ledger, with decisions such as `read`, `write`, `emit`, `exec`, `ignore`, and `needs-code`.
+- `--review-tui` provides a one-key terminal review UI that shows the snippet and one focused candidate at a time (`e` marks `emit`).
+- Review modes include `unknown` and `emit` by default; add `--include-pure` when you also want `pure` candidates in the queue.
+- `--review-next` now asks `opencode run` for `read` and `write` confidence scores, caches successful score bundles, and falls back to local heuristics if scoring fails.
+- `--promote-reviewed` promotes consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
 - `src/python-session-report.ts` is an operator utility run from this repo checkout; it is not an OpenCode tool that belongs in `~/.config/opencode/tools/`.
 
 Example report commands:
@@ -608,18 +629,23 @@ Example report commands:
 cd .opencode
 bundle="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db"
 ledger="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-review.json"
+scores="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-score-cache.json"
 
 bun run ../src/python-session-report.ts --db "$bundle"
 bun run ../src/python-session-report.ts --db "$bundle" --since 2026-03-01T00:00:00Z --samples 5
 bun run ../src/python-session-report.ts --db "$bundle" --json
 bun run ../src/python-session-report.ts --db "$bundle" --update-candidates
-bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next
-bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --decide 1=read,2=write
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-next
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-tui
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --decide 1=read,2=emit
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --include-pure
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --rules ../src/python/python-rules.json --promote-reviewed
 bun run ../src/python-session-report.ts --db "$bundle" --rules ../src/python/python-rules.json --update-candidates
 ```
 
 Use a full scan for `--promote-reviewed`; it intentionally rejects `--since` so older unresolved contexts cannot be skipped during promotion.
+
+If you want to invalidate cached `opencode run` scores, remove `${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-score-cache.json`.
 
 ## Testing and Verification
 

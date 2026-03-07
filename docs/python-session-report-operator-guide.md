@@ -14,7 +14,7 @@ tags:
 
 ## Purpose
 
-Use `src/python-session-report.ts` to scan saved OpenCode sessions, re-run the current Python analyzer on saved inline code snippets, review unknown callable usage, and promote reviewed decisions into live callable rules when they are safe to do so.
+Use `src/python-session-report.ts` to scan saved OpenCode sessions, re-run the current Python analyzer on saved inline code snippets, review unresolved callable usage (`unknown` plus `emit` by default), and promote reviewed decisions into live callable rules when they are safe to do so.
 
 This guide assumes:
 
@@ -29,9 +29,9 @@ This utility is not an OpenCode tool. Do not install it under `~/.config/opencod
 - reads saved tool parts from the OpenCode SQLite database
 - re-analyzes saved inline `state.input.code`
 - reports unknown callables in text or JSON
-- builds a snippet-centric review queue with read/write confidence signals
+- builds a snippet-centric review queue (`unknown` + `emit` by default, optional `pure` via `--include-pure`) with read/write confidence signals
 - stores human decisions in a sidecar review ledger
-- can promote consistently reviewed callables into `calls.read`, `calls.write`, or `calls.exec`
+- can promote consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`
 - can merge findings into `candidates.unknown` in a rules file
 
 ## What It Does Not Do
@@ -49,11 +49,13 @@ OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
 DB="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db"
 RULES="$OPENCODE_HOME/tools/python/python-rules.json"
 LEDGER="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-review.json"
+SCORES="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-score-cache.json"
 ```
 
 - `DB` is the saved OpenCode session database
 - `RULES` is the global rules file used by your installed Python tool
 - `LEDGER` stores human review decisions separately from the rules file
+- `SCORES` caches successful `opencode run` review scores
 
 ## Prerequisites
 
@@ -71,6 +73,7 @@ OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
 DB="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db"
 RULES="$OPENCODE_HOME/tools/python/python-rules.json"
 LEDGER="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-review.json"
+SCORES="${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-score-cache.json"
 
 cd "$REPO/.opencode"
 ```
@@ -82,6 +85,16 @@ bun run ../src/python-session-report.ts --help
 ```
 
 If that prints usage information, the utility is runnable from the repo.
+
+## Review Score Source
+
+When you use `--review-next`, the utility asks `opencode run` to score the pending snippet candidates for `read` and `write` confidence.
+
+- successful score bundles are cached in `"$SCORES"`
+- cached results are reused on later review passes
+- if `opencode run` fails, times out, or returns invalid JSON, the utility falls back to local heuristic scores for that invocation only
+- rendered candidates show `source=opencode-run`, `source=opencode-cache`, or `source=heuristic-fallback`
+- if you change the scorer prompt/version or want a fresh pass, remove `"$SCORES"`
 
 ## Read-Only Reporting
 
@@ -146,7 +159,14 @@ What this does not do:
 
 ```bash
 OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next
+```
+
+Include pure candidates only when explicitly needed:
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --include-pure
 ```
 
 This prints:
@@ -163,20 +183,21 @@ Use the numbered list shown by `--review-next`.
 
 ```bash
 OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next --decide 1=read,2=write
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --decide 1=read,2=write
 ```
 
 You can also target candidates by fingerprint instead of index:
 
 ```bash
 OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next --decide abc123def4567890=ignore
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --decide abc123def4567890=ignore
 ```
 
 Supported decisions:
 
 - `read`
 - `write`
+- `emit`
 - `exec`
 - `ignore`
 - `needs-code`
@@ -188,11 +209,46 @@ OPENCODE_PYTHON_RULES="$RULES" \
 bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-json
 ```
 
-Use this when you want to inspect the queue programmatically or feed it into another OpenCode workflow.
+Use this when you want to inspect the queue programmatically or feed it into another OpenCode workflow. `--review-json` keeps the stored heuristic scores; `opencode run` scoring is applied by `--review-next`.
+
+## One-Key Review UI
+
+If you want a faster operator loop, use the terminal UI instead of repeated `--review-next --decide` calls.
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-tui
+```
+
+The UI shows:
+
+- the code snippet
+- one focused candidate at a time
+- `read` / `write` confidence scores and score source
+- a highlighted occurrence of the current candidate in the snippet
+
+One-key controls:
+
+- `y` accept the suggested decision (`read`/`write`, or `emit` when the candidate kind is `emit`)
+- `n` choose the opposite of the suggestion (`read` <-> `write`, or `ignore` for `emit` suggestions)
+- `r` force `read`
+- `w` force `write`
+- `e` force `emit`
+- `x` mark `exec`
+- `i` mark `ignore`
+- `c` mark `needs-code`
+- `s` skip this candidate for the current UI session
+- `v` toggle code expansion
+- `?` show help
+- `q` quit
+
+`--review-tui` requires a real TTY. Use `--review-next` in non-interactive environments.
+
+Skip is session-local only. If you quit and restart the TUI, skipped candidates will appear again until they are classified.
 
 ## Promote Reviewed Decisions
 
-When a callable has been reviewed across all currently known snippet contexts and all review decisions agree on `read`, `write`, or `exec`, you can promote it into live call rules.
+When a callable has been reviewed across all currently known snippet contexts and all review decisions agree on `read`, `write`, `emit`, or `exec`, you can promote it into live call rules.
 
 ```bash
 OPENCODE_PYTHON_RULES="$RULES" \
@@ -205,7 +261,7 @@ What this does:
 
 - inspects the current unknown-call occurrences
 - joins them with the review ledger
-- promotes consistently reviewed callables into `calls.read`, `calls.write`, or `calls.exec`
+- promotes consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`
 - removes promoted callables from `candidates.unknown`
 
 What this does not do:
@@ -257,6 +313,7 @@ Typical destinations:
 
 - `calls.read`
 - `calls.write`
+- `calls.emit`
 - `calls.exec`
 - `methods.read`
 - `methods.write`
@@ -302,7 +359,9 @@ Run these from `"$REPO/.opencode"`:
 ```bash
 bun run ../src/python-session-report.ts --help
 OPENCODE_PYTHON_RULES="$RULES" bun run ../src/python-session-report.ts --db "$DB"
-OPENCODE_PYTHON_RULES="$RULES" bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next
+OPENCODE_PYTHON_RULES="$RULES" bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next
+OPENCODE_PYTHON_RULES="$RULES" bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --include-pure
+OPENCODE_PYTHON_RULES="$RULES" bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-tui
 bun test test/python-analyze.test.ts
 bun test test/python-session-report.test.ts
 ```
@@ -321,14 +380,14 @@ bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok
 - Malformed saved rows are skipped and counted instead of failing the whole scan.
 - `scriptPath` executions are intentionally out of scope for this workflow.
 - `read` and `write` confidence scores are heuristics only. They guide review; they do not make the final decision for you.
-- `--promote-reviewed` only promotes consistently reviewed callables into `calls.read`, `calls.write`, or `calls.exec`. More nuanced rule shapes still need manual edits.
+- `--promote-reviewed` only promotes consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`. More nuanced rule shapes still need manual edits.
 
 ## Recommended Operator Loop
 
 1. Run a read-only report.
 2. Run `--update-candidates` if you want to capture evidence in the rules file.
-3. Use `--review-next` to classify one snippet at a time.
-4. Apply decisions with `--decide`.
+3. Use `--review-tui` for the fastest one-key classification loop, or `--review-next` / `--decide` if you need a scriptable path.
+4. Apply decisions in the TUI or with `--decide`.
 5. Run `--promote-reviewed` to move consistently reviewed callables into live call buckets.
 6. Re-run the report to confirm they are no longer unknown.
 7. Sync vetted rule changes back into `src/python/python-rules.json` in this repo.

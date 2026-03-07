@@ -1,11 +1,11 @@
 ---
 title: Python Action Taxonomy (Emit + Pure) Plan
-status: in-progress
+status: done
 plan: 49-python-action-taxonomy-emit-pure
 created: 2026-03-07
 tags:
   - type/plan
-  - status/in-progress
+  - status/done
   - project/opencode-python-tool
   - topic/python-analyzer
   - topic/permissions
@@ -147,7 +147,7 @@ Calls that cannot be reliably classified.
 - Files: `src/python/python-analyze.ts`, `src/python/python-rules.json`, `.opencode/test/python-analyze.test.ts`
 - Tests: `cd .opencode && bun test test/python-analyze.test.ts`
 - Follow-ups: Phase 2 must ensure runtime permission mapping keeps `emit` non-blocking and excludes `pure` from permission asks.
-- Commit: Not committed
+- Commit: `cdc79b7`
 - PR/Jira: None
 
 ### Phase 2 - Runtime permission behavior
@@ -180,7 +180,7 @@ Calls that cannot be reliably classified.
 - Files: `src/python.ts`, `.opencode/test/python.test.ts`
 - Tests: `cd .opencode && bun test test/python.test.ts`
 - Follow-ups: Phase 3 should ensure review/report defaults mirror runtime behavior by including `emit` and suppressing `pure` unless explicitly requested.
-- Commit: Not committed
+- Commit: `0701000`
 - PR/Jira: None
 
 ### Phase 3 - Review/report/TUI taxonomy update
@@ -214,7 +214,7 @@ Calls that cannot be reliably classified.
 - Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`
 - Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test test/python-analyze.test.ts test/python-session-report.test.ts`
 - Follow-ups: Phase 4 should document `--include-pure`, emit decision guidance, and emit promotion destinations in README/operator docs.
-- Commit: Not committed
+- Commit: `12d1983`
 - PR/Jira: None
 
 ### Phase 4 - Docs and operator guidance
@@ -242,6 +242,16 @@ Calls that cannot be reliably classified.
 
 - `docs: describe expanded python action taxonomy`
 
+#### Notes
+
+- Status: Done (2026-03-07)
+- Summary: Updated README and operator guidance to document the expanded taxonomy, emit decision controls, `--include-pure` behavior, and emit-aware promotion destinations.
+- Files: `README.md`, `docs/python-session-report-operator-guide.md`, `docs/plans/49-python-action-taxonomy-emit-pure.md`
+- Tests: `cd .opencode && bun test`; `cd .opencode && bun run ../src/python-session-report.ts --help`
+- Follow-ups: None
+- Commit: Not committed
+- PR/Jira: None
+
 ## Acceptance Criteria
 
 - Analyzer can emit `emit` and `pure` categories.
@@ -263,4 +273,4 @@ Calls that cannot be reliably classified.
 - Phase 1: DONE
 - Phase 2: DONE
 - Phase 3: DONE
-- Phase 4: TODO
+- Phase 4: DONE
