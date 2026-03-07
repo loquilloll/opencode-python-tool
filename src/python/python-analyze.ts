@@ -41,7 +41,7 @@ type Args = {
   keyword: Record<string, Value>
 }
 
-export type PythonEventKind = "read" | "write" | "exec" | "unknown"
+export type PythonEventKind = "read" | "write" | "emit" | "exec" | "pure" | "unknown"
 
 export type PythonEvent = {
   kind: PythonEventKind
@@ -66,11 +66,15 @@ type Rules = {
   methods: {
     read: Set<string>
     write: Set<string>
+    emit: Set<string>
+    pure: Set<string>
   }
   calls: {
     read: Set<string>
     write: Set<string>
+    emit: Set<string>
     exec: Set<string>
+    pure: Set<string>
     networkExec: Set<string>
     dbExec: Set<string>
     tempfileWrite: Set<string>
@@ -123,6 +127,11 @@ function list(input: unknown, label: string) {
     out.push(item)
   }
   return out
+}
+
+function listOrEmpty(input: unknown, label: string) {
+  if (input === undefined) return []
+  return list(input, label)
 }
 
 function num(input: unknown, label: string) {
@@ -224,11 +233,15 @@ async function readRules(source: string | URL): Promise<Rules> {
     methods: {
       read: new Set(list(methods.read, "methods.read")),
       write: new Set(list(methods.write, "methods.write")),
+      emit: new Set(listOrEmpty(methods.emit, "methods.emit")),
+      pure: new Set(listOrEmpty(methods.pure, "methods.pure")),
     },
     calls: {
       read: new Set(list(calls.read, "calls.read")),
       write: new Set(list(calls.write, "calls.write")),
+      emit: new Set(listOrEmpty(calls.emit, "calls.emit")),
       exec: new Set(list(calls.exec, "calls.exec")),
+      pure: new Set(listOrEmpty(calls.pure, "calls.pure")),
       networkExec: new Set(list(calls.networkExec, "calls.networkExec")),
       dbExec: new Set(list(calls.dbExec, "calls.dbExec")),
       tempfileWrite: new Set(list(calls.tempfileWrite, "calls.tempfileWrite")),
@@ -446,6 +459,8 @@ function classify(
   const method = tail(call)
   if (rules.methods.read.has(method)) return pathEvent("read", call, pathFromPathMethod(fn))
   if (rules.methods.write.has(method)) return pathEvent("write", call, pathFromPathMethod(fn))
+  if (rules.methods.emit.has(method)) return { kind: "emit", call }
+  if (rules.methods.pure.has(method)) return { kind: "pure", call }
 
   const readSpec = rules.pathCalls.read[call]
   if (readSpec) return pathEvent("read", call, pick(input, readSpec.index, readSpec.names))
@@ -483,6 +498,9 @@ function classify(
 
   if (call.startsWith("subprocess.")) return { kind: "exec", call }
   if (call.startsWith("os.exec")) return { kind: "exec", call }
+
+  if (rules.calls.emit.has(call)) return { kind: "emit", call }
+  if (rules.calls.pure.has(call)) return { kind: "pure", call }
 
   return { kind: "unknown", call: `${CALLABLE_UNKNOWN_PREFIX}${call}` }
 }

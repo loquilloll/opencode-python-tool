@@ -12,12 +12,35 @@
       "unlink",
       "write_bytes",
       "write_text"
-    ]
+    ],
+    "emit": [],
+    "pure": []
   },
   "calls": {
     "read": ["json.load", "yaml.load", "yaml.safe_load"],
     "write": ["json.dump", "yaml.dump", "yaml.safe_dump"],
+    "emit": [
+      "print",
+      "logging.debug",
+      "logging.info",
+      "logging.warning",
+      "logging.error",
+      "logging.critical",
+      "logging.exception",
+      "logging.log",
+      "warnings.warn"
+    ],
     "exec": ["__import__", "compile", "eval", "exec", "os.popen", "os.system"],
+    "pure": [
+      "re.compile",
+      "re.search",
+      "re.match",
+      "re.fullmatch",
+      "re.findall",
+      "re.finditer",
+      "re.split",
+      "re.escape"
+    ],
     "networkExec": [
       "requests.get",
       "requests.post",

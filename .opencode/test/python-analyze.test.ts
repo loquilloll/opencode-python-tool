@@ -132,6 +132,57 @@ describe("python analyzer", () => {
     })
   })
 
+  describe("emit and pure classification", () => {
+    it("classifies print/logging/warnings calls as emit", async () => {
+      const events = await analyze([
+        "print('hello')",
+        "logging.info('ok')",
+        "logging.warning('careful')",
+        "warnings.warn('deprecated')",
+      ].join("\n"))
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "emit", call: "print" },
+          { kind: "emit", call: "logging.info" },
+          { kind: "emit", call: "logging.warning" },
+          { kind: "emit", call: "warnings.warn" },
+        ]),
+      )
+    })
+
+    it("classifies obvious regex calls as pure", async () => {
+      const events = await analyze([
+        "re.search('a+', text)",
+        "re.findall('a+', text)",
+        "re.match('a+', text)",
+      ].join("\n"))
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "re.search" },
+          { kind: "pure", call: "re.findall" },
+          { kind: "pure", call: "re.match" },
+        ]),
+      )
+    })
+
+    it("keeps unknown method-tail calls as unknown", async () => {
+      const events = await analyze("service.info('ok')\nservice.search('a+')")
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:service.info" },
+          { kind: "unknown", call: "callable:service.search" },
+        ]),
+      )
+    })
+
+    it("keeps re.sub outside pure classification", async () => {
+      const events = await analyze("re.sub('a+', '-', text)")
+      expect(events).toEqual([{ kind: "unknown", call: "callable:re.sub" }])
+    })
+  })
+
   describe("exec classification", () => {
     it("classifies subprocess, os, and dynamic execution builtins", async () => {
       const events = await analyze(
@@ -705,6 +756,28 @@ describe("python analyzer", () => {
         process.env.OPENCODE_PYTHON_RULES = file
         await writeFile(file, JSON.stringify(data))
         await expect(analyze("open('f')")).rejects.toThrow("Invalid python-rules.json: methods.read must be a string[]")
+      } finally {
+        if (prev === undefined) delete process.env.OPENCODE_PYTHON_RULES
+        else process.env.OPENCODE_PYTHON_RULES = prev
+        await rm(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("accepts legacy rules files that omit emit/pure buckets", async () => {
+      const prev = process.env.OPENCODE_PYTHON_RULES
+      const dir = await mkdtemp(path.join(os.tmpdir(), "python-rules-"))
+      const file = path.join(dir, "rules.json")
+
+      try {
+        const src = new URL("../../src/python/python-rules.json", import.meta.url)
+        const data = JSON.parse(await readFile(src, "utf8")) as Record<string, any>
+        delete data.methods.emit
+        delete data.methods.pure
+        delete data.calls.emit
+        delete data.calls.pure
+        process.env.OPENCODE_PYTHON_RULES = file
+        await writeFile(file, JSON.stringify(data))
+        await expect(analyze("open('f')")).resolves.toEqual([{ kind: "read", call: "open", path: "f" }])
       } finally {
         if (prev === undefined) delete process.env.OPENCODE_PYTHON_RULES
         else process.env.OPENCODE_PYTHON_RULES = prev
