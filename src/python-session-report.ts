@@ -1,12 +1,14 @@
 import { Database } from "bun:sqlite"
 import { createHash } from "crypto"
+import { spawn } from "child_process"
 import { mkdir } from "fs/promises"
 import os from "os"
 import path from "path"
+import * as rl from "readline"
 import { fileURLToPath } from "url"
 import { analyze } from "./python/python-analyze"
 
-type ReviewDecision = "read" | "write" | "exec" | "ignore" | "needs-code"
+type ReviewDecision = "read" | "write" | "emit" | "exec" | "ignore" | "needs-code"
 
 type Opts = {
   db: string
@@ -14,11 +16,14 @@ type Opts = {
   json: boolean
   samples: number
   rules: string
+  scoreCache: string
   update: boolean
   promoteReviewed: boolean
   ledger: string
   reviewJson: boolean
   reviewNext: boolean
+  reviewTui: boolean
+  includePure: boolean
   decide?: string
   recordDecision?: string
   help: boolean
@@ -52,6 +57,7 @@ type Sample = {
 }
 
 type Occurrence = Sample & {
+  kind: "unknown" | "emit" | "pure"
   call: string
   fingerprint: string
   snippetFingerprint: string
@@ -59,6 +65,7 @@ type Occurrence = Sample & {
   readConfidence: number
   writeConfidence: number
   reasons: string[]
+  scoreSource: string
 }
 
 type Seen = {
@@ -139,11 +146,13 @@ export type ReviewQueue = {
     lastSeen: string
     occurrences: Sample[]
     candidates: Array<{
+      kind: Occurrence["kind"]
       call: string
       fingerprint: string
       readConfidence: number
       writeConfidence: number
       reasons: string[]
+      scoreSource: string
       decision?: ReviewDecision
     }>
   }>
@@ -151,7 +160,26 @@ export type ReviewQueue = {
 
 export type ReviewSnippet = ReviewQueue["snippets"][number]
 
-type PromotionBucket = "read" | "write" | "exec"
+type ReviewItem = {
+  snippet: ReviewSnippet
+  candidate: ReviewSnippet["candidates"][number]
+  snippetIndex: number
+  snippetCount: number
+  candidateIndex: number
+  candidateCount: number
+  pendingCount: number
+}
+
+type ReviewKey = "y" | "n" | "r" | "w" | "e" | "x" | "i" | "c" | "s" | "v" | "?" | "q"
+
+type ReviewAction =
+  | { type: "decide"; decision: ReviewDecision }
+  | { type: "skip" }
+  | { type: "toggle" }
+  | { type: "help" }
+  | { type: "quit" }
+
+type PromotionBucket = "read" | "write" | "emit" | "exec"
 
 export type PromotionPlan = {
   generatedAt: string
@@ -171,6 +199,7 @@ type RulesDoc = {
   calls?: {
     read?: string[]
     write?: string[]
+    emit?: string[]
     exec?: string[]
     [key: string]: unknown
   }
@@ -181,8 +210,31 @@ type RulesDoc = {
   [key: string]: unknown
 }
 
+type ScoreRow = {
+  fingerprint: string
+  call: string
+  readConfidence: number
+  writeConfidence: number
+  reasons: string[]
+  scoreSource: string
+}
+
+type ScoreEntry = {
+  key: string
+  createdAt: string
+  scores: ScoreRow[]
+}
+
+type ScoreDoc = {
+  version: number
+  entries: ScoreEntry[]
+}
+
 const REVIEW_LEDGER_VERSION = 1
-const REVIEW_DECISIONS = ["read", "write", "exec", "ignore", "needs-code"] as const
+const REVIEW_DECISIONS = ["read", "write", "emit", "exec", "ignore", "needs-code"] as const
+const SCORE_CACHE_VERSION = 1
+const SCORE_PROMPT_VERSION = 1
+const SCORE_TIMEOUT = 30000
 
 function usage() {
   return [
@@ -192,12 +244,15 @@ function usage() {
     "  --db <path>      Override OpenCode session database path",
     "  --ledger <path>  Override review-ledger JSON path",
     "  --rules <path>   Override python rules JSON path",
+    "  --score-cache <path>  Override review score-cache JSON path",
     "  --since <iso>    Only scan rows updated at or after this ISO timestamp",
     "  --samples <n>    Sample sessions/previews per unknown callable (default: 3)",
+    "  --include-pure  Include pure analyzer events in review queues",
     "  --update-candidates  Write findings into candidates.unknown",
-    "  --promote-reviewed  Promote consistently reviewed callables into calls.read/write/exec",
+    "  --promote-reviewed  Promote consistently reviewed callables into calls.read/write/emit/exec",
     "  --review-json    Emit snippet-centric review queue JSON",
     "  --review-next    Show the next pending snippet review item",
+    "  --review-tui     Launch one-key interactive review UI",
     "  --decide <spec>  Apply decisions like 1=read,2=write or fp=ignore",
     "  --record-decision <fp=decision>  Upsert a ledger decision",
     "  --json           Emit JSON instead of text",
@@ -221,6 +276,11 @@ function defrules() {
 function defledger() {
   const root = process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state")
   return path.join(root, "opencode", "python-session-review.json")
+}
+
+function defscorecache() {
+  const root = process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state")
+  return path.join(root, "opencode", "python-session-score-cache.json")
 }
 
 function clamp(value: number) {
@@ -278,6 +338,247 @@ function score(call: string, code: string) {
   }
 }
 
+type Runner = (prompt: string) => Promise<string>
+
+function root() {
+  return path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+}
+
+function scorekey(item: ReviewSnippet) {
+  return fingerprint(
+    JSON.stringify({
+      v: SCORE_PROMPT_VERSION,
+      s: item.snippetFingerprint,
+      c: item.candidates.map((item) => item.fingerprint).sort(),
+    }),
+  )
+}
+
+function scoreprompt(item: ReviewSnippet) {
+  const body = item.candidates
+    .map((item) => [`- fingerprint: ${item.fingerprint}`, `  call: ${item.call}`].join("\n"))
+    .join("\n")
+  return [
+    "Return JSON only. Do not use tools. Do not ask questions.",
+    "You are scoring Python callables for a review tool.",
+    "For each candidate, estimate how likely it is to be a read or write operation based only on the snippet.",
+    "Use this exact JSON shape:",
+    '{"scores":[{"fingerprint":"...","call":"...","readConfidence":0.0,"writeConfidence":0.0,"reasons":["..."]}]}',
+    "Rules:",
+    "- include every candidate exactly once",
+    "- keep confidences between 0 and 0.99",
+    "- keep at most 3 short reasons per candidate",
+    "- reasons should explain the score, not make the final decision",
+    "",
+    "Python snippet:",
+    "```python",
+    item.code,
+    "```",
+    "",
+    "Candidates:",
+    body,
+  ].join("\n")
+}
+
+function unwrap(text: string) {
+  const raw = text.trim()
+  if (!raw) fail("Empty scorer output")
+  if (raw.startsWith("```")) {
+    const lines = raw.split(/\r?\n/)
+    const inner = lines.slice(1, lines[lines.length - 1] === "```" ? -1 : lines.length).join("\n").trim()
+    if (inner) return inner
+  }
+  const start = raw.indexOf("{")
+  const end = raw.lastIndexOf("}")
+  if (start >= 0 && end > start) return raw.slice(start, end + 1)
+  return raw
+}
+
+function scorerow(input: unknown, label: string): ScoreRow {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) fail(`${label} must be an object`)
+  const row = input as Record<string, unknown>
+  if (typeof row.fingerprint !== "string" || !row.fingerprint) fail(`${label}.fingerprint must be a string`)
+  if (typeof row.call !== "string" || !row.call) fail(`${label}.call must be a string`)
+  if (typeof row.readConfidence !== "number" || !Number.isFinite(row.readConfidence) || row.readConfidence < 0 || row.readConfidence > 0.99) {
+    fail(`${label}.readConfidence must be a number between 0 and 0.99`)
+  }
+  if (typeof row.writeConfidence !== "number" || !Number.isFinite(row.writeConfidence) || row.writeConfidence < 0 || row.writeConfidence > 0.99) {
+    fail(`${label}.writeConfidence must be a number between 0 and 0.99`)
+  }
+  return {
+    fingerprint: row.fingerprint,
+    call: row.call,
+    readConfidence: clamp(row.readConfidence),
+    writeConfidence: clamp(row.writeConfidence),
+    reasons: Array.isArray(row.reasons) ? row.reasons.filter((item): item is string => typeof item === "string").slice(0, 3) : [],
+    scoreSource: "opencode-run",
+  }
+}
+
+function parseoutput(text: string, item: ReviewSnippet) {
+  const raw = JSON.parse(unwrap(text)) as { scores?: unknown }
+  if (!Array.isArray(raw.scores)) fail("Scorer JSON must include scores[]")
+  const rows = raw.scores.map((item, i) => scorerow(item, `scores[${i}]`))
+  const want = new Map(item.candidates.map((item) => [item.fingerprint, item]))
+  const out = new Map<string, ScoreRow>()
+  for (const row of rows) {
+    const hit = want.get(row.fingerprint)
+    if (!hit) fail(`Unexpected scorer fingerprint: ${row.fingerprint}`)
+    if (hit.call !== row.call) fail(`Scorer call mismatch for ${row.fingerprint}`)
+    if (out.has(row.fingerprint)) fail(`Duplicate scorer fingerprint: ${row.fingerprint}`)
+    out.set(row.fingerprint, row)
+  }
+  if (out.size !== item.candidates.length) fail("Scorer output is missing candidates")
+  return item.candidates.map((item) => out.get(item.fingerprint)!)
+}
+
+async function exec(cmd: string, args: string[]) {
+  return await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+    const sub = spawn(cmd, args, {
+      cwd: root(),
+      env: { ...process.env, CI: "true" },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let out = ""
+    let err = ""
+    const timer = setTimeout(() => {
+      sub.kill("SIGKILL")
+      reject(new Error("opencode run timed out"))
+    }, SCORE_TIMEOUT)
+    sub.stdout.on("data", (item) => {
+      out += String(item)
+    })
+    sub.stderr.on("data", (item) => {
+      err += String(item)
+    })
+    sub.on("error", reject)
+    sub.on("close", (code) => {
+      clearTimeout(timer)
+      resolve({ code: code ?? 1, stdout: out, stderr: err })
+    })
+  })
+}
+
+function text(out: string) {
+  let buf = ""
+  for (const line of out.split(/\r?\n/).filter(Boolean)) {
+    const row = JSON.parse(line) as { type?: string; part?: { text?: string } }
+    if (row.type === "tool_use") fail("Scorer used tools")
+    if (row.type === "error") fail("Scorer emitted an error event")
+    if (row.type === "text" && typeof row.part?.text === "string") buf += row.part.text
+  }
+  if (!buf.trim()) fail("Scorer returned no text")
+  return buf
+}
+
+async function run(prompt: string) {
+  const args = ["run", "--format", "json", "--dir", root(), prompt]
+  try {
+    const out = await exec(process.env.OPENCODE_SCORE_BIN ?? "opencode", args)
+    if (out.code !== 0) fail(out.stderr.trim() || `opencode run exited with ${out.code}`)
+    return text(out.stdout)
+  } catch (err) {
+    if (!(err instanceof Error) || !/ENOENT/.test(err.message)) throw err
+  }
+
+  const out = await exec("bun", [
+    "run",
+    "--cwd",
+    path.join(root(), "opencode", "packages", "opencode"),
+    "src/index.ts",
+    "run",
+    "--format",
+    "json",
+    "--dir",
+    root(),
+    prompt,
+  ])
+  if (out.code !== 0) fail(out.stderr.trim() || `opencode run exited with ${out.code}`)
+  return text(out.stdout)
+}
+
+async function scoredoc(filePath: string) {
+  const file = Bun.file(filePath)
+  if (!(await file.exists())) return { version: SCORE_CACHE_VERSION, entries: [] } satisfies ScoreDoc
+  try {
+    const raw = JSON.parse(await file.text()) as { version?: number; entries?: unknown }
+    if (raw.version !== SCORE_CACHE_VERSION || !Array.isArray(raw.entries)) throw new Error("invalid score cache")
+    return {
+      version: SCORE_CACHE_VERSION,
+      entries: raw.entries
+        .filter((item) => typeof item === "object" && item !== null && !Array.isArray(item))
+        .map((item) => {
+          const row = item as { key?: unknown; createdAt?: unknown; scores?: unknown }
+          return {
+            key: typeof row.key === "string" ? row.key : "",
+            createdAt: typeof row.createdAt === "string" ? row.createdAt : new Date(0).toISOString(),
+            scores: Array.isArray(row.scores) ? row.scores.map((item, i) => scorerow(item, `cache.scores[${i}]`)) : [],
+          }
+        })
+        .filter((item) => item.key && item.scores.length),
+    }
+  } catch {
+    return { version: SCORE_CACHE_VERSION, entries: [] }
+  }
+}
+
+async function savescoredoc(filePath: string, doc: ScoreDoc) {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await Bun.write(filePath, `${JSON.stringify(doc, null, 2)}\n`)
+}
+
+function merge(item: ReviewSnippet, rows: ScoreRow[]) {
+  const by = new Map(rows.map((item) => [item.fingerprint, item]))
+  return {
+    ...item,
+    candidates: item.candidates.map((item) => {
+      const hit = by.get(item.fingerprint)
+      if (!hit) return item
+      return {
+        ...item,
+        readConfidence: hit.readConfidence,
+        writeConfidence: hit.writeConfidence,
+        reasons: hit.reasons,
+        scoreSource: hit.scoreSource,
+      }
+    }),
+  }
+}
+
+function fallback(item: ReviewSnippet) {
+  return {
+    ...item,
+    candidates: item.candidates.map((item) => ({
+      ...item,
+      scoreSource: "heuristic-fallback",
+    })),
+  }
+}
+
+export async function rescore(item: ReviewSnippet, opts: { cache: string; run?: Runner }) {
+  const key = scorekey(item)
+  const doc = await scoredoc(opts.cache)
+  const hit = doc.entries.find((item) => item.key === key)
+  if (hit) {
+    return {
+      item: merge(item, hit.scores.map((item) => ({ ...item, scoreSource: "opencode-cache" }))),
+      warning: undefined,
+    }
+  }
+
+  try {
+    const rows = parseoutput(await (opts.run ?? run)(scoreprompt(item)), item)
+    const next = doc.entries.filter((item) => item.key !== key)
+    next.push({ key, createdAt: new Date().toISOString(), scores: rows })
+    next.sort((a, b) => a.key.localeCompare(b.key))
+    await savescoredoc(opts.cache, { version: SCORE_CACHE_VERSION, entries: next })
+    return { item: merge(item, rows), warning: undefined }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { item: fallback(item), warning: `opencode run scoring unavailable; using heuristic fallback (${msg})` }
+  }
+}
+
 function when(time: number) {
   return new Date(time).toISOString()
 }
@@ -314,8 +615,11 @@ export function parse(args: string[]) {
     samples: 3,
     ledger: defledger(),
     rules: defrules(),
+    scoreCache: defscorecache(),
     reviewJson: false,
     reviewNext: false,
+    reviewTui: false,
+    includePure: false,
     update: false,
     promoteReviewed: false,
     help: false,
@@ -335,6 +639,10 @@ export function parse(args: string[]) {
       opts.update = true
       continue
     }
+    if (arg === "--include-pure") {
+      opts.includePure = true
+      continue
+    }
     if (arg === "--promote-reviewed") {
       opts.promoteReviewed = true
       continue
@@ -345,6 +653,10 @@ export function parse(args: string[]) {
     }
     if (arg === "--review-next") {
       opts.reviewNext = true
+      continue
+    }
+    if (arg === "--review-tui") {
+      opts.reviewTui = true
       continue
     }
     if (arg === "--db") {
@@ -363,6 +675,12 @@ export function parse(args: string[]) {
       const val = args[++i]
       if (!val) fail("Missing value for --rules")
       opts.rules = path.resolve(val)
+      continue
+    }
+    if (arg === "--score-cache") {
+      const val = args[++i]
+      if (!val) fail("Missing value for --score-cache")
+      opts.scoreCache = path.resolve(val)
       continue
     }
     if (arg === "--record-decision") {
@@ -396,13 +714,16 @@ export function parse(args: string[]) {
     fail(`Unknown argument: ${arg}`)
   }
 
-  if (opts.json && (opts.reviewJson || opts.reviewNext || opts.promoteReviewed)) fail("Use --json only with the report output")
-  if (opts.reviewJson && opts.reviewNext) fail("Use either --review-json or --review-next, not both")
+  if (opts.json && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.promoteReviewed)) fail("Use --json only with the report output")
+  if ([opts.reviewJson, opts.reviewNext, opts.reviewTui].filter(Boolean).length > 1) {
+    fail("Use only one of --review-json, --review-next, or --review-tui")
+  }
   if (opts.decide && !opts.reviewNext) fail("--decide requires --review-next")
-  if (opts.update && (opts.reviewJson || opts.reviewNext || opts.promoteReviewed)) {
+  if (opts.recordDecision && opts.reviewTui) fail("--record-decision cannot be combined with --review-tui")
+  if (opts.update && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.promoteReviewed)) {
     fail("--update-candidates cannot be combined with review or promotion modes")
   }
-  if (opts.promoteReviewed && (opts.reviewJson || opts.reviewNext)) {
+  if (opts.promoteReviewed && (opts.reviewJson || opts.reviewNext || opts.reviewTui)) {
     fail("--promote-reviewed cannot be combined with review modes")
   }
   if (opts.promoteReviewed && opts.since !== undefined) {
@@ -433,11 +754,12 @@ function rows(db: Database, since?: number) {
   return (since !== undefined ? q.all(since) : q.all()) as Row[]
 }
 
-export async function scan(opts: { db: string; since?: number; samples?: number }): Promise<Report> {
+export async function scan(opts: { db: string; since?: number; samples?: number; includePure?: boolean }): Promise<Report> {
   if (!(await Bun.file(opts.db).exists())) fail(`OpenCode session database not found: ${opts.db}`)
 
   const db = new Database(opts.db, { readonly: true })
   const sample = opts.samples ?? 3
+  const includePure = opts.includePure ?? false
 
   try {
     const all = rows(db, opts.since)
@@ -466,17 +788,33 @@ export async function scan(opts: { db: string; since?: number; samples?: number 
 
       const events = await analyze(item.code)
       for (const event of events) {
-        if (event.kind !== "unknown") continue
-        if (!event.call.startsWith("callable:")) continue
-        unknownEvents++
+        let kind: Occurrence["kind"] | undefined
+        let call: string | undefined
 
-        const call = event.call.slice("callable:".length)
+        if (event.kind === "unknown") {
+          if (!event.call.startsWith("callable:")) continue
+          kind = "unknown"
+          call = event.call.slice("callable:".length)
+          unknownEvents++
+        } else if (event.kind === "emit") {
+          kind = "emit"
+          call = event.call
+        } else if (event.kind === "pure" && includePure) {
+          kind = "pure"
+          call = event.call
+        } else {
+          continue
+        }
+
         const time = row.time_updated || row.time_created
         const scored = score(call, item.code)
+        const normalizedCode = normalized(item.code)
+        const seed = kind === "unknown" ? `${call}\n${normalizedCode}` : `${kind}\n${call}\n${normalizedCode}`
         occurrences.push({
+          kind,
           call,
-          fingerprint: fingerprint(`${call}\n${normalized(item.code)}`),
-          snippetFingerprint: fingerprint(normalized(item.code)),
+          fingerprint: fingerprint(seed),
+          snippetFingerprint: fingerprint(normalizedCode),
           sessionID: row.session_id,
           messageID: row.message_id,
           partID: row.part_id,
@@ -487,7 +825,10 @@ export async function scan(opts: { db: string; since?: number; samples?: number 
           readConfidence: scored.readConfidence,
           writeConfidence: scored.writeConfidence,
           reasons: scored.reasons,
+          scoreSource: "heuristic",
         })
+
+        if (kind !== "unknown") continue
 
         const hit =
           hits.get(call) ??
@@ -628,7 +969,7 @@ function recordSpec(input: string) {
   if (pivot <= 0 || pivot === input.length - 1) fail("--record-decision must be fingerprint=decision")
   const fingerprint = input.slice(0, pivot)
   const outcome = input.slice(pivot + 1)
-  if (!isDecision(outcome)) fail("--record-decision must use read, write, exec, ignore, or needs-code")
+  if (!isDecision(outcome)) fail("--record-decision must use read, write, emit, exec, ignore, or needs-code")
   return { fingerprint, decision: outcome }
 }
 
@@ -650,11 +991,13 @@ export async function review(report: Report, opts: { ledger: string }): Promise<
       candidates: Map<
         string,
         {
+          kind: Occurrence["kind"]
           call: string
           fingerprint: string
           readConfidence: number
           writeConfidence: number
           reasons: string[]
+          scoreSource: string
           decision?: ReviewDecision
         }
       >
@@ -682,15 +1025,17 @@ export async function review(report: Report, opts: { ledger: string }): Promise<
       preview: item.preview,
     })
     if (!snippet.candidates.has(item.fingerprint)) {
-      snippet.candidates.set(item.fingerprint, {
-        call: item.call,
-        fingerprint: item.fingerprint,
-        readConfidence: item.readConfidence,
-        writeConfidence: item.writeConfidence,
-        reasons: item.reasons,
-        decision: byFingerprint.get(item.fingerprint)?.decision,
-      })
-    }
+        snippet.candidates.set(item.fingerprint, {
+          kind: item.kind,
+          call: item.call,
+          fingerprint: item.fingerprint,
+          readConfidence: item.readConfidence,
+          writeConfidence: item.writeConfidence,
+          reasons: item.reasons,
+          scoreSource: item.scoreSource,
+          decision: byFingerprint.get(item.fingerprint)?.decision,
+        })
+      }
     snippets.set(item.snippetFingerprint, snippet)
   }
 
@@ -741,7 +1086,7 @@ function parsePair(input: string) {
   const left = input.slice(0, pivot).trim()
   const right = input.slice(pivot + 1).trim()
   if (!left) fail("--decide must use item=decision pairs")
-  if (!isDecision(right)) fail("--decide must use read, write, exec, ignore, or needs-code")
+  if (!isDecision(right)) fail("--decide must use read, write, emit, exec, ignore, or needs-code")
   return { left, decision: right }
 }
 
@@ -791,17 +1136,191 @@ export function renderReview(item: ReviewSnippet) {
 
   item.candidates.forEach((candidate, i) => {
     const decision = candidate.decision ? ` decided=${candidate.decision}` : ""
-    out.push(`${i + 1}. ${candidate.call} [${candidate.fingerprint}] read=${candidate.readConfidence} write=${candidate.writeConfidence}${decision}`)
+    out.push(
+      `${i + 1}. ${candidate.call} [${candidate.fingerprint}] kind=${candidate.kind} read=${candidate.readConfidence} write=${candidate.writeConfidence} source=${candidate.scoreSource}${decision}`,
+    )
     if (candidate.reasons.length) out.push(`   reasons: ${candidate.reasons.join("; ")}`)
   })
 
   out.push("")
-  out.push("Apply decisions with --review-next --decide 1=read,2=write")
+  out.push("Apply decisions with --review-next --decide 1=read,2=write,3=emit")
   return out.join("\n")
 }
 
+function suggest(item: ReviewSnippet["candidates"][number]) {
+  if (item.kind === "emit") return "emit"
+  return item.readConfidence >= item.writeConfidence ? "read" : "write"
+}
+
+function other(item: ReviewDecision) {
+  if (item === "emit") return "ignore"
+  return item === "read" ? "write" : "read"
+}
+
+function key(input: string): ReviewKey | undefined {
+  if (["y", "n", "r", "w", "e", "x", "i", "c", "s", "v", "?", "q"].includes(input)) return input as ReviewKey
+}
+
+export function action(input: string, item: ReviewSnippet["candidates"][number]): ReviewAction | undefined {
+  const hit = key(input)
+  if (!hit) return
+  if (hit === "y") return { type: "decide", decision: suggest(item) }
+  if (hit === "n") return { type: "decide", decision: other(suggest(item)) }
+  if (hit === "r") return { type: "decide", decision: "read" }
+  if (hit === "w") return { type: "decide", decision: "write" }
+  if (hit === "e") return { type: "decide", decision: "emit" }
+  if (hit === "x") return { type: "decide", decision: "exec" }
+  if (hit === "i") return { type: "decide", decision: "ignore" }
+  if (hit === "c") return { type: "decide", decision: "needs-code" }
+  if (hit === "s") return { type: "skip" }
+  if (hit === "v") return { type: "toggle" }
+  if (hit === "?") return { type: "help" }
+  return { type: "quit" }
+}
+
+function marker(text: string, call: string) {
+  if (!call) return text
+  return text.split(call).join(`[[${call}]]`)
+}
+
+function block(code: string, call: string, full: boolean) {
+  const lines = normalized(code).split("\n")
+  const hits = lines.flatMap((text, i) => (text.includes(call) ? [i] : []))
+  const start = full || !hits.length ? 0 : Math.max(0, hits[0] - 4)
+  const end = full || !hits.length ? lines.length : Math.min(lines.length, hits[0] + 8)
+  const body = lines.slice(start, end).map((text, i) => `${String(start + i + 1).padStart(3, " ")} | ${marker(text, call)}`)
+  if (start > 0) body.unshift(`... ${start} earlier lines hidden ...`)
+  if (end < lines.length) body.push(`... ${lines.length - end} later lines hidden ...`)
+  return body.join("\n")
+}
+
+function clear(output: NodeJS.WriteStream) {
+  output.write("\x1b[2J\x1b[H")
+}
+
+export function item(queue: ReviewQueue, skip = new Set<string>()) {
+  const snippets = queue.snippets.flatMap((snippet, snippetIndex) => {
+    const pending = snippet.candidates.filter((candidate) => !candidate.decision && !skip.has(candidate.fingerprint))
+    if (!pending.length) return []
+    return [
+      {
+        snippet,
+        snippetIndex,
+        pending,
+      },
+    ]
+  })
+  const head = snippets[0]
+  if (!head) return
+  return {
+    snippet: head.snippet,
+    candidate: head.pending[0],
+    snippetIndex: head.snippetIndex + 1,
+    snippetCount: queue.snippets.length,
+    candidateIndex: 1,
+    candidateCount: head.pending.length,
+    pendingCount: snippets.reduce((sum, item) => sum + item.pending.length, 0),
+  } satisfies ReviewItem
+}
+
+export function renderTui(item: ReviewItem, full: boolean, help = false) {
+  const pick = suggest(item.candidate)
+  const out = [
+    `Python Review ${item.snippetIndex}/${item.snippetCount} | candidate 1/${item.candidateCount} | pending ${item.pendingCount}`,
+    `Call: ${item.candidate.call}`,
+    `Suggested: ${pick} | read=${item.candidate.readConfidence} write=${item.candidate.writeConfidence} | source=${item.candidate.scoreSource}`,
+  ]
+  if (item.candidate.reasons.length) out.push(`Why: ${item.candidate.reasons.join("; ")}`)
+  out.push("", "Code:", block(item.snippet.code, item.candidate.call, full), "")
+  if (help) {
+    out.push("Keys: y accept, n opposite, r read, w write, e emit, x exec, i ignore, c needs-code, s skip, v toggle code, q quit")
+    return out.join("\n")
+  }
+  out.push("Keys: y/n r/w e x i c s v ? q")
+  return out.join("\n")
+}
+
+function settled(queue: ReviewQueue, fingerprint: string, decision: ReviewDecision) {
+  return {
+    ...queue,
+    snippets: queue.snippets.map((snippet) => ({
+      ...snippet,
+      candidates: snippet.candidates.map((candidate) =>
+        candidate.fingerprint === fingerprint ? { ...candidate, decision } : candidate,
+      ),
+    })),
+  }
+}
+
+async function press(input: NodeJS.ReadStream) {
+  return await new Promise<string>((resolve) => {
+    const done = (value: string, info?: { name?: string; ctrl?: boolean }) => {
+      input.off("keypress", done)
+      if (info?.ctrl && info.name === "c") resolve("q")
+      else resolve(value)
+    }
+    input.on("keypress", done)
+  })
+}
+
+export async function tui(queue: ReviewQueue, opts: { ledger: string; cache: string; input?: NodeJS.ReadStream; output?: NodeJS.WriteStream }) {
+  const input = opts.input ?? process.stdin
+  const output = opts.output ?? process.stdout
+  if (!input.isTTY || !output.isTTY) fail("--review-tui requires a TTY; use --review-next for non-interactive review")
+  rl.emitKeypressEvents(input)
+  input.setRawMode?.(true)
+  input.resume()
+  const skip = new Set<string>()
+  let help = false
+  let full = false
+
+  try {
+    while (true) {
+      const head = item(queue, skip)
+      if (!head) {
+        output.write("No pending review items.\n")
+        return
+      }
+      const scored = await rescore(head.snippet, { cache: opts.cache })
+      const current = item({ ...queue, snippets: [scored.item, ...queue.snippets.filter((row) => row.snippetFingerprint !== head.snippet.snippetFingerprint)] }, skip)
+      if (!current) {
+        output.write("No pending review items.\n")
+        return
+      }
+      clear(output)
+      if (scored.warning) output.write(`${scored.warning}\n\n`)
+      output.write(`${renderTui(current, full, help)}\n`)
+      const hit = action(await press(input), current.candidate)
+      if (!hit) continue
+      if (hit.type === "quit") return
+      if (hit.type === "help") {
+        help = !help
+        continue
+      }
+      if (hit.type === "toggle") {
+        full = !full
+        continue
+      }
+      if (hit.type === "skip") {
+        skip.add(current.candidate.fingerprint)
+        continue
+      }
+      await recordDecision({
+        ledger: opts.ledger,
+        fingerprint: current.candidate.fingerprint,
+        decision: hit.decision,
+        call: current.candidate.call,
+      })
+      queue = settled(queue, current.candidate.fingerprint, hit.decision)
+    }
+  } finally {
+    input.setRawMode?.(false)
+    input.pause()
+  }
+}
+
 function bucketFor(decision: ReviewDecision): PromotionBucket | undefined {
-  if (decision === "read" || decision === "write" || decision === "exec") return decision
+  if (decision === "read" || decision === "write" || decision === "emit" || decision === "exec") return decision
 }
 
 function strings(input: unknown) {
@@ -813,6 +1332,7 @@ function callBuckets(doc: RulesDoc) {
   return {
     read: strings(root.read),
     write: strings(root.write),
+    emit: strings(root.emit),
     exec: strings(root.exec),
   }
 }
@@ -840,7 +1360,7 @@ export async function promotions(report: Report, opts: { ledger: string; rules: 
     byCall.set(item.call, row)
   }
 
-  const promotable: Record<PromotionBucket, string[]> = { read: [], write: [], exec: [] }
+  const promotable: Record<PromotionBucket, string[]> = { read: [], write: [], emit: [], exec: [] }
   const blocked: PromotionPlan["blocked"] = []
 
   for (const [call, row] of [...byCall.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -866,7 +1386,7 @@ export async function promotions(report: Report, opts: { ledger: string; rules: 
     promotable[uniq[0]].push(call)
   }
 
-  for (const bucket of ["read", "write", "exec"] as const) promotable[bucket].sort((a, b) => a.localeCompare(b))
+  for (const bucket of ["read", "write", "emit", "exec"] as const) promotable[bucket].sort((a, b) => a.localeCompare(b))
 
   return {
     generatedAt: new Date().toISOString(),
@@ -880,7 +1400,7 @@ export async function promotions(report: Report, opts: { ledger: string; rules: 
 
 export function renderPromotions(plan: PromotionPlan) {
   const out = [`Rules: ${plan.rules}`, `Ledger: ${plan.ledger}`]
-  for (const bucket of ["read", "write", "exec"] as const) {
+  for (const bucket of ["read", "write", "emit", "exec"] as const) {
     out.push("")
     out.push(`${bucket}: ${plan.promotable[bucket].length}`)
     for (const call of plan.promotable[bucket]) out.push(`  - ${call}`)
@@ -908,10 +1428,11 @@ export async function promote(report: Report, opts: { ledger: string; rules: str
   }
 
   const calls = callBuckets(doc)
-  const remove = new Set([...plan.promotable.read, ...plan.promotable.write, ...plan.promotable.exec])
+  const remove = new Set([...plan.promotable.read, ...plan.promotable.write, ...plan.promotable.emit, ...plan.promotable.exec])
   const nextCalls = {
     read: [...new Set([...calls.read.filter((item) => !remove.has(item)), ...plan.promotable.read])].sort((a, b) => a.localeCompare(b)),
     write: [...new Set([...calls.write.filter((item) => !remove.has(item)), ...plan.promotable.write])].sort((a, b) => a.localeCompare(b)),
+    emit: [...new Set([...calls.emit.filter((item) => !remove.has(item)), ...plan.promotable.emit])].sort((a, b) => a.localeCompare(b)),
     exec: [...new Set([...calls.exec.filter((item) => !remove.has(item)), ...plan.promotable.exec])].sort((a, b) => a.localeCompare(b)),
   }
 
@@ -1020,9 +1541,14 @@ export async function main(args = process.argv.slice(2)) {
     db: opts.db,
     since: opts.since,
     samples: opts.samples,
+    includePure: opts.includePure,
   })
   if (opts.reviewJson) {
     console.log(JSON.stringify(await review(report, { ledger: opts.ledger }), null, 2))
+    return
+  }
+  if (opts.reviewTui) {
+    await tui(await review(report, { ledger: opts.ledger }), { ledger: opts.ledger, cache: opts.scoreCache })
     return
   }
   if (opts.reviewNext) {
@@ -1033,7 +1559,13 @@ export async function main(args = process.argv.slice(2)) {
       await applyDecisions({ ledger: opts.ledger, item, decide: opts.decide })
       item = nextReview(await review(report, { ledger: opts.ledger }))
     }
-    console.log(item ? renderReview(item) : "No pending review items.")
+    if (!item) {
+      console.log("No pending review items.")
+      return
+    }
+    const next = await rescore(item, { cache: opts.scoreCache })
+    if (next.warning) console.error(next.warning)
+    console.log(renderReview(next.item))
     return
   }
   if (opts.promoteReviewed) {

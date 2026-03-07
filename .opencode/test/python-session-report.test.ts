@@ -3,7 +3,8 @@ import { Database } from "bun:sqlite"
 import { access, mkdtemp, readFile, rm, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
-import { applyDecisions, nextReview, parse, promote, promotions, recordDecision, render, renderPromotions, renderReview, review, scan, update } from "../../src/python-session-report"
+import { PassThrough, Writable } from "stream"
+import { action, applyDecisions, item, nextReview, parse, promote, promotions, recordDecision, render, renderPromotions, renderReview, renderTui, rescore, review, scan, tui, update } from "../../src/python-session-report"
 
 async function db() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "python-session-report-"))
@@ -226,6 +227,130 @@ describe("python session report", () => {
       const report = await scan({ db: tmp.file, samples: 3 })
       expect(report.totals.unknownEvents).toBe(0)
       expect(render(report)).toContain("No unknown callables found.")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("includes emit in review occurrences and suppresses pure by default", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "print('x')\nre.search('a+', text)\nunknown.call()" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const calls = report.occurrences.map((item) => item.call).sort()
+      expect(calls).toEqual(["print", "unknown.call"])
+
+      const queue = await review(report, { ledger })
+      const queuedCalls = queue.snippets.flatMap((snippet) => snippet.candidates.map((candidate) => candidate.call)).sort()
+      expect(queuedCalls).toEqual(["print", "unknown.call"])
+      expect(queuedCalls).not.toContain("re.search")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("includes pure candidates when --include-pure mode is enabled", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "re.search('a+', text)" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3, includePure: true })
+      expect(report.occurrences.map((item) => item.call)).toEqual(["re.search"])
+
+      const queue = await review(report, { ledger })
+      expect(queue.snippets).toHaveLength(1)
+      expect(queue.snippets[0]?.candidates[0]?.call).toBe("re.search")
+      expect(queue.snippets[0]?.candidates[0]?.kind).toBe("pure")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps emit and unknown candidates distinct for the same call and snippet", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      const time = new Date(2000).toISOString()
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 1,
+          unknownEvents: 1,
+          uniqueUnknownCalls: 1,
+          skippedRows: 0,
+        },
+        unknown: [],
+        occurrences: [
+          {
+            kind: "unknown" as const,
+            call: "foo.bar",
+            fingerprint: "fp-unknown",
+            snippetFingerprint: "same-snippet",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "foo.bar()",
+            code: "foo.bar()",
+            readConfidence: 0.1,
+            writeConfidence: 0.2,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "emit" as const,
+            call: "foo.bar",
+            fingerprint: "fp-emit",
+            snippetFingerprint: "same-snippet",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "foo.bar()",
+            code: "foo.bar()",
+            readConfidence: 0.1,
+            writeConfidence: 0.2,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      const queue = await review(report, { ledger })
+      const candidates = queue.snippets[0]?.candidates.map((candidate) => `${candidate.kind}:${candidate.fingerprint}`) ?? []
+      expect(candidates).toEqual(expect.arrayContaining(["unknown:fp-unknown", "emit:fp-emit"]))
+      expect(candidates).toHaveLength(2)
     } finally {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })
@@ -505,6 +630,121 @@ describe("python session report", () => {
     }
   })
 
+  it("uses opencode scores for review-next and caches them", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const cache = path.join(tmp.dir, "score-cache.json")
+    let calls = 0
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+
+      const item = nextReview(await review(await scan({ db: tmp.file, samples: 3 }), { ledger }))
+      const out = await rescore(item!, {
+        cache,
+        run: async () => {
+          calls++
+          return JSON.stringify({
+            scores: item!.candidates.map((item, i) => ({
+              fingerprint: item.fingerprint,
+              call: item.call,
+              readConfidence: i === 0 ? 0.81 : 0.12,
+              writeConfidence: i === 0 ? 0.11 : 0.84,
+              reasons: [i === 0 ? "looks like a fetch" : "looks like an append"],
+            })),
+          })
+        },
+      })
+
+      expect(out.warning).toBeUndefined()
+      expect(out.item.candidates[0]?.scoreSource).toBe("opencode-run")
+      expect(renderReview(out.item)).toContain("source=opencode-run")
+
+      const again = await rescore(item!, {
+        cache,
+        run: async () => {
+          calls++
+          throw new Error("cache should have been used")
+        },
+      })
+      expect(calls).toBe(1)
+      expect(again.item.candidates[0]?.scoreSource).toBe("opencode-cache")
+      expect(renderReview(again.item)).toContain("source=opencode-cache")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("falls back to heuristic scores when opencode scoring fails", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const cache = path.join(tmp.dir, "score-cache.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')" }),
+      })
+
+      const item = nextReview(await review(await scan({ db: tmp.file, samples: 3 }), { ledger }))
+      const out = await rescore(item!, { cache, run: async () => "not-json" })
+      expect(out.warning).toContain("heuristic fallback")
+      expect(out.item.candidates[0]?.scoreSource).toBe("heuristic-fallback")
+      expect(out.item.candidates[0]?.readConfidence).toBe(item?.candidates[0]?.readConfidence)
+      expect(renderReview(out.item)).toContain("source=heuristic-fallback")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("falls back when scorer JSON has invalid confidence fields", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const cache = path.join(tmp.dir, "score-cache.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')" }),
+      })
+
+      const item = nextReview(await review(await scan({ db: tmp.file, samples: 3 }), { ledger }))
+      const out = await rescore(item!, {
+        cache,
+        run: async () =>
+          JSON.stringify({
+            scores: [{ fingerprint: item!.candidates[0]!.fingerprint, call: "rq.get", readConfidence: "high", writeConfidence: 0.1, reasons: [] }],
+          }),
+      })
+      expect(out.warning).toContain("heuristic fallback")
+      expect(out.item.candidates[0]?.scoreSource).toBe("heuristic-fallback")
+      await expect(access(cache)).rejects.toBeDefined()
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
   it("supports fingerprint-based batch decisions", async () => {
     const tmp = await db()
     const ledger = path.join(tmp.dir, "review-ledger.json")
@@ -627,6 +867,41 @@ describe("python session report", () => {
     }
   })
 
+  it("promotes reviewed emit callables into calls.emit", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const rules = path.join(tmp.dir, "python-rules.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "print('x')" }),
+      })
+
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      await writeFile(rules, await readFile(src, "utf8"))
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const reviewItem = nextReview(await review(report, { ledger }))
+      await applyDecisions({ ledger, item: reviewItem!, decide: "1=emit" })
+
+      const plan = await promotions(report, { ledger, rules })
+      expect(plan.promotable.emit).toEqual(["print"])
+
+      await promote(report, { ledger, rules })
+      const next = JSON.parse(await readFile(rules, "utf8")) as Record<string, any>
+      expect(next.calls.emit).toContain("print")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
   it("blocks promotion when unresolved contexts remain", async () => {
     const tmp = await db()
     const ledger = path.join(tmp.dir, "review-ledger.json")
@@ -679,5 +954,199 @@ describe("python session report", () => {
     expect(() => parse(["--promote-reviewed", "--since", "2026-03-01T00:00:00Z"])).toThrow(
       "--promote-reviewed requires a full scan; omit --since",
     )
+  })
+
+  it("parses --include-pure", () => {
+    expect(parse(["--include-pure"]).includePure).toBeTrue()
+  })
+
+  it("maps one-key review actions around the suggested decision", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+
+      const pick = item(await review(await scan({ db: tmp.file, samples: 3 }), { ledger }))!
+      expect(action("y", pick.candidate)).toEqual({ type: "decide", decision: "read" })
+      expect(action("n", pick.candidate)).toEqual({ type: "decide", decision: "write" })
+      expect(action("r", pick.candidate)).toEqual({ type: "decide", decision: "read" })
+      expect(action("w", pick.candidate)).toEqual({ type: "decide", decision: "write" })
+      expect(action("e", pick.candidate)).toEqual({ type: "decide", decision: "emit" })
+      expect(action("x", pick.candidate)).toEqual({ type: "decide", decision: "exec" })
+      expect(action("i", pick.candidate)).toEqual({ type: "decide", decision: "ignore" })
+      expect(action("c", pick.candidate)).toEqual({ type: "decide", decision: "needs-code" })
+      expect(action("s", pick.candidate)).toEqual({ type: "skip" })
+      expect(action("v", pick.candidate)).toEqual({ type: "toggle" })
+      expect(action("?", pick.candidate)).toEqual({ type: "help" })
+      expect(action("q", pick.candidate)).toEqual({ type: "quit" })
+      expect(action("z", pick.candidate)).toBeUndefined()
+
+      const emitCandidate = { ...pick.candidate, kind: "emit" as const }
+      expect(action("y", emitCandidate)).toEqual({ type: "decide", decision: "emit" })
+      expect(action("n", emitCandidate)).toEqual({ type: "decide", decision: "ignore" })
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("advances to the next candidate when the current one is skipped", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+
+      const queue = await review(await scan({ db: tmp.file, samples: 3 }), { ledger })
+      const first = item(queue)!
+      const next = item(queue, new Set([first.candidate.fingerprint]))!
+      expect(first.candidate.call).toBe("rq.get")
+      expect(next.candidate.call).toBe("writer.append")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("renders the review tui with highlighted code and source", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+
+      const current = item(await review(await scan({ db: tmp.file, samples: 3 }), { ledger }))!
+      const text = renderTui(current, false, false)
+      expect(text).toContain("Call: rq.get")
+      expect(text).toContain("source=heuristic")
+      expect(text).toContain("[[rq.get]]")
+      expect(text).toContain("Keys: y/n r/w e x i c s v ? q")
+      expect(renderTui(current, true, false)).toContain("writer.append")
+      expect(renderTui(current, false, true)).toContain("accept, n opposite")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects conflicting review modes", () => {
+    expect(() => parse(["--review-next", "--review-tui"])).toThrow(
+      "Use only one of --review-json, --review-next, or --review-tui",
+    )
+  })
+
+  it("rejects review tui without a tty", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')" }),
+      })
+
+      const queue = await review(await scan({ db: tmp.file, samples: 3 }), { ledger })
+      await expect(
+        tui(queue, {
+          ledger,
+          cache: path.join(tmp.dir, "scores.json"),
+          input: { isTTY: false } as any,
+          output: { isTTY: false, write() {} } as any,
+        }),
+      ).rejects.toThrow("--review-tui requires a TTY; use --review-next for non-interactive review")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("advances to the next candidate after accepting with y", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const cache = path.join(tmp.dir, "score-cache.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "rq.get('x')\nwriter.append('y')" }),
+      })
+
+      const queue = await review(await scan({ db: tmp.file, samples: 3 }), { ledger })
+      const first = item(queue)!
+      await rescore(first.snippet, {
+        cache,
+        run: async () =>
+          JSON.stringify({
+            scores: first.snippet.candidates.map((candidate, i) => ({
+              fingerprint: candidate.fingerprint,
+              call: candidate.call,
+              readConfidence: i === 0 ? 0.9 : 0.2,
+              writeConfidence: i === 0 ? 0.1 : 0.8,
+              reasons: [],
+            })),
+          }),
+      })
+
+      const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode(flag: boolean): void }
+      input.isTTY = true
+      input.setRawMode = () => {}
+
+      let text = ""
+      const output = new Writable({
+        write(chunk, _enc, done) {
+          text += String(chunk)
+          done()
+        },
+      }) as Writable & { isTTY: boolean }
+      output.isTTY = true
+
+      const run = tui(queue, { ledger, cache, input: input as any, output: output as any })
+      setTimeout(() => input.emit("keypress", "y", { name: "y" }), 20)
+      setTimeout(() => input.emit("keypress", "q", { name: "q" }), 80)
+      await run
+
+      const doc = JSON.parse(await readFile(ledger, "utf8")) as Record<string, any>
+      expect(doc.decisions[0]?.call).toBe("rq.get")
+      expect(text).toContain("Call: rq.get")
+      expect(text).toContain("Call: writer.append")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
   })
 })

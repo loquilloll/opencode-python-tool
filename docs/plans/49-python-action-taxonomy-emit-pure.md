@@ -207,6 +207,16 @@ Calls that cannot be reliably classified.
 
 - `feat: support emit in review and promotion`
 
+#### Notes
+
+- Status: Done (2026-03-07)
+- Summary: Updated session-review scanning, one-key review actions, and promotion planning so `emit` is first-class in review/promote flows while `pure` remains suppressed by default unless `--include-pure` is provided.
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test test/python-analyze.test.ts test/python-session-report.test.ts`
+- Follow-ups: Phase 4 should document `--include-pure`, emit decision guidance, and emit promotion destinations in README/operator docs.
+- Commit: Not committed
+- PR/Jira: None
+
 ### Phase 4 - Docs and operator guidance
 
 **Goal:** Document the new taxonomy clearly.
@@ -252,5 +262,5 @@ Calls that cannot be reliably classified.
 
 - Phase 1: DONE
 - Phase 2: DONE
-- Phase 3: TODO
+- Phase 3: DONE
 - Phase 4: TODO
