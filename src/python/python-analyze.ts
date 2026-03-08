@@ -50,6 +50,25 @@ export type PythonEvent = {
   dynamicPath?: boolean
 }
 
+type ResolvedEffectAtom =
+  | "fs.read"
+  | "fs.write"
+  | "network.exec"
+  | "db.exec"
+  | "process.exec"
+  | "dynamic.exec"
+  | "emit.signal"
+  | "pure.compute"
+  | "unknown"
+
+type ResolvedEffect = {
+  atom: ResolvedEffectAtom
+  resolvedCall?: string
+  canonicalCall?: string
+  outwardCall?: string
+  path?: Value
+}
+
 type PathSpec = {
   index: number
   names: string[]
@@ -61,6 +80,36 @@ type AtlassianCtor = {
   family?: AtlassianClientFamily
   variants: string[]
 }
+
+type Scope = {
+  parent?: Scope
+  bindings: Map<string, string>
+  callableFactories: Map<string, Node>
+  ghapiInstances: Set<string>
+  atlassianInstances: Map<string, AtlassianClientFamily>
+}
+
+type TimelineEntry = {
+  kind: "assignment" | "call" | "definition" | "import" | "rebind"
+  node: Node
+  scope: Scope
+  startIndex: number
+  endIndex: number
+}
+
+const BODY_SCOPE_TYPES = new Set(["function_definition", "class_definition", "lambda"])
+const ASSIGNMENT_CONTAINER_TYPES = new Set(["tuple", "list", "pattern_list", "tuple_pattern", "list_pattern"])
+const EFFECT_KIND = {
+  "fs.read": "read",
+  "fs.write": "write",
+  "network.exec": "exec",
+  "db.exec": "exec",
+  "process.exec": "exec",
+  "dynamic.exec": "exec",
+  "emit.signal": "emit",
+  "pure.compute": "pure",
+  unknown: "unknown",
+} satisfies Record<ResolvedEffectAtom, PythonEventKind>
 
 type Rules = {
   methods: {
@@ -418,91 +467,343 @@ function name(node: Node | null): string | undefined {
   if (node.type === "subscript") return name(node.childForFieldName("value"))
 }
 
-function pathFromPathMethod(node: Node | null): Value | undefined {
+function scope(parent?: Scope): Scope {
+  return {
+    parent,
+    bindings: new Map<string, string>(),
+    callableFactories: new Map<string, Node>(),
+    ghapiInstances: new Set<string>(),
+    atlassianInstances: new Map<string, AtlassianClientFamily>(),
+  }
+}
+
+function lookupBinding(input: Scope, key: string) {
+  for (let current: Scope | undefined = input; current; current = current.parent) {
+    const value = current.bindings.get(key)
+    if (value) return value
+  }
+}
+
+function resolveQualified(input: string, current: Scope) {
+  let parts = input.split(".")
+  const seen = new Set<string>()
+  while (parts[0]) {
+    const head = parts[0]
+    if (!head || seen.has(head)) break
+    const target = lookupBinding(current, head)
+    if (!target || target === head) break
+    seen.add(head)
+    parts = [...target.split("."), ...parts.slice(1)]
+  }
+  return parts.join(".")
+}
+
+function resolvedName(node: Node | null, current: Scope) {
+  const raw = name(node)
+  if (!raw) return
+  return resolveQualified(raw, current)
+}
+
+function clearTrackedName(current: Scope, name: string) {
+  current.bindings.delete(name)
+  current.callableFactories.delete(name)
+  current.ghapiInstances.delete(name)
+  current.atlassianInstances.delete(name)
+}
+
+function invalidateTrackedName(current: Scope, name: string) {
+  clearTrackedName(current, name)
+  current.bindings.set(name, name)
+}
+
+function hasGhapiInstance(current: Scope, name: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    if (scope.ghapiInstances.has(name)) return true
+  }
+  return false
+}
+
+function atlassianInstance(current: Scope, name: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const family = scope.atlassianInstances.get(name)
+    if (family) return family
+  }
+}
+
+function aliasTarget(node: Node | null, current: Scope) {
+  if (!node) return
+  if (node.type !== "identifier" && node.type !== "attribute" && node.type !== "subscript") return
+  return resolvedName(node, current)
+}
+
+function importBindings(node: Node) {
+  if (node.type === "import_statement") {
+    const match = node.text.match(/^\s*import\s+([\s\S]+)$/)
+    if (!match) return [] as Array<{ name: string; target?: string }>
+    return match[1]
+      .replace(/[()]/g, "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const [moduleName, alias] = part.split(/\s+as\s+/i).map((item) => item.trim())
+        const name = alias || moduleName.split(".")[0] || moduleName
+        return { name, target: alias ? moduleName : undefined }
+      })
+  }
+
+  if (node.type === "import_from_statement") {
+    const match = node.text.match(/^\s*from\s+([^\s]+)\s+import\s+([\s\S]+)$/)
+    if (!match) return [] as Array<{ name: string; target?: string }>
+    const [, moduleName, names] = match
+    return names
+      .replace(/[()]/g, "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .filter((part) => part !== "*")
+      .map((part) => {
+        const [importedName, alias] = part.split(/\s+as\s+/i).map((item) => item.trim())
+        const name = alias || importedName
+        return { name, target: alias ? `${moduleName}.${importedName}` : undefined }
+      })
+  }
+
+  return [] as Array<{ name: string; target?: string }>
+}
+
+function lookupCallableFactory(current: Scope, key: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const value = scope.callableFactories.get(key)
+    if (value) return value
+  }
+}
+
+function callableFactory(node: Node) {
+  if (node.type !== "function_definition") return
+  const name = node.childForFieldName("name")?.text
+  if (!name) return
+
+  const parameters = node.childForFieldName("parameters")
+  if (parameters && parameters.namedChildren.length > 0) return
+
+  const body = node.childForFieldName("body")
+  if (!body || body.namedChildren.length !== 1) return
+
+  const statement = body.namedChildren[0]
+  if (!statement || statement.type !== "return_statement") return
+
+  const returned = statement.childForFieldName("value") ?? statement.namedChildren[0]
+  if (!returned) return
+  if (returned.type !== "identifier" && returned.type !== "attribute") return
+  return { name, returned }
+}
+
+function callableFactoryTarget(node: Node | null, current: Scope) {
+  if (!node || node.type !== "call") return
+  const input = args(node)
+  if (input.positional.length > 0) return
+  if (Object.keys(input.keyword).length > 0) return
+
+  const call = resolvedName(node.childForFieldName("function"), current)
+  if (!call) return
+
+  const returned = lookupCallableFactory(current, call)
+  if (!returned) return
+  return aliasTarget(returned, current)
+}
+
+function assignmentLeft(node: Node) {
+  return node.childForFieldName("left") ?? node.childForFieldName("name")
+}
+
+function assignmentRight(node: Node) {
+  return node.childForFieldName("right") ?? node.childForFieldName("value")
+}
+
+function assignedNames(node: Node | null): string[] {
+  if (!node) return []
+  if (node.type === "identifier") return [node.text]
+  if (node.type === "as_pattern_target") return node.namedChildren.flatMap((child) => assignedNames(child))
+  if (ASSIGNMENT_CONTAINER_TYPES.has(node.type) || node.type.endsWith("_pattern")) {
+    return node.namedChildren.flatMap((child) => assignedNames(child))
+  }
+  return []
+}
+
+function rebindTarget(node: Node) {
+  if (node.type === "for_statement" || node.type === "async_for_statement") {
+    return node.childForFieldName("left")
+  }
+
+  if (node.type === "with_item" || node.type === "except_clause") {
+    const value = node.childForFieldName("value")
+    if (!value || value.type !== "as_pattern") return
+    return value.childForFieldName("alias")
+  }
+}
+
+function pushEntry(
+  entries: TimelineEntry[],
+  kind: TimelineEntry["kind"],
+  node: Node,
+  scope: Scope,
+  startIndex = node.startIndex,
+  endIndex = node.endIndex,
+) {
+  entries.push({ kind, node, scope, startIndex, endIndex })
+}
+
+function collectTimeline(node: Node, current: Scope, entries: TimelineEntry[], decorated = false) {
+  if (node.type === "assignment" || node.type === "augmented_assignment" || node.type === "named_expression") {
+    pushEntry(entries, "assignment", node, current)
+  } else if (node.type === "call") {
+    pushEntry(entries, "call", node, current)
+  } else if (node.type === "function_definition" && !decorated) {
+    pushEntry(entries, "definition", node, current)
+  } else if (node.type === "import_statement" || node.type === "import_from_statement") {
+    pushEntry(entries, "import", node, current)
+  } else if (node.type === "for_statement" || node.type === "async_for_statement") {
+    const right = node.childForFieldName("right")
+    const body = node.childForFieldName("body")
+    pushEntry(entries, "rebind", node, current, right?.endIndex ?? node.startIndex, body?.startIndex ?? node.endIndex)
+  } else if (node.type === "with_item") {
+    pushEntry(entries, "rebind", node, current, node.endIndex, node.endIndex)
+  } else if (node.type === "except_clause") {
+    const value = node.childForFieldName("value")
+    const body = node.namedChildren[node.namedChildren.length - 1]
+    pushEntry(entries, "rebind", node, current, value?.endIndex ?? node.endIndex, body?.startIndex ?? node.endIndex)
+  }
+
+  if (node.type === "decorated_definition") {
+    for (const child of node.namedChildren) collectTimeline(child, current, entries, true)
+    return
+  }
+
+  if (BODY_SCOPE_TYPES.has(node.type)) {
+    const body = node.childForFieldName("body")
+    const inner = scope(current)
+    for (const child of node.namedChildren) {
+      const inBody =
+        !!body && child.type === body.type && child.startIndex === body.startIndex && child.endIndex === body.endIndex
+      collectTimeline(child, inBody ? inner : current, entries, decorated)
+    }
+    return
+  }
+
+  for (const child of node.namedChildren) collectTimeline(child, current, entries, decorated)
+}
+
+function pathFromPathMethod(node: Node | null, current: Scope): Value | undefined {
   if (!node || node.type !== "attribute") return
   const object = node.childForFieldName("object")
   if (!object || object.type !== "call") return { dynamic: true }
-  const objectName = name(object.childForFieldName("function"))
+  const objectName = resolvedName(object.childForFieldName("function"), current)
   if (!objectName || !objectName.endsWith("Path")) return { dynamic: true }
   return pick(args(object), 0, ["path"]) ?? { dynamic: true }
 }
 
-function pathEvent(kind: "read" | "write", call: string, input?: Value): PythonEvent {
-  if (!input) return { kind, call }
-  if (input.dynamic || input.literal === undefined) return { kind, call, dynamicPath: true }
-  return { kind, call, path: input.literal }
+function effect(atom: ResolvedEffectAtom, input: Omit<ResolvedEffect, "atom"> = {}): ResolvedEffect {
+  return { atom, ...input }
 }
 
-function classifyOpen(input: Args): PythonEvent {
+function pathEffect(
+  atom: "fs.read" | "fs.write",
+  resolvedCall: string,
+  path?: Value,
+  input: Omit<ResolvedEffect, "atom" | "resolvedCall" | "path"> = {},
+): ResolvedEffect {
+  return effect(atom, { resolvedCall, path, ...input })
+}
+
+function foldResolvedEffect(input: ResolvedEffect): PythonEvent {
+  const kind = EFFECT_KIND[input.atom]
+  const call = input.outwardCall ?? input.canonicalCall ?? input.resolvedCall ?? "dynamic-call"
+  if ((kind === "read" || kind === "write") && input.path) {
+    if (input.path.dynamic || input.path.literal === undefined) return { kind, call, dynamicPath: true }
+    return { kind, call, path: input.path.literal }
+  }
+  return { kind, call }
+}
+
+function classifyOpen(input: Args): ResolvedEffect {
   const file = pick(input, 0, ["file", "path"])
   const mode = pick(input, 1, ["mode"])
-  if (!mode) return pathEvent("read", "open", file)
-  if (mode.dynamic || mode.literal === undefined) return { kind: "unknown", call: "open-mode-dynamic" }
-  if (/[wax+]/.test(mode.literal)) return pathEvent("write", "open", file)
-  return pathEvent("read", "open", file)
+  if (!mode) return pathEffect("fs.read", "open", file)
+  if (mode.dynamic || mode.literal === undefined) return effect("unknown", { resolvedCall: "open", outwardCall: "open-mode-dynamic" })
+  if (/[wax+]/.test(mode.literal)) return pathEffect("fs.write", "open", file)
+  return pathEffect("fs.read", "open", file)
 }
 
 function classify(
   node: Node,
   rules: Rules,
   hasAtlassianImportProvenance: boolean,
-  ghapiInstances: Set<string>,
-  atlassianInstances: Map<string, AtlassianClientFamily>,
-): PythonEvent | undefined {
+  current: Scope,
+): ResolvedEffect | undefined {
   const fn = node.childForFieldName("function")
-  const call = name(fn)
-  if (!call) return { kind: "unknown", call: "dynamic-call" }
+  const call = resolvedName(fn, current)
+  if (!call) return effect("unknown", { outwardCall: "dynamic-call" })
 
   const input = args(node)
   if (call === "open") return classifyOpen(input)
 
   const method = tail(call)
-  if (rules.methods.read.has(method)) return pathEvent("read", call, pathFromPathMethod(fn))
-  if (rules.methods.write.has(method)) return pathEvent("write", call, pathFromPathMethod(fn))
-  if (rules.methods.emit.has(method)) return { kind: "emit", call }
-  if (rules.methods.pure.has(method)) return { kind: "pure", call }
+  if (rules.methods.read.has(method)) return pathEffect("fs.read", call, pathFromPathMethod(fn, current))
+  if (rules.methods.write.has(method)) return pathEffect("fs.write", call, pathFromPathMethod(fn, current))
+  if (rules.methods.emit.has(method)) return effect("emit.signal", { resolvedCall: call })
+  if (rules.methods.pure.has(method)) return effect("pure.compute", { resolvedCall: call })
 
   const readSpec = rules.pathCalls.read[call]
-  if (readSpec) return pathEvent("read", call, pick(input, readSpec.index, readSpec.names))
+  if (readSpec) return pathEffect("fs.read", call, pick(input, readSpec.index, readSpec.names))
 
   const writeSpec = rules.pathCalls.write[call]
-  if (writeSpec) return pathEvent("write", call, pick(input, writeSpec.index, writeSpec.names))
+  if (writeSpec) return pathEffect("fs.write", call, pick(input, writeSpec.index, writeSpec.names))
 
-  if (rules.calls.read.has(call)) return { kind: "read", call }
-  if (rules.calls.write.has(call)) return { kind: "write", call }
-  if (rules.sdk.ghapi.writeCalls.has(call)) return { kind: "write", call }
-  if (rules.calls.tempfileWrite.has(call)) return { kind: "write", call }
+  if (rules.calls.read.has(call)) return effect("fs.read", { resolvedCall: call })
+  if (rules.calls.write.has(call)) return effect("fs.write", { resolvedCall: call })
+  if (rules.sdk.ghapi.writeCalls.has(call)) return effect("fs.write", { resolvedCall: call })
+  if (rules.calls.tempfileWrite.has(call)) return effect("fs.write", { resolvedCall: call })
 
-  if (rules.calls.exec.has(call)) return { kind: "exec", call }
-  if (rules.calls.networkExec.has(call)) return { kind: "exec", call }
-  if (rules.calls.dbExec.has(call)) return { kind: "exec", call }
-  if (rules.calls.dangerousDeserializeExec.has(call)) return { kind: "exec", call }
-  if (rules.sdk.oci.execCalls.has(call)) return { kind: "exec", call }
-  if (rules.sdk.ghapi.execCalls.has(call)) return { kind: "exec", call }
-  if (isAtlassianConstructorCall(call, rules, hasAtlassianImportProvenance)) return { kind: "exec", call }
-  if (rules.sdk.oci.clientMethodPrefixes.some((prefix) => call.startsWith(prefix))) return { kind: "exec", call }
+  if (call === "os.popen" || call === "os.system") return effect("process.exec", { resolvedCall: call })
+  if (rules.calls.exec.has(call)) return effect("dynamic.exec", { resolvedCall: call })
+  if (rules.calls.networkExec.has(call)) return effect("network.exec", { resolvedCall: call })
+  if (rules.calls.dbExec.has(call)) return effect("db.exec", { resolvedCall: call })
+  if (rules.calls.dangerousDeserializeExec.has(call)) return effect("dynamic.exec", { resolvedCall: call })
+  if (rules.sdk.oci.execCalls.has(call)) return effect("network.exec", { resolvedCall: call })
+  if (rules.sdk.ghapi.execCalls.has(call)) return effect("network.exec", { resolvedCall: call })
+  if (isAtlassianConstructorCall(call, rules, hasAtlassianImportProvenance)) return effect("network.exec", { resolvedCall: call })
+  if (rules.sdk.oci.clientMethodPrefixes.some((prefix) => call.startsWith(prefix))) {
+    return effect("network.exec", { resolvedCall: call })
+  }
 
   const parts = call.split(".")
   const instance = parts[0]
-  if (instance && ghapiInstances.has(instance) && parts.length >= 3) {
-    return { kind: "exec", call: `ghapi.${parts[1]}.${parts[2]}` }
+  if (instance && hasGhapiInstance(current, instance) && parts.length >= 3) {
+    return effect("network.exec", {
+      resolvedCall: call,
+      canonicalCall: `ghapi.${parts[1]}.${parts[2]}`,
+    })
   }
 
-  const atlassianClient = instance ? atlassianInstances.get(instance) : undefined
+  const atlassianClient = instance ? atlassianInstance(current, instance) : undefined
   if (atlassianClient && parts.length >= 2) {
     const method = parts[1]
     if (rules.sdk.atlassian.clientMethods[atlassianClient].has(method)) {
-      return { kind: "exec", call: `atlassian.${atlassianClient}.${method}` }
+      return effect("network.exec", {
+        resolvedCall: call,
+        canonicalCall: `atlassian.${atlassianClient}.${method}`,
+      })
     }
   }
 
-  if (call.startsWith("subprocess.")) return { kind: "exec", call }
-  if (call.startsWith("os.exec")) return { kind: "exec", call }
+  if (call.startsWith("subprocess.")) return effect("process.exec", { resolvedCall: call })
+  if (call.startsWith("os.exec")) return effect("process.exec", { resolvedCall: call })
 
-  if (rules.calls.emit.has(call)) return { kind: "emit", call }
-  if (rules.calls.pure.has(call)) return { kind: "pure", call }
+  if (rules.calls.emit.has(call)) return effect("emit.signal", { resolvedCall: call })
+  if (rules.calls.pure.has(call)) return effect("pure.compute", { resolvedCall: call })
 
-  return { kind: "unknown", call: `${CALLABLE_UNKNOWN_PREFIX}${call}` }
+  return effect("unknown", { resolvedCall: call, outwardCall: `${CALLABLE_UNKNOWN_PREFIX}${call}` })
 }
 
 function isAtlassianImportStatement(node: Node) {
@@ -558,57 +859,81 @@ export async function analyze(source: string) {
     tree.rootNode.descendantsOfType("import_statement").some(isAtlassianImportStatement) ||
     tree.rootNode.descendantsOfType("import_from_statement").some(isAtlassianImportStatement)
 
-  const ghapiInstances = new Set<string>()
-  const atlassianInstances = new Map<string, AtlassianClientFamily>()
   const calls = tree.rootNode.descendantsOfType("call")
 
-  const assignments = tree.rootNode.descendantsOfType("assignment")
-  const timeline = [
-    ...assignments.map((assignment) => ({ kind: "assignment" as const, node: assignment })),
-    ...calls.map((call) => ({ kind: "call" as const, node: call })),
-  ].sort((a, b) => {
-    if (a.node.startIndex === b.node.startIndex) return a.node.endIndex - b.node.endIndex
-    return a.node.startIndex - b.node.startIndex
+  const timeline: TimelineEntry[] = []
+  const rootScope = scope()
+  collectTimeline(tree.rootNode, rootScope, timeline)
+  timeline.sort((a, b) => {
+    if (a.startIndex === b.startIndex) return a.endIndex - b.endIndex
+    return a.startIndex - b.startIndex
   })
 
   const events: PythonEvent[] = []
   for (const entry of timeline) {
+    if (entry.kind === "import") {
+      for (const binding of importBindings(entry.node)) {
+        invalidateTrackedName(entry.scope, binding.name)
+        if (binding.target) entry.scope.bindings.set(binding.name, binding.target)
+      }
+      continue
+    }
+
+    if (entry.kind === "definition") {
+      const summary = callableFactory(entry.node)
+      if (summary) entry.scope.callableFactories.set(summary.name, summary.returned)
+      continue
+    }
+
+    if (entry.kind === "rebind") {
+      for (const targetName of assignedNames(rebindTarget(entry.node) ?? null)) invalidateTrackedName(entry.scope, targetName)
+      continue
+    }
+
     if (entry.kind === "assignment") {
-      const left = entry.node.childForFieldName("left")
-      const right = entry.node.childForFieldName("right")
+      const left = assignmentLeft(entry.node)
+      const right = assignmentRight(entry.node)
+      const names = assignedNames(left)
+      for (const targetName of names) invalidateTrackedName(entry.scope, targetName)
       if (!left || left.type !== "identifier") continue
 
-      if (!right || right.type !== "call") {
-        ghapiInstances.delete(left.text)
-        atlassianInstances.delete(left.text)
+      if (entry.node.type !== "assignment") continue
+
+      const factoryTarget = callableFactoryTarget(right, entry.scope)
+      if (factoryTarget) {
+        entry.scope.bindings.set(left.text, factoryTarget)
         continue
       }
 
-      const assignedCall = name(right.childForFieldName("function"))
+      const target = aliasTarget(right, entry.scope)
+      if (target) {
+        entry.scope.bindings.set(left.text, target)
+        continue
+      }
+
+      if (!right || right.type !== "call") {
+        continue
+      }
+
+      const assignedCall = resolvedName(right.childForFieldName("function"), entry.scope)
       if (!assignedCall) {
-        ghapiInstances.delete(left.text)
-        atlassianInstances.delete(left.text)
         continue
       }
 
       if (rules.sdk.ghapi.instanceConstructors.has(assignedCall)) {
-        ghapiInstances.add(left.text)
-      } else {
-        ghapiInstances.delete(left.text)
+        entry.scope.ghapiInstances.add(left.text)
       }
 
       const atlassianClient = atlassianFamilyForConstructor(assignedCall, rules, hasAtlassianImportProvenance)
       if (atlassianClient) {
-        atlassianInstances.set(left.text, atlassianClient)
-      } else {
-        atlassianInstances.delete(left.text)
+        entry.scope.atlassianInstances.set(left.text, atlassianClient)
       }
 
       continue
     }
 
-    const event = classify(entry.node, rules, hasAtlassianImportProvenance, ghapiInstances, atlassianInstances)
-    if (event) events.push(event)
+    const resolved = classify(entry.node, rules, hasAtlassianImportProvenance, entry.scope)
+    if (resolved) events.push(foldResolvedEffect(resolved))
   }
 
   if (events.length) return unique(events)

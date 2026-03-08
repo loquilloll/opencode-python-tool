@@ -73,6 +73,16 @@ describe("python analyzer", () => {
         ]),
       )
     })
+
+    it("resolves explicit Path aliases before method classification", async () => {
+      const events = await analyze("from pathlib import Path as P\nP('f').read_text()")
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "read", call: "pathlib.Path.read_text", path: "f" },
+          { kind: "unknown", call: "callable:pathlib.Path" },
+        ]),
+      )
+    })
   })
 
   describe("os/shutil write classification", () => {
@@ -220,6 +230,28 @@ describe("python analyzer", () => {
   })
 
   describe("phase 5 network/db/tempfile/deserialization", () => {
+    it("keeps outward exec behavior stable across internal exec effect groups", async () => {
+      const events = await analyze(
+        [
+          "os.system('ls')",
+          "eval('1+1')",
+          "requests.get('https://example.com')",
+          "sqlite3.connect('app.db')",
+          "pickle.loads(data)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "os.system" },
+          { kind: "exec", call: "eval" },
+          { kind: "exec", call: "requests.get" },
+          { kind: "exec", call: "sqlite3.connect" },
+          { kind: "exec", call: "pickle.loads" },
+        ]),
+      )
+    })
+
     it("classifies network calls as exec", async () => {
       const events = await analyze(
         [
@@ -354,9 +386,9 @@ describe("python analyzer", () => {
       )
     })
 
-    it("keeps OCI alias form as callable fallback unknown", async () => {
+    it("resolves OCI import aliases before classification", async () => {
       const events = await analyze("import oci as cloud\ncloud.object_storage.ObjectStorageClient(config)")
-      expect(events).toEqual([{ kind: "unknown", call: "callable:cloud.object_storage.ObjectStorageClient" }])
+      expect(events).toEqual([{ kind: "exec", call: "oci.object_storage.ObjectStorageClient" }])
     })
   })
 
@@ -448,9 +480,9 @@ describe("python analyzer", () => {
       )
     })
 
-    it("keeps ghapi alias form as callable fallback unknown", async () => {
+    it("resolves ghapi import aliases before classification", async () => {
       const events = await analyze("import ghapi.all as ga\nga.GhApi(owner='o', repo='r')")
-      expect(events).toEqual([{ kind: "unknown", call: "callable:ga.GhApi" }])
+      expect(events).toEqual([{ kind: "exec", call: "ghapi.all.GhApi" }])
     })
   })
 
@@ -530,12 +562,12 @@ describe("python analyzer", () => {
       expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "atlassian.jira.unknown_method" }]))
     })
 
-    it("keeps Atlassian import alias behavior deferred", async () => {
+    it("resolves Atlassian import aliases before constructor and instance tracking", async () => {
       const events = await analyze("import atlassian as atl\nclient = atl.Jira(url='https://example.atlassian.net')\nclient.jql('project = DEMO')")
       expect(events).toEqual(
         expect.arrayContaining([
-          { kind: "unknown", call: "callable:atl.Jira" },
-          { kind: "unknown", call: "callable:client.jql" },
+          { kind: "exec", call: "atlassian.Jira" },
+          { kind: "exec", call: "atlassian.jira.jql" },
         ]),
       )
     })
@@ -652,9 +684,585 @@ describe("python analyzer", () => {
       expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "no-classified-call" }]))
     })
 
-    it("keeps alias calls as callable unknowns", async () => {
+    it("resolves explicit import aliases before rule matching", async () => {
       const events = await analyze("import requests as rq\nrq.get('https://example.com')")
-      expect(events).toEqual([{ kind: "unknown", call: "callable:rq.get" }])
+      expect(events).toEqual([{ kind: "exec", call: "requests.get" }])
+    })
+
+    it("resolves local callable and module rebindings", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "fetch = requests.get",
+          "client.get('https://example.com/a')",
+          "fetch('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual([{ kind: "exec", call: "requests.get" }])
+    })
+
+    it("resolves zero-arg local factory returns into callable aliases", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "def get_fetch():",
+          "    return requests.get",
+          "fetch = get_fetch()",
+          "fetch('https://example.com')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:get_fetch" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:fetch" }]))
+    })
+
+    it("resolves zero-arg local factory returns into constructor aliases", async () => {
+      const events = await analyze(
+        [
+          "from atlassian import Jira",
+          "def get_ctor():",
+          "    return Jira",
+          "Ctor = get_ctor()",
+          "client = Ctor(url='https://example.atlassian.net')",
+          "client.jql('project = DEMO')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "Jira" },
+          { kind: "exec", call: "atlassian.jira.jql" },
+          { kind: "unknown", call: "callable:get_ctor" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:Ctor" }]))
+    })
+
+    it("keeps function-local aliases from leaking into module scope", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "def outer():",
+          "    inner_fetch = requests.get",
+          "    inner_fetch('https://example.com/c')",
+          "inner_fetch('https://example.com/d')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:inner_fetch" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution after non-alias reassignment", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "client.get('https://example.com/a')",
+          "client = make_client()",
+          "client.get('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:make_client" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+    })
+
+    it("invalidates factory-derived aliases after reassignment", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "def get_fetch():",
+          "    return requests.get",
+          "fetch = get_fetch()",
+          "fetch('https://example.com/a')",
+          "fetch = other()",
+          "fetch('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:other" },
+          { kind: "unknown", call: "callable:fetch" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution for for-loop rebinding", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "client.get('https://example.com/a')",
+          "for client in make_clients():",
+          "    pass",
+          "client.get('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:make_clients" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution for destructuring for-loop rebinding", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "fetch = requests.get",
+          "fetch('https://example.com/a')",
+          "for fetch, other in pairs:",
+          "    pass",
+          "fetch('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:fetch" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution for with-as rebinding", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "client.get('https://example.com/a')",
+          "with manager() as client:",
+          "    pass",
+          "client.get('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:manager" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution inside a for-loop body", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "for client in make_clients():",
+          "    client.get('https://example.com/in-loop')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:make_clients" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "requests.get" }]))
+    })
+
+    it("invalidates alias-based resolution for async for-loop rebinding", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "async def outer():",
+          "    client.get('https://example.com/a')",
+          "    async for client in make_clients():",
+          "        pass",
+          "    client.get('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:make_clients" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution for destructuring async for-loop rebinding", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "fetch = requests.get",
+          "async def outer():",
+          "    fetch('https://example.com/a')",
+          "    async for fetch, other in pairs:",
+          "        pass",
+          "    fetch('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:fetch" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution inside an async for-loop body", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "async def outer():",
+          "    async for client in make_clients():",
+          "        client.get('https://example.com/in-loop')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:make_clients" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "requests.get" }]))
+    })
+
+    it("invalidates alias-based resolution inside a with-as body", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "with manager() as client:",
+          "    client.get('https://example.com/in-with')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:manager" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "requests.get" }]))
+    })
+
+    it("invalidates alias-based resolution for async with-as rebinding", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "async def outer():",
+          "    client.get('https://example.com/a')",
+          "    async with manager() as client:",
+          "        pass",
+          "    client.get('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:manager" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution inside an async with-as body", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "async def outer():",
+          "    async with manager() as client:",
+          "        client.get('https://example.com/in-with')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:manager" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "requests.get" }]))
+    })
+
+    it("invalidates aliases between multi-item with headers in source order", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "with manager() as client, other(client.get('https://example.com/in-item')) as token:",
+          "    pass",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:manager" },
+          { kind: "unknown", call: "callable:other" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "requests.get" }]))
+    })
+
+    it("invalidates aliases between multi-item async with headers in source order", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "async def outer():",
+          "    async with manager() as client, other(client.get('https://example.com/in-item')) as token:",
+          "        pass",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:manager" },
+          { kind: "unknown", call: "callable:other" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "requests.get" }]))
+    })
+
+    it("invalidates alias-based resolution for except-as rebinding", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "client.get('https://example.com/a')",
+          "try:",
+          "    raise RuntimeError()",
+          "except RuntimeError as client:",
+          "    pass",
+          "client.get('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:RuntimeError" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution inside an except-as body", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "try:",
+          "    raise RuntimeError()",
+          "except RuntimeError as client:",
+          "    client.get('https://example.com/in-except')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:RuntimeError" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "requests.get" }]))
+    })
+
+    it("keeps nested-scope rebinding from clearing outer aliases", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "def outer():",
+          "    client = requests",
+          "    def inner():",
+          "        for client in make_clients():",
+          "            pass",
+          "        with manager() as client:",
+          "            pass",
+          "        try:",
+          "            raise RuntimeError()",
+          "        except RuntimeError as client:",
+          "            pass",
+          "    inner()",
+          "    client.get('https://example.com/outside')",
+          "outer()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:make_clients" },
+          { kind: "unknown", call: "callable:manager" },
+          { kind: "unknown", call: "callable:RuntimeError" },
+          { kind: "unknown", call: "callable:inner" },
+          { kind: "unknown", call: "callable:outer" },
+          { kind: "exec", call: "requests.get" },
+        ]),
+      )
+    })
+
+    it("keeps parameterized callable factories unresolved", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "def choose_fetch(flag):",
+          "    return requests.get",
+          "fetch = choose_fetch(cond)",
+          "fetch('https://example.com')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:choose_fetch" },
+          { kind: "unknown", call: "callable:fetch" },
+        ]),
+      )
+    })
+
+    it("keeps direct wrapper call passthrough deferred", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "def fetch(url):",
+          "    return requests.get(url)",
+          "fetch('https://example.com')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:fetch" },
+        ]),
+      )
+    })
+
+    it("does not summarize decorated zero-arg callable factories", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "@decorate",
+          "def get_fetch():",
+          "    return requests.get",
+          "fetch = get_fetch()",
+          "fetch('https://example.com')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:get_fetch" },
+          { kind: "unknown", call: "callable:fetch" },
+        ]),
+      )
+    })
+
+    it("keeps subscript-return callable factories unresolved", async () => {
+      const events = await analyze(
+        [
+          "registry = handlers",
+          "def get_fetch():",
+          "    return registry['fetch']",
+          "fetch = get_fetch()",
+          "fetch('https://example.com')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:get_fetch" },
+          { kind: "unknown", call: "callable:fetch" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution for destructuring reassignments", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "client.get('https://example.com/a')",
+          "client, other = make_pair()",
+          "client.get('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:make_pair" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution for augmented assignments", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "client.get('https://example.com/a')",
+          "client += suffix",
+          "client.get('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
+    })
+
+    it("invalidates alias-based resolution for named expressions", async () => {
+      const events = await analyze(
+        [
+          "import requests",
+          "client = requests",
+          "client.get('https://example.com/a')",
+          "if (client := make_client()):",
+          "    pass",
+          "client.get('https://example.com/b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "requests.get" },
+          { kind: "unknown", call: "callable:make_client" },
+          { kind: "unknown", call: "callable:client.get" },
+        ]),
+      )
     })
 
     it("uses dynamic-call fallback when callable identity cannot be resolved", async () => {
