@@ -14,7 +14,7 @@ tags:
 
 ## Purpose
 
-Use `src/python-session-report.ts` to scan saved OpenCode sessions, re-run the current Python analyzer on saved inline code snippets, review unresolved callable usage (`unknown` plus `emit` by default), and promote reviewed decisions into live callable rules when they are safe to do so.
+Use `src/python-session-report.ts` to scan saved OpenCode sessions, re-run the current Python analyzer on saved inline code snippets, review unresolved callable usage (`unknown` by default, with optional `emit` and `pure` auditing), and promote reviewed decisions into live callable rules when they are safe to do so.
 
 This guide assumes:
 
@@ -29,7 +29,7 @@ This utility is not an OpenCode tool. Do not install it under `~/.config/opencod
 - reads saved tool parts from the OpenCode SQLite database
 - re-analyzes saved inline `state.input.code`
 - reports unknown callables in text or JSON
-- builds a snippet-centric review queue (`unknown` + `emit` by default, optional `pure` via `--include-pure`) with read/write confidence signals
+- builds a snippet-centric review queue (`unknown` by default, optional `emit` via `--include-emit`, optional `pure` via `--include-pure`) with taxonomy confidence signals (`read`, `write`, `emit`, `exec`, `pure`, `unknown`)
 - stores human decisions in a sidecar review ledger
 - can promote consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`
 - can merge findings into `candidates.unknown` in a rules file
@@ -88,7 +88,7 @@ If that prints usage information, the utility is runnable from the repo.
 
 ## Review Score Source
 
-When you use `--review-next`, the utility asks `opencode run` to score the pending snippet candidates for `read` and `write` confidence.
+When you use `--review-next`, the utility asks `opencode run` to score the pending snippet candidates across taxonomy confidences: `read`, `write`, `emit`, `exec`, `pure`, and `unknown`.
 
 - successful score bundles are cached in `"$SCORES"`
 - cached results are reused on later review passes
@@ -162,6 +162,13 @@ OPENCODE_PYTHON_RULES="$RULES" \
 bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next
 ```
 
+Include already-classified emit candidates only when explicitly needed:
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --include-emit
+```
+
 Include pure candidates only when explicitly needed:
 
 ```bash
@@ -174,7 +181,8 @@ This prints:
 - one snippet at a time
 - each unresolved candidate in that snippet
 - candidate fingerprints
-- `read` and `write` confidence scores
+- taxonomy confidence scores (`read`, `write`, `emit`, `exec`, `pure`, `unknown`)
+- source-call context when available (for example `pathlib.Path.joinpath` under `p.joinpath`)
 - short heuristic reasons
 
 ### Decide candidates for that snippet
@@ -199,6 +207,7 @@ Supported decisions:
 - `write`
 - `emit`
 - `exec`
+- `pure`
 - `ignore`
 - `needs-code`
 
@@ -222,23 +231,28 @@ bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-ca
 
 The UI shows:
 
-- the code snippet
+- the full syntax-highlighted code page by default
 - one focused candidate at a time
-- `read` / `write` confidence scores and score source
+- taxonomy confidence scores and score source
 - a highlighted occurrence of the current candidate in the snippet
+- a transient processing status line while loading/rescoring the next candidate
+
+By default the queue focuses on unresolved callables. Add `--include-emit` if you want to audit already-classified emit callables too.
+
+Decisions are callable-scoped in the review ledger. Once a callable has a consistent decision, later appearances of that same callable across snippets inherit it automatically.
 
 One-key controls:
 
-- `y` accept the suggested decision (`read`/`write`, or `emit` when the candidate kind is `emit`)
-- `n` choose the opposite of the suggestion (`read` <-> `write`, or `ignore` for `emit` suggestions)
+- `y` accept the suggested decision (taxonomy-aware defaults: `read`, `write`, `emit`, `ignore`, or `pure`)
+- `n` choose the opposite suggestion (`read` <-> `write`, `emit` -> `ignore`, `pure` -> `ignore`, `ignore` -> best `read`/`write`/`emit`/`pure`)
 - `r` force `read`
 - `w` force `write`
 - `e` force `emit`
 - `x` mark `exec`
 - `i` mark `ignore`
-- `c` mark `needs-code`
+- `c` mark `needs-code` (manual override)
 - `s` skip this candidate for the current UI session
-- `v` toggle code expansion
+- `v` toggle between full-page and focused-window code views
 - `?` show help
 - `q` quit
 
@@ -248,7 +262,7 @@ Skip is session-local only. If you quit and restart the TUI, skipped candidates 
 
 ## Promote Reviewed Decisions
 
-When a callable has been reviewed across all currently known snippet contexts and all review decisions agree on `read`, `write`, `emit`, or `exec`, you can promote it into live call rules.
+When a callable has a consistent reviewed decision and maps to `read`, `write`, `emit`, or `exec`, you can promote it into live call rules.
 
 ```bash
 OPENCODE_PYTHON_RULES="$RULES" \
@@ -263,12 +277,52 @@ What this does:
 - joins them with the review ledger
 - promotes consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`
 - removes promoted callables from `candidates.unknown`
+- keeps promoted callables out of default review runs unless you explicitly opt back into `--include-emit`
 
 What this does not do:
 
-- it does not promote callables with unresolved snippet contexts
+- it does not promote callables that still have no reviewed decision
+- it does not auto-resolve callables with conflicting prior decisions; resolve the conflict first
 - it does not promote callables with conflicting decisions across contexts
 - it does not convert reviewed decisions into `methods.*` or `pathCalls.*`; those still need manual edits if that is the better rule shape
+
+## Suggest Rules
+
+Use this to preview copy-pasteable rule fragments from unanimous reviewed evidence without mutating the live rules file.
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --rules "$RULES" --suggest-rules
+```
+
+Current suggestions stay intentionally narrow:
+
+- only reviewed callables are considered
+- unresolved or conflicting contexts are blocked instead of suggested
+- suggestions are emitted only when one callable maps to one reviewed decision, one canonical source, and one evidence signature
+- when evidence proves a bounded guarded method shape today, preview output can emit `guarded.methods` fragments (currently for receiver-kind-backed cases like regex match methods)
+- output is preview-only; no rules file writes happen
+- do not combine preview modes with `--record-decision`; record decisions first, then rerun preview output
+
+Review rendering now surfaces optional analyzer evidence when available, such as receiver kind, dependency signatures, and explicit guard-failure reasons.
+
+## Compare Alternate Rules
+
+Use this to A/B the current rules file against an alternate candidate rules file on the same saved-session corpus.
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --rules "$RULES" --compare-rules "$ALT_RULES"
+```
+
+This reports:
+
+- unknown event deltas
+- unique unknown-call deltas
+- pending review candidate deltas
+- added or removed preview suggestions
+
+`--compare-rules` is read-only. It never updates either rules file.
 
 ## What To Do After `--update-candidates`
 
@@ -284,7 +338,7 @@ For each candidate, decide whether it should:
 
 ### 2. Review and classify snippet contexts
 
-Use the review loop until the relevant snippet contexts for a callable are decided.
+Use the review loop until each callable has a reviewed decision and any callable-level conflicts are resolved.
 
 ```bash
 OPENCODE_PYTHON_RULES="$RULES" \
@@ -328,7 +382,7 @@ OPENCODE_PYTHON_RULES="$RULES" \
 bun run ../src/python-session-report.ts --db "$DB"
 ```
 
-The promoted callable should stop appearing as unknown.
+The promoted callable should stop appearing in the default review queue, and it should also stop appearing as unknown.
 
 ### 5. Sync the real change back into the repo
 
@@ -379,7 +433,7 @@ bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok
 - Results are based on the current analyzer and current rules file, not historical rule versions.
 - Malformed saved rows are skipped and counted instead of failing the whole scan.
 - `scriptPath` executions are intentionally out of scope for this workflow.
-- `read` and `write` confidence scores are heuristics only. They guide review; they do not make the final decision for you.
+- Taxonomy confidence scores (`read`, `write`, `emit`, `exec`, `pure`, `unknown`) are heuristics only. They guide review; they do not make the final decision for you.
 - `--promote-reviewed` only promotes consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`. More nuanced rule shapes still need manual edits.
 
 ## Recommended Operator Loop

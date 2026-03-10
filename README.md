@@ -25,6 +25,14 @@ Use this project when you need:
   Atlassian (atlassian-python-api) client libraries.
 - **Repeatable tests** around analyzer, runtime, and session-review workflows.
 
+## Documentation Map
+
+- `README.md` for installation, runtime behavior, permissions, and maintenance workflow
+- `docs/python-classification-system-design.md` for classifier architecture, provenance model, and extension strategy
+- `docs/python-classification-reference.md` for detailed taxonomy tables, SDK coverage, fallback behavior, and name-resolution scope
+- `docs/python-classification-system-architecture.mmd` for the top-level classifier architecture diagram source
+- `docs/python-classification-provenance-internals.mmd` for the provenance-tracking internals diagram source
+
 ## Architecture
 
 ```mermaid
@@ -74,11 +82,18 @@ flowchart TD
 | File | Purpose |
 |------|---------|
 | `src/python.ts` | Runtime entry point: arg validation, source loading, analyzer call, permission asks, subprocess guard, process execution, timeout/abort handling, metadata streaming. |
-| `src/python/python-analyze.ts` | Tree-sitter analyzer that classifies Python calls into `read \| write \| emit \| exec \| pure \| unknown` events with optional path extraction. Loads cached declarative rules from `src/python/python-rules.json` and keeps procedural heuristics in TypeScript. |
+| `src/python/python-analyze.ts` | Frontend-backed analyzer core that classifies Python calls into `read \| write \| emit \| exec \| pure \| unknown` events with optional path extraction. Exposes `analyze()` for stable `PythonEvent[]` output plus `analyzeDetailed()` for analyzer-version metadata. |
+| `src/python/frontend/interface.ts` | Minimal parser frontend contract consumed by the analyzer core. |
+| `src/python/frontend/tree-sitter.ts` | Default tree-sitter-backed frontend implementation, including parser/WASM loading and caching. |
+| `src/python/python-rule-schema.ts` | Guarded-rule schema parsing and validation for declarative rule extensions that now back the default analyzer path for migrated families. |
+| `src/python/python-guard-eval.ts` | Pure guard evaluator used by the analyzer for migrated guarded-rule families. |
+| `src/python/python-ir.ts` | Internal analyzer IR and analyzer-version metadata helpers used by runtime metadata. |
+| `src/python/python-provenance.ts` | Bounded provenance-graph helpers for receiver/self path tracking, dependency invalidation, and assignment seeding in the main analyzer path. |
+| `src/python/python-values.ts` | Shared analyzer value and argument types extracted from the main analyzer implementation. |
 | `src/python/python-rules.json` | Declarative call/method/path rule inventory consumed by the analyzer. `candidates.unknown` is review-only evidence, not live classification. |
 | `src/python/python.txt` | Tool prompt that guides model usage (`code` vs `scriptPath`, non-interactive constraints, safety behavior). |
 | `src/python/env.d.ts` | `*.txt` module typing for TypeScript imports. |
-| `src/python-session-report.ts` | Saved-session utility that re-analyzes inline Python snippets from the OpenCode SQLite database and can update `candidates.unknown` in the rules file. |
+| `src/python-session-report.ts` | Saved-session utility that re-analyzes inline Python snippets from the OpenCode SQLite database, powers review/TUI workflows, previews rule suggestions, compares alternate rule files, and can update `candidates.unknown` in the rules file. |
 
 ### OpenCode entrypoints (`.opencode/tool/`)
 
@@ -136,10 +151,12 @@ so both paths must exist in the destination.
 SRC="/path/to/opencode-python-tool"
 DST="/path/to/target-repo"
 
-mkdir -p "$DST/.opencode/tool" "$DST/src/python"
+mkdir -p "$DST/.opencode/tool" "$DST/src/python" "$DST/src/python/frontend"
 
 cp "$SRC/src/python.ts" "$DST/src/python.ts"
 cp "$SRC/src/python/python-analyze.ts" "$DST/src/python/python-analyze.ts"
+cp "$SRC/src/python/frontend/interface.ts" "$DST/src/python/frontend/interface.ts"
+cp "$SRC/src/python/frontend/tree-sitter.ts" "$DST/src/python/frontend/tree-sitter.ts"
 cp "$SRC/src/python/python-rules.json" "$DST/src/python/python-rules.json"
 cp "$SRC/src/python/python.txt" "$DST/src/python/python.txt"
 cp "$SRC/src/python/env.d.ts" "$DST/src/python/env.d.ts"
@@ -203,10 +220,12 @@ project-local `.opencode/` folder.
 SRC="/path/to/opencode-python-tool"
 OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
 
-mkdir -p "$OPENCODE_HOME/tools/python"
+mkdir -p "$OPENCODE_HOME/tools/python" "$OPENCODE_HOME/tools/python/frontend"
 
 cp "$SRC/src/python.ts" "$OPENCODE_HOME/tools/python.ts"
 cp "$SRC/src/python/python-analyze.ts" "$OPENCODE_HOME/tools/python/python-analyze.ts"
+cp "$SRC/src/python/frontend/interface.ts" "$OPENCODE_HOME/tools/python/frontend/interface.ts"
+cp "$SRC/src/python/frontend/tree-sitter.ts" "$OPENCODE_HOME/tools/python/frontend/tree-sitter.ts"
 cp "$SRC/src/python/python-rules.json" "$OPENCODE_HOME/tools/python/python-rules.json"
 cp "$SRC/src/python/python.txt" "$OPENCODE_HOME/tools/python/python.txt"
 cp "$SRC/src/python/env.d.ts" "$OPENCODE_HOME/tools/python/env.d.ts"
@@ -346,151 +365,11 @@ to review safely in an automated flow.
 
 ## Analyzer Classification Reference
 
-The static analyzer (`python-analyze.ts`) uses Tree-sitter to parse Python
-source and classify every function call into one of six event kinds:
+Detailed classifier documentation now lives in:
 
-### Event kinds
-
-| Kind | Meaning | Permission prefix |
-|------|---------|-------------------|
-| `read` | File/data read operation | `read:` |
-| `write` | File/data write operation | `write:` |
-| `emit` | Outward reporting/signaling (stdout/logging/metrics) without durable state mutation | `emit:` |
-| `exec` | Process spawn, dynamic execution, network, database, or dangerous API call | `exec:` |
-| `pure` | In-memory-only computation with no external interaction | `pure:` |
-| `unknown` | Unrecognized, dynamic, or parse-error call | `unknown:` |
-
-Runtime ask policy:
-
-- `read`, `write`, `exec`, and `unknown` participate in `python` permission asks.
-- `emit` is analyzer/report visible and included in runtime operation metadata, but non-blocking by default.
-- `pure` is analyzer-visible and review-optional, but excluded from permission asks by default.
-
-### Classification tables
-
-#### File I/O
-
-| Call pattern | Kind | Path extraction |
-|-------------|------|-----------------|
-| `open(path, 'r')` | read | Literal or dynamic path from 1st arg |
-| `open(path, 'w'/'a'/'x'/'r+')` | write | Literal or dynamic path from 1st arg |
-| `open(path, <dynamic_mode>)` | unknown | `open-mode-dynamic` |
-| `Path(p).read_text()`, `.read_bytes()` | read | From `Path()` constructor arg |
-| `Path(p).write_text()`, `.write_bytes()`, `.mkdir()`, `.unlink()`, `.touch()`, `.rename()`, `.replace()`, `.rmdir()`, `.append_text()` | write | From `Path()` constructor arg |
-
-#### OS / shutil writes
-
-| Call | Kind | Path source |
-|------|------|-------------|
-| `os.remove(path)`, `os.unlink(path)` | write | 1st positional or `path` keyword |
-| `os.makedirs(name)` | write | 1st positional or `name`/`path` keyword |
-| `os.rename(src, dst)`, `os.replace(src, dst)` | write | 2nd positional or `dst` keyword |
-| `shutil.copy(src, dst)`, `.copy2()`, `.copytree()`, `.move()` | write | 2nd positional or `dst` keyword |
-| `shutil.rmtree(path)` | write | 1st positional or `path` keyword |
-
-#### Serialization I/O
-
-| Call | Kind |
-|------|------|
-| `json.load`, `yaml.load`, `yaml.safe_load` | read |
-| `json.dump`, `yaml.dump`, `yaml.safe_dump` | write |
-
-#### Emit and pure defaults
-
-| Call | Kind |
-|------|------|
-| `print`, `logging.debug/info/warning/error/critical/exception/log`, `warnings.warn` | emit |
-| `re.compile`, `re.search`, `re.match`, `re.fullmatch`, `re.findall`, `re.finditer`, `re.split`, `re.escape` | pure |
-
-`re.sub` is intentionally not classified as `pure` by default because callable replacements can hide side effects.
-
-#### Tempfile
-
-| Call | Kind |
-|------|------|
-| `tempfile.NamedTemporaryFile`, `tempfile.mkdtemp`, `tempfile.mkstemp`, `tempfile.TemporaryDirectory` | write |
-
-#### Dangerous builtins and process execution
-
-| Call | Kind |
-|------|------|
-| `eval`, `exec`, `compile`, `__import__` | exec |
-| `os.system`, `os.popen`, `os.exec*` | exec |
-| `subprocess.*` (any method) | exec |
-
-#### Dangerous deserialization
-
-| Call | Kind |
-|------|------|
-| `pickle.load`, `pickle.loads` | exec |
-| `marshal.load`, `marshal.loads` | exec |
-
-#### Network / HTTP
-
-| Call | Kind |
-|------|------|
-| `requests.get/post/put/delete/patch/head/options` | exec |
-| `urllib.request.urlopen`, `urllib.request.urlretrieve` | exec |
-| `http.client.HTTPConnection`, `http.client.HTTPSConnection` | exec |
-| `aiohttp.ClientSession` | exec |
-| `httpx.get/post/put/delete/patch`, `httpx.Client`, `httpx.AsyncClient` | exec |
-| `socket.socket`, `socket.create_connection` | exec |
-
-#### Database
-
-| Call | Kind |
-|------|------|
-| `sqlite3.connect` | exec |
-| `psycopg2.connect` | exec |
-| `pymysql.connect` | exec |
-| `sqlalchemy.create_engine` | exec |
-
-### SDK-specific classification
-
-#### OCI (Oracle Cloud Infrastructure)
-
-| Call | Kind | Notes |
-|------|------|-------|
-| `oci.identity.IdentityClient`, `oci.core.ComputeClient`, `oci.core.VirtualNetworkClient`, `oci.object_storage.ObjectStorageClient`, `oci.database.DatabaseClient`, `oci.secrets.SecretsClient`, `oci.key_management.KmsManagementClient` | exec | Constructor calls |
-| `oci.pagination.list_call_get_all_results`, `oci.pagination.list_call_get_all_results_generator` | exec | Pagination helpers |
-| `oci.<client>.<method>()` | exec | Chained client method calls via prefix matching |
-| `oci.config.from_file(path)` | read | Config file read with path extraction |
-
-#### GitHub API (ghapi)
-
-| Call | Kind | Notes |
-|------|------|-------|
-| `ghapi.all.GhApi`, `ghapi.core.GhApi` | exec | Constructors; also tracked as instance sources |
-| `ghapi.graphql.gh_query`, `ghapi.page.paged`, `ghapi.page.pages` | exec | Query/pagination helpers |
-| `ghapi.auth.GhDeviceAuth`, `ghapi.auth.github_auth_device` | exec | Auth helpers |
-| `GhApi.create_gist`, `GhApi.create_release`, `GhApi.delete_release`, `GhApi.upload_file`, `GhApi.enable_pages` | exec | Convenience methods |
-| `ghapi.actions.create_workflow_files`, `ghapi.actions.create_workflow`, `ghapi.actions.gh_create_workflow` | write | Workflow file helpers |
-| `<instance>.<group>.<method>()` | exec | Instance variable tracking: `api = GhApi(); api.git.get_ref()` -> `ghapi.git.get_ref` |
-
-#### Atlassian (atlassian-python-api)
-
-| Call | Kind | Notes |
-|------|------|-------|
-| `Jira()`, `Confluence()`, `Bitbucket()`, `ServiceDesk()`, `Crowd()`, `Xray()`, `CloudAdminOrgs()`, `CloudAdminUsers()` | exec | Bare constructors (require `from atlassian import ...` provenance) |
-| `atlassian.Jira()`, `atlassian.confluence.Confluence()`, etc. | exec | Module-qualified constructors (always classified) |
-| `<instance>.jql()`, `<instance>.create_page()`, etc. | exec | Tracked instance methods normalized to `atlassian.<family>.<method>` |
-
-Atlassian instance tracking supports four client families (`jira`, `confluence`,
-`bitbucket`, `servicedesk`) with known method sets per family. Unrecognized
-methods on tracked instances fall back to `unknown:callable:<instance>.<method>`.
-
-### Fallback behavior
-
-| Scenario | Event |
-|----------|-------|
-| Empty source | `unknown:empty-source` |
-| Parse error | `unknown:parse-error` |
-| Source > 100 KB | `unknown:large-script` (skips analysis) |
-| Calls present but none classified | `unknown:no-classified-call` |
-| No calls detected in source | `unknown:no-calls-detected` |
-| Unrecognized call with resolvable name | `unknown:callable:<name>` |
-| Dynamic/lambda call (no resolvable name) | `unknown:dynamic-call` |
-| `open()` with dynamic mode variable | `unknown:open-mode-dynamic` |
+- `docs/python-classification-system-design.md` for architecture, provenance, and extension strategy
+- `docs/python-classification-reference.md` for taxonomy, classification tables, fallback behavior, and name-resolution scope
+- `docs/python-classification-system-architecture.mmd` and `docs/python-classification-provenance-internals.mmd` for standalone Mermaid sources
 
 ## Runtime Behavior
 
@@ -534,6 +413,9 @@ Before execution, the runtime analyzes source and asks permissions with metadata
   `unknown:*`).
 - Keeps `emit`/`pure` in runtime `operations` metadata for observability, but does
   not ask `python` permissions for those kinds by default.
+- Adds optional operation metadata such as `canonicalSource`, `receiverKind`,
+  `ruleHit`, `guardFailure`, and dependency signatures when the analyzer has
+  bounded evidence for them.
 - Includes bounded executable-source preview in ask metadata.
 
 #### Preview limits
@@ -616,10 +498,11 @@ Terminal conditions append `<python_metadata>` to the output:
 - The analyzer loads declarative rule data from `src/python/python-rules.json` by default. Set `OPENCODE_PYTHON_RULES` to point at a different rules file.
 - `src/python-session-report.ts` scans saved OpenCode sessions, re-analyzes inline `state.input.code`, and skips `scriptPath` entries.
 - `--update-candidates` only updates `candidates.unknown` in the rules JSON. It does not automatically change live `methods`, `calls`, or `pathCalls` classifier buckets.
-- `--review-next` and `--decide` provide a snippet-centric human review loop backed by a sidecar ledger, with decisions such as `read`, `write`, `emit`, `exec`, `ignore`, and `needs-code`.
-- `--review-tui` provides a one-key terminal review UI that shows the snippet and one focused candidate at a time (`e` marks `emit`).
-- Review modes include `unknown` and `emit` by default; add `--include-pure` when you also want `pure` candidates in the queue.
-- `--review-next` now asks `opencode run` for `read` and `write` confidence scores, caches successful score bundles, and falls back to local heuristics if scoring fails.
+- `--review-next` and `--decide` provide a snippet-centric human review loop backed by a sidecar ledger, with decisions such as `read`, `write`, `emit`, `exec`, `pure`, `ignore`, and `needs-code`.
+- Once a callable has a recorded and consistent decision in the review ledger, later appearances of that callable reuse the same decision across snippets (you should not need to reclassify `print`, `reader.fetch`, etc. repeatedly).
+- `--review-tui` provides a one-key terminal review UI that opens with the full syntax-highlighted code page visible and one focused candidate at a time; the active call is visually emphasized, `v` toggles between full-page and focused-window code views, and a transient status line is shown while loading/rescoring the next candidate. Default `y` suggestions are `read`, `write`, `emit`, `ignore`, or `pure` (not `needs-code`), while `c` remains an explicit `needs-code` override.
+- Review modes include `unknown` by default; add `--include-emit` to audit already-classified `emit` callables and `--include-pure` when you also want `pure` candidates in the queue. Promoted callables should no longer reappear in default review runs.
+- `--review-next` now asks `opencode run` for taxonomy confidence scores (`read`, `write`, `emit`, `exec`, `pure`, `unknown`), caches successful score bundles, and falls back to local heuristics if scoring fails.
 - `--promote-reviewed` promotes consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
 - `src/python-session-report.ts` is an operator utility run from this repo checkout; it is not an OpenCode tool that belongs in `~/.config/opencode/tools/`.
 
@@ -635,9 +518,12 @@ bun run ../src/python-session-report.ts --db "$bundle"
 bun run ../src/python-session-report.ts --db "$bundle" --since 2026-03-01T00:00:00Z --samples 5
 bun run ../src/python-session-report.ts --db "$bundle" --json
 bun run ../src/python-session-report.ts --db "$bundle" --update-candidates
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --suggest-rules
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --compare-rules ../tmp/python-rules-alt.json
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-next
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-tui
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --decide 1=read,2=emit
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --include-emit
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --include-pure
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --rules ../src/python/python-rules.json --promote-reviewed
 bun run ../src/python-session-report.ts --db "$bundle" --rules ../src/python/python-rules.json --update-candidates
@@ -690,8 +576,8 @@ bun run ../src/python-session-report.ts --help
 
 | Suite | Tests | Coverage |
 |-------|-------|----------|
-| **Analyzer** | ~40 | `open()` modes/paths, Path methods, os/shutil writes, json/yaml, exec builtins, network/HTTP, database, tempfile, deserialization, OCI constructors/methods/config, ghapi direct/instance/workflow, Atlassian constructors/instances/provenance, edge cases, decorators/nested contexts |
-| **Runtime** | ~34 | Arg validation (XOR, timeout, empty), subprocess hard-fail, permission patterns (read/write/exec/unknown/callable), script-file permissions, external directory detection, always patterns, ENOENT handling, workdir semantics, process execution, timeout, abort, streaming, metadata capping |
+| **Analyzer** | 100+ | `open()` modes/paths, Path methods, guarded rules, builtin purity, json/yaml, exec builtins, network/HTTP, database, tempfile, deserialization, OCI constructors/methods/config, ghapi direct/instance/workflow, Atlassian constructors/instances/provenance, evidence plumbing, edge cases, decorators/nested contexts |
+| **Runtime** | 90+ | Arg validation (XOR, timeout, empty), subprocess hard-fail, permission patterns (read/write/exec/unknown/callable), script-file permissions, external directory detection, always patterns, ENOENT handling, workdir semantics, process execution, timeout, abort, streaming, metadata capping, enriched operation metadata |
 
 > **Note:** Runtime process-execution tests require `python3` on PATH and are
 > automatically skipped if unavailable.
@@ -700,14 +586,12 @@ bun run ../src/python-session-report.ts --help
 
 | Limitation | Details |
 |------------|---------|
-| **Import alias resolution** | Intentionally bounded. `import requests as rq; rq.get(...)` produces `unknown:callable:rq.get` instead of `exec:requests.get`. Full alias resolution requires scope analysis (deferred). |
-| **Subprocess alias bypass** | The subprocess hard-fail is based on direct `subprocess.*` call identity from the analyzer. Aliased forms (e.g., `import subprocess as sp; sp.run()`) produce a callable-unknown rather than triggering the guard. The permission deny rule provides defense-in-depth. |
+| **Alias resolution** | Intentionally bounded. The analyzer resolves explicit import aliases, simple same-scope local rebindings, and invalidation for common rebinding sites (`for`, `with ... as`, `except ... as`), but wrapper/interprocedural summaries still remain intentionally narrow. |
 | **Large script fallback** | Sources > 100 KB skip AST analysis entirely and produce `unknown:large-script`. |
-| **Static analysis depth** | Call-pattern based, not a full data-flow sandbox. Cannot track values across assignments beyond known SDK instance patterns (ghapi, Atlassian). |
+| **Static analysis depth** | Call-pattern based, not a full data-flow sandbox. The analyzer now handles bounded lexical alias resolution, but deeper wrapper inference, cross-function propagation, and dynamic Python features remain out of scope. |
 | **Metadata preview truncation** | Permission ask preview is intentionally truncated (4 KB / 120 lines). Expanded source capped at 50 KB. Very large scripts have no source in ask payload. |
-| **OCI alias forms** | `import oci as cloud; cloud.object_storage.ObjectStorageClient(config)` produces callable-unknown. Only canonical `oci.*` prefixes are classified. |
 | **Atlassian bare constructor ambiguity** | Bare `Jira()`, `Confluence()`, etc. are only classified as Atlassian constructors when `from atlassian import ...` provenance is detected in the source. Without the import, they fall back to `unknown:callable:Jira`. |
-| **Instance tracking is position-dependent** | ghapi and Atlassian instance tracking is based on assignment order in source. Calls before the assignment or after reassignment to a non-constructor value are not tracked. |
+| **Instance tracking is position-dependent** | ghapi and Atlassian instance tracking is based on source order. Calls before the assignment are not tracked, and rebinding remains a conservative delete-only boundary rather than a control-flow-sensitive lifetime model. |
 
 ## Update / Upgrade Workflow
 
@@ -719,6 +603,8 @@ When this repo changes, use one of these refresh paths.
 2. Re-copy core files:
    - `src/python.ts`
    - `src/python/python-analyze.ts`
+   - `src/python/frontend/interface.ts`
+   - `src/python/frontend/tree-sitter.ts`
    - `src/python/python-rules.json`
    - `src/python/python.txt`
    - `src/python/env.d.ts`
@@ -736,6 +622,8 @@ When this repo changes, use one of these refresh paths.
 2. Re-copy core files:
    - `src/python.ts` -> `tools/python.ts`
    - `src/python/python-analyze.ts` -> `tools/python/python-analyze.ts`
+   - `src/python/frontend/interface.ts` -> `tools/python/frontend/interface.ts`
+   - `src/python/frontend/tree-sitter.ts` -> `tools/python/frontend/tree-sitter.ts`
    - `src/python/python-rules.json` -> `tools/python/python-rules.json`
    - `src/python/python.txt` -> `tools/python/python.txt`
    - `src/python/env.d.ts` -> `tools/python/env.d.ts`
@@ -782,13 +670,14 @@ opencode-python-tool/
 
 1. Add declarative call, method, or path rules to `src/python/python-rules.json` when the pattern fits the existing rule model.
 2. Use `bun run ../src/python-session-report.ts --update-candidates` from `.opencode/` to gather unknown-call evidence into `candidates.unknown`.
-3. Use `--review-next` and `--decide` to classify snippet contexts in the sidecar review ledger, then `--promote-reviewed` to move consistently reviewed callables into `calls.read`, `calls.write`, or `calls.exec`.
-4. Edit `src/python/python-analyze.ts` only when the new behavior needs procedural logic or heuristics beyond the JSON rule model.
-5. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.
-6. If the new pattern should be denied by default, add the corresponding
+3. Use `--review-next` and `--decide` to classify callables in the sidecar review ledger (later appearances of the same callable are auto-reused), then `--promote-reviewed` to move consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
+4. Use `--suggest-rules` to preview unanimous reviewed clusters as copy-pasteable rule fragments (`calls.*` today, or bounded `guarded.methods` fragments when receiver evidence is sufficient), and `--compare-rules <file>` to diff review outcomes against an alternate rules file before promoting changes.
+5. Prefer guarded declarative rules before adding new procedural branches in `src/python/python-analyze.ts`; the schema lives in `src/python/python-rule-schema.ts` and `src/python/python-guard-eval.ts`.
+6. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.
+7. If the new pattern should be denied by default, add the corresponding
    `exec:<pattern>` deny rule to both `.opencode/opencode.jsonc` and the
    README's recommended configuration.
-7. Run `bun test` from `.opencode/` to validate.
+8. Run `bun test` from `.opencode/` to validate.
 
 ### Adding new SDK coverage
 
