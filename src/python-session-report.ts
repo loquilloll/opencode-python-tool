@@ -126,9 +126,25 @@ type Candidate = {
   examples: string[]
 }
 
+function isOccurrenceKind(value: unknown): value is Occurrence["kind"] {
+  return value === "unknown" || value === "emit" || value === "pure"
+}
+
+type ReviewIdentity = {
+  kind: Occurrence["kind"]
+  call: string
+  sourceCall?: string
+}
+
+function reviewKeyOf(value: ReviewIdentity) {
+  return `${value.kind}\n${value.sourceCall ?? value.call}`
+}
+
 type ReviewDecisionRecord = {
   fingerprint: string
+  kind?: Occurrence["kind"]
   call?: string
+  sourceCall?: string
   decision: ReviewDecision
   decidedAt: string
 }
@@ -140,7 +156,7 @@ type ReviewLedger = {
 
 type DecisionLookup = {
   byFingerprint: Map<string, ReviewDecision>
-  byCall: Map<string, ReviewDecision>
+  byReviewKey: Map<string, ReviewDecision>
 }
 
 export type ReviewQueue = {
@@ -1213,11 +1229,30 @@ function decision(input: unknown, file: string): ReviewDecisionRecord {
   const row = input as Record<string, unknown>
   if (typeof row.fingerprint !== "string" || !row.fingerprint) fail(`Invalid review ledger: ${file}`)
   if (typeof row.decision !== "string" || !isDecision(row.decision)) fail(`Invalid review ledger: ${file}`)
+  const kind = isOccurrenceKind(row.kind) ? row.kind : row.kind === undefined ? undefined : fail(`Invalid review ledger: ${file}`)
+  const call = typeof row.call === "string" ? row.call : undefined
+  if (kind && !call) fail(`Invalid review ledger: ${file}`)
   return {
     fingerprint: row.fingerprint,
-    call: typeof row.call === "string" ? row.call : undefined,
+    kind,
+    call,
+    sourceCall: typeof row.sourceCall === "string" ? row.sourceCall : undefined,
     decision: row.decision,
     decidedAt: typeof row.decidedAt === "string" ? row.decidedAt : new Date(0).toISOString(),
+  }
+}
+
+function decisionIdentity(
+  item: Pick<ReviewDecisionRecord, "kind" | "call" | "sourceCall">,
+  fallback?: Pick<Occurrence, "kind" | "call" | "sourceCall">,
+): ReviewIdentity | undefined {
+  if (item.kind && item.call) return { kind: item.kind, call: item.call, sourceCall: item.sourceCall }
+  if (!fallback) return
+  if (item.call && item.call !== fallback.call) return
+  return {
+    kind: fallback.kind,
+    call: fallback.call,
+    sourceCall: fallback.sourceCall,
   }
 }
 
@@ -1249,14 +1284,22 @@ async function saveLedger(filePath: string, data: ReviewLedger) {
 
 async function writeDecisions(opts: {
   ledger: string
-  decisions: Array<{ fingerprint: string; decision: ReviewDecision; call?: string }>
+  decisions: Array<{
+    fingerprint: string
+    decision: ReviewDecision
+    kind?: Occurrence["kind"]
+    call?: string
+    sourceCall?: string
+  }>
 }) {
   const data = await ledger(opts.ledger)
   const next = data.decisions.filter((item) => !opts.decisions.some((decision) => decision.fingerprint === item.fingerprint))
   for (const item of opts.decisions) {
     next.push({
       fingerprint: item.fingerprint,
+      kind: item.kind,
       call: item.call,
+      sourceCall: item.sourceCall,
       decision: item.decision,
       decidedAt: new Date().toISOString(),
     })
@@ -1276,7 +1319,14 @@ function recordSpec(input: string) {
   return { fingerprint, decision: outcome }
 }
 
-export async function recordDecision(opts: { ledger: string; fingerprint: string; decision: ReviewDecision; call?: string }) {
+export async function recordDecision(opts: {
+  ledger: string
+  fingerprint: string
+  decision: ReviewDecision
+  kind?: Occurrence["kind"]
+  call?: string
+  sourceCall?: string
+}) {
   return writeDecisions({ ledger: opts.ledger, decisions: [opts] })
 }
 
@@ -1344,7 +1394,7 @@ export async function review(report: Report, opts: { ledger: string }): Promise<
           writeConfidence: item.writeConfidence,
           reasons: item.reasons,
           scoreSource: item.scoreSource,
-          decision: resolvedDecision(decided, item.fingerprint, item.call),
+          decision: resolvedDecision(decided, item),
         })
       }
     snippets.set(item.snippetFingerprint, snippet)
@@ -1421,7 +1471,13 @@ export function parseDecide(input: string) {
 export async function applyDecisions(opts: { ledger: string; item: ReviewSnippet; decide: string }) {
   const actions = parseDecide(opts.decide)
   const seen = new Set<string>()
-  const resolved: Array<{ fingerprint: string; decision: ReviewDecision; call?: string }> = []
+  const resolved: Array<{
+    fingerprint: string
+    decision: ReviewDecision
+    kind?: Occurrence["kind"]
+    call?: string
+    sourceCall?: string
+  }> = []
   for (const action of actions) {
     const target =
       action.kind === "index"
@@ -1430,7 +1486,13 @@ export async function applyDecisions(opts: { ledger: string; item: ReviewSnippet
     if (!target) fail(`Decision target not found: ${action.kind === "index" ? action.index : action.fingerprint}`)
     if (seen.has(target.fingerprint)) fail(`Duplicate decision target: ${target.fingerprint}`)
     seen.add(target.fingerprint)
-    resolved.push({ fingerprint: target.fingerprint, decision: action.decision, call: target.call })
+    resolved.push({
+      fingerprint: target.fingerprint,
+      decision: action.decision,
+      kind: target.kind,
+      call: target.call,
+      sourceCall: target.sourceCall,
+    })
   }
   await writeDecisions({ ledger: opts.ledger, decisions: resolved })
 }
@@ -1604,13 +1666,14 @@ export function renderTui(item: ReviewItem, full: boolean, help = false) {
   return out.join("\n")
 }
 
-function settled(queue: ReviewQueue, fingerprint: string, decision: ReviewDecision, call?: string) {
+function settled(queue: ReviewQueue, fingerprint: string, decision: ReviewDecision, identity?: ReviewIdentity) {
+  const key = identity ? reviewKeyOf(identity) : undefined
   return {
     ...queue,
     snippets: queue.snippets.map((snippet) => ({
       ...snippet,
       candidates: snippet.candidates.map((candidate) =>
-        candidate.fingerprint === fingerprint || (call && candidate.call === call) ? { ...candidate, decision } : candidate,
+        candidate.fingerprint === fingerprint || (key && reviewKeyOf(candidate) === key) ? { ...candidate, decision } : candidate,
       ),
     })),
   }
@@ -1676,9 +1739,15 @@ export async function tui(queue: ReviewQueue, opts: { ledger: string; cache: str
         ledger: opts.ledger,
         fingerprint: current.candidate.fingerprint,
         decision: hit.decision,
+        kind: current.candidate.kind,
         call: current.candidate.call,
+        sourceCall: current.candidate.sourceCall,
       })
-      queue = settled(queue, current.candidate.fingerprint, hit.decision, current.candidate.call)
+      queue = settled(queue, current.candidate.fingerprint, hit.decision, {
+        kind: current.candidate.kind,
+        call: current.candidate.call,
+        sourceCall: current.candidate.sourceCall,
+      })
     }
   } finally {
     input.setRawMode?.(false)
@@ -1708,33 +1777,40 @@ function decisionLookup(data: ReviewLedger, report?: Report): DecisionLookup {
   const byFingerprint = new Map<string, ReviewDecision>()
   for (const item of data.decisions) byFingerprint.set(item.fingerprint, item.decision)
 
-  const callByFingerprint = new Map<string, string>()
+  const identityByFingerprint = new Map<string, ReviewIdentity>()
   if (report) {
     for (const item of report.occurrences) {
-      if (!callByFingerprint.has(item.fingerprint)) callByFingerprint.set(item.fingerprint, item.call)
+      if (!identityByFingerprint.has(item.fingerprint)) {
+        identityByFingerprint.set(item.fingerprint, {
+          kind: item.kind,
+          call: item.call,
+          sourceCall: item.sourceCall,
+        })
+      }
     }
   }
 
-  const byCallChoices = new Map<string, Set<ReviewDecision>>()
+  const byReviewKeyChoices = new Map<string, Set<ReviewDecision>>()
   for (const item of [...data.decisions].sort((a, b) => a.decidedAt.localeCompare(b.decidedAt) || a.fingerprint.localeCompare(b.fingerprint))) {
-    const call = item.call ?? callByFingerprint.get(item.fingerprint)
-    if (!call) continue
-    const choices = byCallChoices.get(call) ?? new Set<ReviewDecision>()
+    const identity = decisionIdentity(item, identityByFingerprint.get(item.fingerprint))
+    if (!identity) continue
+    const key = reviewKeyOf(identity)
+    const choices = byReviewKeyChoices.get(key) ?? new Set<ReviewDecision>()
     choices.add(item.decision)
-    byCallChoices.set(call, choices)
+    byReviewKeyChoices.set(key, choices)
   }
 
-  const byCall = new Map<string, ReviewDecision>()
-  for (const [call, choices] of byCallChoices) {
+  const byReviewKey = new Map<string, ReviewDecision>()
+  for (const [key, choices] of byReviewKeyChoices) {
     if (choices.size !== 1) continue
-    byCall.set(call, [...choices][0])
+    byReviewKey.set(key, [...choices][0])
   }
 
-  return { byFingerprint, byCall }
+  return { byFingerprint, byReviewKey }
 }
 
-function resolvedDecision(data: DecisionLookup, fingerprint: string, call: string) {
-  return data.byFingerprint.get(fingerprint) ?? data.byCall.get(call)
+function resolvedDecision(data: DecisionLookup, item: Pick<Occurrence, "fingerprint" | "kind" | "call" | "sourceCall">) {
+  return data.byFingerprint.get(item.fingerprint) ?? data.byReviewKey.get(reviewKeyOf(item))
 }
 
 function suggestionDecision(decision: ReviewDecision): SuggestionDecision | undefined {
@@ -1818,7 +1894,7 @@ export async function suggestRules(report: Report, opts: { ledger: string; rules
       row.representativeEvidenceKey = currentEvidenceKey
       row.representativeEvidence = item.evidence
     }
-    const decision = resolvedDecision(decided, item.fingerprint, item.call)
+    const decision = resolvedDecision(decided, item)
     if (decision) row.decisions.add(decision)
     else row.pending++
     byCall.set(item.call, row)
@@ -2020,33 +2096,54 @@ export function renderRulesCompare(report: RulesCompareReport) {
 export async function promotions(report: Report, opts: { ledger: string; rules: string }): Promise<PromotionPlan> {
   const data = await ledger(opts.ledger)
   const decided = decisionLookup(data, report)
-  const byCall = new Map<
+  const byIdentity = new Map<
     string,
     {
+      call: string
       decisions: Map<string, ReviewDecision>
       pending: Set<string>
     }
   >()
 
   for (const item of report.occurrences) {
-    const row = byCall.get(item.call) ?? { decisions: new Map<string, ReviewDecision>(), pending: new Set<string>() }
-    const outcome = resolvedDecision(decided, item.fingerprint, item.call)
+    const key = reviewKeyOf(item)
+    const row = byIdentity.get(key) ?? { call: item.call, decisions: new Map<string, ReviewDecision>(), pending: new Set<string>() }
+    const outcome = resolvedDecision(decided, item)
     if (outcome) row.decisions.set(item.fingerprint, outcome)
     else row.pending.add(item.fingerprint)
-    byCall.set(item.call, row)
+    byIdentity.set(key, row)
+  }
+
+  const byCall = new Map<
+    string,
+    Array<{
+      decisions: Map<string, ReviewDecision>
+      pending: Set<string>
+    }>
+  >()
+  for (const row of byIdentity.values()) {
+    const rows = byCall.get(row.call) ?? []
+    rows.push(row)
+    byCall.set(row.call, rows)
   }
 
   const promotable: Record<PromotionBucket, string[]> = { read: [], write: [], emit: [], exec: [] }
   const blocked: PromotionPlan["blocked"] = []
 
-  for (const [call, row] of [...byCall.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const outcomes = [...new Set(row.decisions.values())]
-    if (!outcomes.length) {
-      blocked.push({ call, reason: "no reviewed contexts", decisions: [], pendingContexts: row.pending.size })
+  for (const [call, identities] of [...byCall.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const outcomes = [...new Set(identities.flatMap((row) => [...row.decisions.values()]))]
+    const pendingContexts = identities.reduce((count, row) => count + row.pending.size, 0)
+    if (identities.length !== 1) {
+      blocked.push({ call, reason: "multiple review identities share this call", decisions: outcomes, pendingContexts })
       continue
     }
-    if (row.pending.size) {
-      blocked.push({ call, reason: "unresolved contexts remain", decisions: outcomes, pendingContexts: row.pending.size })
+    const [row] = identities
+    if (!outcomes.length) {
+      blocked.push({ call, reason: "no reviewed contexts", decisions: [], pendingContexts })
+      continue
+    }
+    if (pendingContexts) {
+      blocked.push({ call, reason: "unresolved contexts remain", decisions: outcomes, pendingContexts })
       continue
     }
     const buckets = outcomes.map(bucketFor).filter((item): item is PromotionBucket => Boolean(item))

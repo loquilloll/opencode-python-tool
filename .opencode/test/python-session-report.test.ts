@@ -57,6 +57,21 @@ function data(tool: string, input: Record<string, unknown>) {
   })
 }
 
+async function recordOccurrenceDecision(
+  ledger: string,
+  occurrence: { fingerprint: string; kind: "unknown" | "emit" | "pure"; call: string; sourceCall?: string },
+  decision: "read" | "write" | "emit" | "exec" | "pure" | "ignore" | "needs-code",
+) {
+  await recordDecision({
+    ledger,
+    fingerprint: occurrence.fingerprint,
+    decision,
+    kind: occurrence.kind,
+    call: occurrence.call,
+    sourceCall: occurrence.sourceCall,
+  })
+}
+
 describe("python session report", () => {
   it("scans inline python snippets and groups unknown callables", async () => {
     const tmp = await db()
@@ -596,7 +611,14 @@ describe("python session report", () => {
       expect(rq?.readConfidence).toBeGreaterThan(rq?.writeConfidence ?? 1)
       expect(append?.writeConfidence).toBeGreaterThan(append?.readConfidence ?? 1)
 
-      await recordDecision({ ledger, fingerprint: rq!.fingerprint, decision: "read", call: rq!.call })
+      await recordDecision({
+        ledger,
+        fingerprint: rq!.fingerprint,
+        decision: "read",
+        kind: rq!.kind,
+        call: rq!.call,
+        sourceCall: rq!.sourceCall,
+      })
 
       const merged = await review(report, { ledger })
       const decided = merged.snippets[0]?.candidates.find((item) => item.call === "reader.fetch")
@@ -611,10 +633,461 @@ describe("python session report", () => {
       expect(ledgerData.decisions).toEqual([
         expect.objectContaining({
           fingerprint: rq?.fingerprint,
+          kind: "unknown",
           call: "reader.fetch",
           decision: "read",
         }),
       ])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("loads legacy review ledger rows without review identity fields", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "reader.fetch('x')\nwriter.save('y')" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const occurrence = report.occurrences.find((item) => item.call === "reader.fetch")!
+      await writeFile(
+        ledger,
+        `${JSON.stringify({
+          version: 1,
+          decisions: [
+            {
+              fingerprint: occurrence.fingerprint,
+              call: occurrence.call,
+              decision: "read",
+              decidedAt: new Date(0).toISOString(),
+            },
+          ],
+        })}\n`,
+      )
+
+      const queue = await review(report, { ledger })
+      const decided = queue.snippets[0]?.candidates.find((item) => item.call === "reader.fetch")
+      const pending = queue.snippets[0]?.candidates.find((item) => item.call === "writer.save")
+      expect(decided?.decision).toBe("read")
+      expect(pending?.decision).toBeUndefined()
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps legacy call-only rows from reusing across different review identities", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      const time = new Date(2000).toISOString()
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        analyzerVersion: "python-analyzer/v2",
+        engineVersion: "python-ir-v2",
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 2,
+          unknownEvents: 0,
+          uniqueUnknownCalls: 0,
+          skippedRows: 0,
+        },
+        unknown: [],
+        occurrences: [
+          {
+            kind: "pure" as const,
+            call: "item.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-match",
+            snippetFingerprint: "snippet-match",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "item.group(1)",
+            code: "item = re.search('a+', text)\nitem.group(1)",
+            confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+            readConfidence: 0.05,
+            writeConfidence: 0.05,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "pure" as const,
+            call: "item.group",
+            sourceCall: "collections.Group.group",
+            canonicalSource: "collections.Group.group",
+            fingerprint: "fp-other",
+            snippetFingerprint: "snippet-other",
+            sessionID: "s2",
+            messageID: "m2",
+            partID: "p2",
+            title: "Beta",
+            time,
+            preview: "item.group(1)",
+            code: "item = custom_group()\nitem.group(1)",
+            confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.91, unknown: 0.09 },
+            readConfidence: 0.05,
+            writeConfidence: 0.05,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      await writeFile(
+        ledger,
+        `${JSON.stringify({
+          version: 1,
+          decisions: [
+            {
+              fingerprint: report.occurrences[0]!.fingerprint,
+              call: report.occurrences[0]!.call,
+              decision: "pure",
+              decidedAt: new Date(0).toISOString(),
+            },
+          ],
+        })}\n`,
+      )
+
+      const queue = await review(report, { ledger })
+      const target = queue.snippets.find((item) => item.snippetFingerprint === "snippet-other")
+      expect(queue.snippets).toHaveLength(1)
+      expect(target?.candidates[0]?.decision).toBeUndefined()
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps legacy exact-fingerprint rows reusable even when review identity cannot be reconstructed", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      const time = new Date(2000).toISOString()
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        analyzerVersion: "python-analyzer/v2",
+        engineVersion: "python-ir-v2",
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 2,
+          unknownEvents: 1,
+          uniqueUnknownCalls: 1,
+          skippedRows: 0,
+        },
+        unknown: [],
+        occurrences: [
+          {
+            kind: "pure" as const,
+            call: "item.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-match",
+            snippetFingerprint: "snippet-match",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "item.group(1)",
+            code: "item = re.search('a+', text)\nitem.group(1)\nwriter.save('y')",
+            confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+            readConfidence: 0.05,
+            writeConfidence: 0.05,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "unknown" as const,
+            call: "writer.save",
+            canonicalSource: "writer.save",
+            fingerprint: "fp-write",
+            snippetFingerprint: "snippet-match",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "writer.save('y')",
+            code: "item = re.search('a+', text)\nitem.group(1)\nwriter.save('y')",
+            confidence: { read: 0.08, write: 0.88, emit: 0.03, exec: 0.05, pure: 0.03, unknown: 0.11 },
+            readConfidence: 0.08,
+            writeConfidence: 0.88,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "pure" as const,
+            call: "item.group",
+            sourceCall: "collections.Group.group",
+            canonicalSource: "collections.Group.group",
+            fingerprint: "fp-other",
+            snippetFingerprint: "snippet-other",
+            sessionID: "s2",
+            messageID: "m2",
+            partID: "p2",
+            title: "Beta",
+            time,
+            preview: "item.group(1)",
+            code: "item = custom_group()\nitem.group(1)",
+            confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.91, unknown: 0.09 },
+            readConfidence: 0.05,
+            writeConfidence: 0.05,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      await writeFile(
+        ledger,
+        `${JSON.stringify({
+          version: 1,
+          decisions: [
+            {
+              fingerprint: report.occurrences[0]!.fingerprint,
+              call: report.occurrences[0]!.call,
+              decision: "pure",
+              decidedAt: new Date(0).toISOString(),
+            },
+          ],
+        })}\n`,
+      )
+
+      const queue = await review(report, { ledger })
+      const decided = queue.snippets.find((item) => item.snippetFingerprint === "snippet-match")
+      const pending = queue.snippets.find((item) => item.snippetFingerprint === "snippet-other")
+      expect(decided?.candidates.find((item) => item.fingerprint === "fp-match")?.decision).toBe("pure")
+      expect(decided?.candidates.find((item) => item.fingerprint === "fp-write")?.decision).toBeUndefined()
+      expect(pending?.candidates[0]?.decision).toBeUndefined()
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects invalid occurrence kinds in review ledger rows", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "reader.fetch('x')" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const occurrence = report.occurrences[0]!
+      await writeFile(
+        ledger,
+        `${JSON.stringify({
+          version: 1,
+          decisions: [
+            {
+              fingerprint: occurrence.fingerprint,
+              kind: "bad",
+              call: occurrence.call,
+              decision: "read",
+              decidedAt: new Date(0).toISOString(),
+            },
+          ],
+        })}\n`,
+      )
+
+      await expect(review(report, { ledger })).rejects.toThrow(/^Invalid review ledger:/)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects review ledger rows that set kind without call", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "reader.fetch('x')" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const occurrence = report.occurrences[0]!
+      await writeFile(
+        ledger,
+        `${JSON.stringify({
+          version: 1,
+          decisions: [
+            {
+              fingerprint: occurrence.fingerprint,
+              kind: "unknown",
+              decision: "read",
+              decidedAt: new Date(0).toISOString(),
+            },
+          ],
+        })}\n`,
+      )
+
+      await expect(review(report, { ledger })).rejects.toThrow(/^Invalid review ledger:/)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects review ledger rows that set kind with an empty call", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "reader.fetch('x')" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const occurrence = report.occurrences[0]!
+      await writeFile(
+        ledger,
+        `${JSON.stringify({
+          version: 1,
+          decisions: [
+            {
+              fingerprint: occurrence.fingerprint,
+              kind: "unknown",
+              call: "",
+              decision: "read",
+              decidedAt: new Date(0).toISOString(),
+            },
+          ],
+        })}\n`,
+      )
+
+      await expect(review(report, { ledger })).rejects.toThrow(/^Invalid review ledger:/)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects malformed ledger rows through suggestRules", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const rules = path.join(tmp.dir, "python-rules.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "reader.fetch('x')" }),
+      })
+
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      await writeFile(rules, await readFile(src, "utf8"))
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const occurrence = report.occurrences[0]!
+      await writeFile(
+        ledger,
+        `${JSON.stringify({
+          version: 1,
+          decisions: [
+            {
+              fingerprint: occurrence.fingerprint,
+              kind: "unknown",
+              decision: "read",
+              decidedAt: new Date(0).toISOString(),
+            },
+          ],
+        })}\n`,
+      )
+
+      await expect(suggestRules(report, { ledger, rules })).rejects.toThrow(/^Invalid review ledger:/)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects malformed ledger rows through promotions", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const rules = path.join(tmp.dir, "python-rules.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "reader.fetch('x')" }),
+      })
+
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      await writeFile(rules, await readFile(src, "utf8"))
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const occurrence = report.occurrences[0]!
+      await writeFile(
+        ledger,
+        `${JSON.stringify({
+          version: 1,
+          decisions: [
+            {
+              fingerprint: occurrence.fingerprint,
+              kind: "unknown",
+              call: "",
+              decision: "read",
+              decidedAt: new Date(0).toISOString(),
+            },
+          ],
+        })}\n`,
+      )
+
+      await expect(promotions(report, { ledger, rules })).rejects.toThrow(/^Invalid review ledger:/)
     } finally {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })
@@ -660,7 +1133,7 @@ describe("python session report", () => {
     }
   })
 
-  it("reuses callable decisions across different snippet contexts", async () => {
+  it("reuses matching review-identity decisions across different snippet contexts", async () => {
     const tmp = await db()
     const ledger = path.join(tmp.dir, "review-ledger.json")
 
@@ -687,7 +1160,7 @@ describe("python session report", () => {
       const initial = await review(report, { ledger })
       const first = initial.snippets.find((item) => item.code === "reader.fetch(source_path)")
       const second = initial.snippets.find((item) => item.code === "reader.fetch(target_path)\nwriter.save('y')")
-      await recordDecision({ ledger, fingerprint: first!.candidates[0]!.fingerprint, decision: "read", call: "reader.fetch" })
+      await recordOccurrenceDecision(ledger, first!.candidates[0]!, "read")
 
       const merged = await review(report, { ledger })
       const pending = merged.snippets.find((item) => item.code === second!.code)
@@ -701,7 +1174,7 @@ describe("python session report", () => {
     }
   })
 
-  it("keeps callable review items unresolved when prior callable decisions conflict", async () => {
+  it("keeps review items unresolved when matching review identities conflict", async () => {
     const tmp = await db()
     const ledger = path.join(tmp.dir, "review-ledger.json")
 
@@ -737,13 +1210,163 @@ describe("python session report", () => {
       const source = initial.snippets.find((item) => item.code === "reader.fetch(source_path)")!
       const target = initial.snippets.find((item) => item.code === "reader.fetch(target_path)")!
 
-      await recordDecision({ ledger, fingerprint: source.candidates[0]!.fingerprint, decision: "read", call: "reader.fetch" })
-      await recordDecision({ ledger, fingerprint: target.candidates[0]!.fingerprint, decision: "write", call: "reader.fetch" })
+      await recordOccurrenceDecision(ledger, source.candidates[0]!, "read")
+      await recordOccurrenceDecision(ledger, target.candidates[0]!, "write")
 
       const merged = await review(report, { ledger })
       const pending = merged.snippets.find((item) => item.code === "reader.fetch(extra_path)\nwriter.save('y')")
       const unresolved = pending?.candidates.find((item) => item.call === "reader.fetch")
       expect(unresolved?.decision).toBeUndefined()
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("does not reuse decisions when the display call matches but sourceCall differs", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      const time = new Date(2000).toISOString()
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        analyzerVersion: "python-analyzer/v2",
+        engineVersion: "python-ir-v2",
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 2,
+          unknownEvents: 0,
+          uniqueUnknownCalls: 0,
+          skippedRows: 0,
+        },
+        unknown: [],
+        occurrences: [
+          {
+            kind: "pure" as const,
+            call: "item.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-match",
+            snippetFingerprint: "snippet-match",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "item.group(1)",
+            code: "item = re.search('a+', text)\nitem.group(1)",
+            confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+            readConfidence: 0.05,
+            writeConfidence: 0.05,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "pure" as const,
+            call: "item.group",
+            sourceCall: "collections.Group.group",
+            canonicalSource: "collections.Group.group",
+            fingerprint: "fp-other",
+            snippetFingerprint: "snippet-other",
+            sessionID: "s2",
+            messageID: "m2",
+            partID: "p2",
+            title: "Beta",
+            time,
+            preview: "item.group(1)",
+            code: "item = custom_group()\nitem.group(1)",
+            confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.91, unknown: 0.09 },
+            readConfidence: 0.05,
+            writeConfidence: 0.05,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      await recordOccurrenceDecision(ledger, report.occurrences[0]!, "pure")
+      const queue = await review(report, { ledger })
+      const pending = queue.snippets.find((item) => item.snippetFingerprint === "snippet-other")
+      expect(queue.snippets).toHaveLength(1)
+      expect(pending?.candidates[0]?.decision).toBeUndefined()
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("does not reuse decisions when the display call matches but kind differs", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      const time = new Date(2000).toISOString()
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        analyzerVersion: "python-analyzer/v2",
+        engineVersion: "python-ir-v2",
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 2,
+          unknownEvents: 1,
+          uniqueUnknownCalls: 1,
+          skippedRows: 0,
+        },
+        unknown: [],
+        occurrences: [
+          {
+            kind: "unknown" as const,
+            call: "foo.bar",
+            canonicalSource: "foo.bar",
+            fingerprint: "fp-unknown",
+            snippetFingerprint: "snippet-unknown",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "foo.bar()",
+            code: "foo.bar()",
+            confidence: { read: 0.2, write: 0.25, emit: 0.05, exec: 0.06, pure: 0.04, unknown: 0.4 },
+            readConfidence: 0.2,
+            writeConfidence: 0.25,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "emit" as const,
+            call: "foo.bar",
+            canonicalSource: "foo.bar",
+            fingerprint: "fp-emit",
+            snippetFingerprint: "snippet-emit",
+            sessionID: "s2",
+            messageID: "m2",
+            partID: "p2",
+            title: "Beta",
+            time,
+            preview: "foo.bar()",
+            code: "foo.bar()",
+            confidence: { read: 0.08, write: 0.1, emit: 0.9, exec: 0.03, pure: 0.02, unknown: 0.1 },
+            readConfidence: 0.08,
+            writeConfidence: 0.1,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      await recordOccurrenceDecision(ledger, report.occurrences[0]!, "read")
+      const queue = await review(report, { ledger })
+      const pending = queue.snippets.find((item) => item.snippetFingerprint === "snippet-emit")
+      expect(queue.snippets).toHaveLength(1)
+      expect(pending?.candidates[0]?.decision).toBeUndefined()
     } finally {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })
@@ -951,6 +1574,40 @@ describe("python session report", () => {
 
       const ledgerData = JSON.parse(await readFile(ledger, "utf8")) as Record<string, any>
       expect(ledgerData.decisions).toHaveLength(2)
+      expect(new Set(ledgerData.decisions.map((decision: Record<string, any>) => decision.kind))).toEqual(new Set(["unknown"]))
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("persists source-call identity for batch decisions", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: ["from pathlib import Path", "p = Path('x')", "p.joinpath('a')"].join("\n") }),
+      })
+
+      const item = nextReview(await review(await scan({ db: tmp.file, samples: 3, includePure: true }), { ledger }))
+      await applyDecisions({ ledger, item: item!, decide: `${item!.candidates[0]!.fingerprint}=pure` })
+
+      const ledgerData = JSON.parse(await readFile(ledger, "utf8")) as Record<string, any>
+      expect(ledgerData.decisions).toEqual([
+        expect.objectContaining({
+          kind: "pure",
+          call: "p.joinpath",
+          sourceCall: "pathlib.Path.joinpath",
+          decision: "pure",
+        }),
+      ])
     } finally {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })
@@ -1107,7 +1764,7 @@ describe("python session report", () => {
     }
   })
 
-  it("promotes callables once a callable-level decision exists", async () => {
+  it("promotes callables once a matching review-identity decision exists", async () => {
     const tmp = await db()
     const ledger = path.join(tmp.dir, "review-ledger.json")
     const rules = path.join(tmp.dir, "python-rules.json")
@@ -1137,11 +1794,121 @@ describe("python session report", () => {
       const report = await scan({ db: tmp.file, samples: 3 })
       const queue = await review(report, { ledger })
       const second = queue.snippets.find((item) => item.code === "reader.fetch(source_path)")
-      await recordDecision({ ledger, fingerprint: second!.candidates[0]!.fingerprint, decision: "read", call: "reader.fetch" })
+      await recordOccurrenceDecision(ledger, second!.candidates[0]!, "read")
 
       const plan = await promotions(report, { ledger, rules })
       expect(plan.promotable.read).toEqual(["reader.fetch"])
       expect(plan.blocked).toEqual([])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("blocks promotion when multiple review identities share one outward call", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const rules = path.join(tmp.dir, "python-rules.json")
+    const time = new Date(2000).toISOString()
+
+    try {
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        analyzerVersion: "python-analyzer/v2",
+        engineVersion: "python-ir-v2",
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 2,
+          unknownEvents: 2,
+          uniqueUnknownCalls: 1,
+          skippedRows: 0,
+        },
+        unknown: [
+          {
+            call: "item.group",
+            count: 2,
+            lastSeen: time,
+            sessions: [
+              { id: "s2", title: "Beta", time },
+              { id: "s1", title: "Alpha", time },
+            ],
+            samples: [
+              { sessionID: "s1", messageID: "m1", partID: "p1", title: "Alpha", time, preview: "item.group(1)" },
+              { sessionID: "s2", messageID: "m2", partID: "p2", title: "Beta", time, preview: "item.group(1)" },
+            ],
+          },
+        ],
+        occurrences: [
+          {
+            kind: "unknown" as const,
+            call: "item.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-match",
+            snippetFingerprint: "snippet-match",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "item.group(1)",
+            code: "item = re.search('a+', text)\nitem.group(1)",
+            confidence: { read: 0.45, write: 0.12, emit: 0.03, exec: 0.05, pure: 0.06, unknown: 0.29 },
+            readConfidence: 0.45,
+            writeConfidence: 0.12,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "unknown" as const,
+            call: "item.group",
+            sourceCall: "collections.Group.group",
+            canonicalSource: "collections.Group.group",
+            fingerprint: "fp-other",
+            snippetFingerprint: "snippet-other",
+            sessionID: "s2",
+            messageID: "m2",
+            partID: "p2",
+            title: "Beta",
+            time,
+            preview: "item.group(1)",
+            code: "item = custom_group()\nitem.group(1)",
+            confidence: { read: 0.44, write: 0.13, emit: 0.03, exec: 0.05, pure: 0.07, unknown: 0.28 },
+            readConfidence: 0.44,
+            writeConfidence: 0.13,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      const base = JSON.parse(await readFile(src, "utf8")) as Record<string, any>
+      base.calls.read = (base.calls.read as string[]).filter((item) => item !== "item.group")
+      base.candidates = { unknown: [{ call: "item.group", count: 2, lastSeen: time, examples: ["s1"] }] }
+      await writeFile(rules, `${JSON.stringify(base, null, 2)}\n`)
+
+      await recordOccurrenceDecision(ledger, report.occurrences[0]!, "read")
+      await recordOccurrenceDecision(ledger, report.occurrences[1]!, "read")
+
+      const plan = await promotions(report, { ledger, rules })
+      expect(plan.promotable.read).toEqual([])
+      expect(plan.blocked).toEqual([
+        {
+          call: "item.group",
+          reason: "multiple review identities share this call",
+          decisions: ["read"],
+          pendingContexts: 0,
+        },
+      ])
+
+      await promote(report, { ledger, rules })
+      const next = JSON.parse(await readFile(rules, "utf8")) as Record<string, any>
+      expect(next.calls.read).not.toContain("item.group")
+      expect(next.candidates.unknown).toEqual([{ call: "item.group", count: 2, lastSeen: time, examples: ["s1"] }])
     } finally {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })
@@ -1176,7 +1943,7 @@ describe("python session report", () => {
       await writeFile(rules, await readFile(src, "utf8"))
 
       const report = await scan({ db: tmp.file, samples: 3 })
-      await recordDecision({ ledger, fingerprint: report.occurrences[0]!.fingerprint, decision: "read", call: "reader.fetch" })
+      await recordOccurrenceDecision(ledger, report.occurrences[0]!, "read")
       const before = await readFile(rules, "utf8")
 
       const suggested = await suggestRules(report, { ledger, rules })
@@ -1221,7 +1988,7 @@ describe("python session report", () => {
 
       const report = await scan({ db: tmp.file, samples: 3, includePure: true })
       for (const occurrence of report.occurrences.filter((item) => item.kind === "pure" && item.call.endsWith(".group"))) {
-        await recordDecision({ ledger, fingerprint: occurrence.fingerprint, decision: "pure", call: occurrence.call })
+        await recordOccurrenceDecision(ledger, occurrence, "pure")
       }
 
       const suggested = await suggestRules(report, { ledger, rules })
@@ -1274,7 +2041,7 @@ describe("python session report", () => {
 
       const report = await scan({ db: tmp.file, samples: 3, includePure: true })
       for (const occurrence of report.occurrences.filter((item) => item.kind === "pure" && item.call.endsWith(".group"))) {
-        await recordDecision({ ledger, fingerprint: occurrence.fingerprint, decision: "pure", call: occurrence.call })
+        await recordOccurrenceDecision(ledger, occurrence, "pure")
       }
 
       const forward = await suggestRules(report, { ledger, rules })
@@ -1308,7 +2075,7 @@ describe("python session report", () => {
 
       const report = await scan({ db: tmp.file, samples: 3, includePure: true })
       const occurrence = report.occurrences.find((item) => item.call === "src.joinpath")!
-      await recordDecision({ ledger, fingerprint: occurrence.fingerprint, decision: "pure", call: occurrence.call })
+      await recordOccurrenceDecision(ledger, occurrence, "pure")
 
       const suggested = await suggestRules(report, { ledger, rules })
       expect(suggested.totals.suggested).toBe(0)
@@ -1362,7 +2129,7 @@ describe("python session report", () => {
       expect(queue.snippets[0]?.candidates[0]?.canonicalSource).toBeDefined()
       
       for (const occurrence of report.occurrences.filter((item) => item.call === "item.group")) {
-        await recordDecision({ ledger, fingerprint: occurrence.fingerprint, decision: "pure", call: occurrence.call })
+        await recordOccurrenceDecision(ledger, occurrence, "pure")
       }
 
       const suggested = await suggestRules(report, { ledger, rules })
@@ -1725,6 +2492,7 @@ describe("python session report", () => {
 
       const accepted = JSON.parse(await readFile(ledgerAccept, "utf8")) as Record<string, any>
       expect(accepted.decisions[0]?.decision).toBe("emit")
+      expect(accepted.decisions[0]?.kind).toBe("emit")
 
       const inputReject = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode(flag: boolean): void }
       inputReject.isTTY = true
@@ -1748,6 +2516,7 @@ describe("python session report", () => {
 
       const rejected = JSON.parse(await readFile(ledgerReject, "utf8")) as Record<string, any>
       expect(rejected.decisions[0]?.decision).toBe("ignore")
+      expect(rejected.decisions[0]?.kind).toBe("emit")
     } finally {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })
@@ -2046,7 +2815,7 @@ describe("python session report", () => {
     }
   })
 
-  it("skips repeated callable review items after one tui decision", async () => {
+  it("skips repeated matching review identities after one tui decision", async () => {
     const tmp = await db()
     const ledger = path.join(tmp.dir, "review-ledger.json")
     const cache = path.join(tmp.dir, "score-cache.json")
@@ -2113,6 +2882,205 @@ describe("python session report", () => {
 
       expect(text).toContain("Call: reader.fetch")
       expect(text).toContain("Call: writer.save")
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps same-call review items pending in tui when sourceCall differs", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const cache = path.join(tmp.dir, "score-cache.json")
+    const time = new Date(2000).toISOString()
+
+    try {
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        analyzerVersion: "python-analyzer/v2",
+        engineVersion: "python-ir-v2",
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 2,
+          unknownEvents: 0,
+          uniqueUnknownCalls: 0,
+          skippedRows: 0,
+        },
+        unknown: [],
+        occurrences: [
+          {
+            kind: "pure" as const,
+            call: "item.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-match",
+            snippetFingerprint: "snippet-match",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "item.group(1)",
+            code: "item = re.search('a+', text)\nitem.group(1)",
+            confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+            readConfidence: 0.05,
+            writeConfidence: 0.05,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "pure" as const,
+            call: "item.group",
+            sourceCall: "collections.Group.group",
+            canonicalSource: "collections.Group.group",
+            fingerprint: "fp-other",
+            snippetFingerprint: "snippet-other",
+            sessionID: "s2",
+            messageID: "m2",
+            partID: "p2",
+            title: "Beta",
+            time,
+            preview: "item.group(1)",
+            code: "item = custom_group()\nitem.group(1)",
+            confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.91, unknown: 0.09 },
+            readConfidence: 0.05,
+            writeConfidence: 0.05,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      const queue = await review(report, { ledger })
+      for (const snippet of queue.snippets) {
+        await rescore(snippet, {
+          cache,
+          run: async () =>
+            JSON.stringify({
+              scores: snippet.candidates.map((candidate) => ({
+                fingerprint: candidate.fingerprint,
+                call: candidate.call,
+                confidence: {
+                  read: 0.05,
+                  write: 0.05,
+                  emit: 0.02,
+                  exec: 0.03,
+                  pure: 0.94,
+                  unknown: 0.08,
+                },
+                reasons: [],
+              })),
+            }),
+        })
+      }
+
+      const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode(flag: boolean): void }
+      input.isTTY = true
+      input.setRawMode = () => {}
+
+      let text = ""
+      const output = new Writable({
+        write(chunk, _enc, done) {
+          text += String(chunk)
+          done()
+        },
+      }) as Writable & { isTTY: boolean }
+      output.isTTY = true
+
+      const run = tui(queue, { ledger, cache, input: input as any, output: output as any })
+      setTimeout(() => input.emit("keypress", "y", { name: "y" }), 20)
+      setTimeout(() => input.emit("keypress", "q", { name: "q" }), 160)
+      await run
+
+      const doc = JSON.parse(await readFile(ledger, "utf8")) as Record<string, any>
+      expect(doc.decisions[0]).toEqual(expect.objectContaining({
+        kind: "pure",
+        call: "item.group",
+        sourceCall: "re.Match.group",
+        decision: "pure",
+      }))
+      expect(text.match(/Call: item\.group/g) ?? []).toHaveLength(2)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps same-call review items pending when their identity differs", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const cache = path.join(tmp.dir, "score-cache.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 4000), ('s2', 'Beta', 3000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 4000,
+        data: data("python", { code: "print('a')" }),
+      })
+      put(tmp.db, {
+        id: "p2",
+        messageID: "m2",
+        sessionID: "s2",
+        created: 2000,
+        updated: 3000,
+        data: data(
+          "python",
+          {
+            code: ["def print(value):", "    return value", "print('b')", "writer.save('y')"].join("\n"),
+          },
+        ),
+      })
+
+      const queue = await review(await scan({ db: tmp.file, samples: 3, includeEmit: true }), { ledger })
+      for (const snippet of queue.snippets) {
+        await rescore(snippet, {
+          cache,
+          run: async () =>
+            JSON.stringify({
+              scores: snippet.candidates.map((candidate) => ({
+                fingerprint: candidate.fingerprint,
+                call: candidate.call,
+                confidence: {
+                  read: candidate.kind === "unknown" ? 0.9 : 0.1,
+                  write: candidate.call === "writer.save" ? 0.8 : 0.1,
+                  emit: candidate.kind === "emit" ? 0.92 : 0.08,
+                  exec: 0.08,
+                  pure: 0.1,
+                  unknown: 0.2,
+                },
+                reasons: [],
+              })),
+            }),
+        })
+      }
+
+      const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode(flag: boolean): void }
+      input.isTTY = true
+      input.setRawMode = () => {}
+
+      let text = ""
+      const output = new Writable({
+        write(chunk, _enc, done) {
+          text += String(chunk)
+          done()
+        },
+      }) as Writable & { isTTY: boolean }
+      output.isTTY = true
+
+      const run = tui(queue, { ledger, cache, input: input as any, output: output as any })
+      setTimeout(() => input.emit("keypress", "y", { name: "y" }), 20)
+      setTimeout(() => input.emit("keypress", "q", { name: "q" }), 160)
+      await run
+
+      expect(text.match(/Call: print/g) ?? []).toHaveLength(2)
+      expect(text).not.toContain("Call: writer.save")
     } finally {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })

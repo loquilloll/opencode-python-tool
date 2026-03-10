@@ -499,11 +499,11 @@ Terminal conditions append `<python_metadata>` to the output:
 - `src/python-session-report.ts` scans saved OpenCode sessions, re-analyzes inline `state.input.code`, and skips `scriptPath` entries.
 - `--update-candidates` only updates `candidates.unknown` in the rules JSON. It does not automatically change live `methods`, `calls`, or `pathCalls` classifier buckets.
 - `--review-next` and `--decide` provide a snippet-centric human review loop backed by a sidecar ledger, with decisions such as `read`, `write`, `emit`, `exec`, `pure`, `ignore`, and `needs-code`.
-- Once a callable has a recorded and consistent decision in the review ledger, later appearances of that callable reuse the same decision across snippets (you should not need to reclassify `print`, `reader.fetch`, etc. repeatedly).
+- The review ledger stores the exact occurrence fingerprint plus review identity metadata (`kind` and `sourceCall` when available). Exact fingerprint matches always replay, while cross-snippet reuse only happens when the later occurrence resolves to the same review identity.
 - `--review-tui` provides a one-key terminal review UI that opens with the full syntax-highlighted code page visible and one focused candidate at a time; the active call is visually emphasized, `v` toggles between full-page and focused-window code views, and a transient status line is shown while loading/rescoring the next candidate. Default `y` suggestions are `read`, `write`, `emit`, `ignore`, or `pure` (not `needs-code`), while `c` remains an explicit `needs-code` override.
 - Review modes include `unknown` by default; add `--include-emit` to audit already-classified `emit` callables and `--include-pure` when you also want `pure` candidates in the queue. Promoted callables should no longer reappear in default review runs.
 - `--review-next` now asks `opencode run` for taxonomy confidence scores (`read`, `write`, `emit`, `exec`, `pure`, `unknown`), caches successful score bundles, and falls back to local heuristics if scoring fails.
-- `--promote-reviewed` promotes consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
+- `--promote-reviewed` promotes consistently reviewed outward call strings into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`, but blocks promotion when one live call target would merge multiple reviewed identities.
 - `src/python-session-report.ts` is an operator utility run from this repo checkout; it is not an OpenCode tool that belongs in `~/.config/opencode/tools/`.
 
 Example report commands:
@@ -670,7 +670,7 @@ opencode-python-tool/
 
 1. Add declarative call, method, or path rules to `src/python/python-rules.json` when the pattern fits the existing rule model.
 2. Use `bun run ../src/python-session-report.ts --update-candidates` from `.opencode/` to gather unknown-call evidence into `candidates.unknown`.
-3. Use `--review-next` and `--decide` to classify callables in the sidecar review ledger (later appearances of the same callable are auto-reused), then `--promote-reviewed` to move consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
+3. Use `--review-next` and `--decide` to classify candidates in the sidecar review ledger. Exact fingerprint matches replay directly, and cross-snippet reuse only happens when `kind` plus canonical callable context match; then use `--promote-reviewed` to move only safe single-identity call targets into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
 4. Use `--suggest-rules` to preview unanimous reviewed clusters as copy-pasteable rule fragments (`calls.*` today, or bounded `guarded.methods` fragments when receiver evidence is sufficient), and `--compare-rules <file>` to diff review outcomes against an alternate rules file before promoting changes.
 5. Prefer guarded declarative rules before adding new procedural branches in `src/python/python-analyze.ts`; the schema lives in `src/python/python-rule-schema.ts` and `src/python/python-guard-eval.ts`.
 6. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.

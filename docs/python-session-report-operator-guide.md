@@ -30,8 +30,8 @@ This utility is not an OpenCode tool. Do not install it under `~/.config/opencod
 - re-analyzes saved inline `state.input.code`
 - reports unknown callables in text or JSON
 - builds a snippet-centric review queue (`unknown` by default, optional `emit` via `--include-emit`, optional `pure` via `--include-pure`) with taxonomy confidence signals (`read`, `write`, `emit`, `exec`, `pure`, `unknown`)
-- stores human decisions in a sidecar review ledger
-- can promote consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`
+- stores human decisions in a sidecar review ledger with exact fingerprint history plus review identity metadata (`kind` and `sourceCall` when available)
+- can promote consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec` when one outward call maps to one reviewed identity
 - can merge findings into `candidates.unknown` in a rules file
 
 ## What It Does Not Do
@@ -185,6 +185,12 @@ This prints:
 - source-call context when available (for example `pathlib.Path.joinpath` under `p.joinpath`)
 - short heuristic reasons
 
+Replay rules are intentionally narrow:
+
+- an exact fingerprint match always reuses its stored decision first
+- cross-snippet reuse only happens when the later candidate resolves to the same review identity (`kind` plus `sourceCall ?? call`)
+- legacy ledger rows that only stored `call` stay fingerprint-first and do not fan out across different reconstructed identities
+
 ### Decide candidates for that snippet
 
 Use the numbered list shown by `--review-next`.
@@ -239,7 +245,7 @@ The UI shows:
 
 By default the queue focuses on unresolved callables. Add `--include-emit` if you want to audit already-classified emit callables too.
 
-Decisions are callable-scoped in the review ledger. Once a callable has a consistent decision, later appearances of that same callable across snippets inherit it automatically.
+Decisions are identity-aware in the review ledger. Later appearances inherit a prior decision only when the exact fingerprint matches or the candidate resolves to the same review identity (`kind` plus `sourceCall ?? call`).
 
 One-key controls:
 
@@ -284,6 +290,7 @@ What this does not do:
 - it does not promote callables that still have no reviewed decision
 - it does not auto-resolve callables with conflicting prior decisions; resolve the conflict first
 - it does not promote callables with conflicting decisions across contexts
+- it does not promote a live call target when multiple reviewed identities collapse to the same outward `call`; split or model those cases manually
 - it does not convert reviewed decisions into `methods.*` or `pathCalls.*`; those still need manual edits if that is the better rule shape
 
 ## Suggest Rules
@@ -361,7 +368,7 @@ OPENCODE_PYTHON_RULES="$RULES" \
 bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --rules "$RULES" --promote-reviewed
 ```
 
-If promotion is not possible because contexts are unresolved, conflicting, or better expressed as method/path rules, update the JSON or TypeScript manually.
+If promotion is not possible because contexts are unresolved, multiple review identities share one outward call, or the better fix is a method/path rule, update the JSON or TypeScript manually.
 
 Typical destinations:
 
@@ -434,7 +441,7 @@ bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok
 - Malformed saved rows are skipped and counted instead of failing the whole scan.
 - `scriptPath` executions are intentionally out of scope for this workflow.
 - Taxonomy confidence scores (`read`, `write`, `emit`, `exec`, `pure`, `unknown`) are heuristics only. They guide review; they do not make the final decision for you.
-- `--promote-reviewed` only promotes consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`. More nuanced rule shapes still need manual edits.
+- `--promote-reviewed` only promotes consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`. If one outward call string corresponds to multiple reviewed identities, promotion stays blocked until you model it more precisely.
 
 ## Recommended Operator Loop
 
@@ -442,7 +449,7 @@ bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok
 2. Run `--update-candidates` if you want to capture evidence in the rules file.
 3. Use `--review-tui` for the fastest one-key classification loop, or `--review-next` / `--decide` if you need a scriptable path.
 4. Apply decisions in the TUI or with `--decide`.
-5. Run `--promote-reviewed` to move consistently reviewed callables into live call buckets.
+5. Run `--promote-reviewed` to move consistently reviewed single-identity call targets into live call buckets.
 6. Re-run the report to confirm they are no longer unknown.
 7. Sync vetted rule changes back into `src/python/python-rules.json` in this repo.
 8. Commit the repo change.
