@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@opencode-ai/plugin": "1.2.15",
+    "@opencode-ai/plugin": "1.2.20",
     "tree-sitter-python": "0.25.0",
     "web-tree-sitter": "0.25.10"
   }
