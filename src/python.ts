@@ -5,7 +5,8 @@ import { access, readFile } from "fs/promises"
 import os from "os"
 import path from "path"
 import DESCRIPTION from "./python/python.txt"
-import { analyze, type PythonEvent } from "./python/python-analyze"
+import { analyzeDetailed, type PythonEvent } from "./python/python-analyze"
+import { analyzerMetadata } from "./python/python-ir"
 
 const DEFAULT_TIMEOUT = 2 * 60 * 1000
 const MAX_METADATA_LENGTH = 30_000
@@ -23,6 +24,11 @@ type PermissionItem = {
   pattern: string
   always: string
   path?: string
+  canonicalSource?: string
+  receiverKind?: string
+  dependencySignature?: string[]
+  ruleHit?: string
+  guardFailure?: { type?: string; detail?: string }
 }
 
 type PermissionPlan = {
@@ -128,6 +134,17 @@ function unknownAlways(call: string) {
   return `unknown:${call}`
 }
 
+function operationMetadata(event: PythonEvent) {
+  const explain = event.evidence?.explain ?? []
+  return {
+    canonicalSource: event.sourceCall ?? event.call,
+    receiverKind: event.evidence?.receiverKind,
+    dependencySignature: event.evidence?.dependencySignature,
+    ruleHit: explain[0],
+    guardFailure: event.evidence?.guardFailure,
+  }
+}
+
 function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: string, script?: string): PermissionPlan {
   const patterns = new Set<string>()
   const always = new Set<string>()
@@ -143,7 +160,7 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
       const allow = `exec:${execAlways(event.call)}`
       patterns.add(pattern)
       always.add(allow)
-      operations.push({ kind: event.kind, call: event.call, pattern, always: allow })
+      operations.push({ kind: event.kind, call: event.call, pattern, always: allow, ...operationMetadata(event) })
       continue
     }
 
@@ -152,7 +169,7 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
       const allow = unknownAlways(event.call)
       patterns.add(pattern)
       always.add(allow)
-      operations.push({ kind: event.kind, call: event.call, pattern, always: allow })
+      operations.push({ kind: event.kind, call: event.call, pattern, always: allow, ...operationMetadata(event) })
       continue
     }
 
@@ -167,6 +184,7 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
         path: resolved,
         pattern,
         always: allow,
+        ...operationMetadata(event),
       })
       if (isPermissionKind(event.kind)) {
         patterns.add(pattern)
@@ -178,7 +196,7 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
     if (event.dynamicPath) {
       const pattern = `${event.kind}:<dynamic>`
       const allow = `${event.kind}:*`
-      operations.push({ kind: event.kind, call: event.call, pattern, always: allow })
+      operations.push({ kind: event.kind, call: event.call, pattern, always: allow, ...operationMetadata(event) })
       if (isPermissionKind(event.kind)) {
         patterns.add(pattern)
         always.add(allow)
@@ -188,7 +206,7 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
 
     const pattern = `${event.kind}:${event.call}`
     const allow = callAlways(event.kind, event.call)
-    operations.push({ kind: event.kind, call: event.call, pattern, always: allow })
+    operations.push({ kind: event.kind, call: event.call, pattern, always: allow, ...operationMetadata(event) })
     if (isPermissionKind(event.kind)) {
       patterns.add(pattern)
       always.add(allow)
@@ -203,6 +221,7 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
       call: "empty-analysis",
       pattern: "unknown:empty-analysis",
       always: "unknown:*",
+      canonicalSource: "empty-analysis",
     })
   }
 
@@ -364,10 +383,17 @@ export default tool({
       throw new Error("Python source is empty. Provide non-empty `code` or a non-empty script file.")
     }
 
-    const events =
+    const metadata = analyzerMetadata()
+    const analyzed =
       Buffer.byteLength(source, "utf8") > MAX_ANALYZE_BYTES
-        ? ([{ kind: "unknown", call: "large-script" }] satisfies PythonEvent[])
-        : await analyze(source)
+        ? {
+            events: [{ kind: "unknown", call: "large-script" }] satisfies PythonEvent[],
+            analyzerVersion: metadata.analyzerVersion,
+            engineVersion: metadata.engineVersion,
+          }
+        : await analyzeDetailed(source)
+
+    const events = analyzed.events
 
     if (hasDirectSubprocessInvocation(events)) {
       throw new Error(
@@ -399,6 +425,8 @@ export default tool({
     }
 
     const permissionMetadata = {
+      analyzerVersion: analyzed.analyzerVersion,
+      engineVersion: analyzed.engineVersion,
       operations: plan.operations,
       permissionPatterns: plan.patterns,
       permissionAlways: plan.always,

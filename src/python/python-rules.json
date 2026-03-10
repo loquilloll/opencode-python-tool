@@ -1,7 +1,11 @@
 {
   "version": 1,
   "methods": {
-    "read": ["read_text", "read_bytes"],
+    "read": [
+      "exists",
+      "read_text",
+      "read_bytes"
+    ],
     "write": [
       "append_text",
       "mkdir",
@@ -17,8 +21,16 @@
     "pure": []
   },
   "calls": {
-    "read": ["json.load", "yaml.load", "yaml.safe_load"],
-    "write": ["json.dump", "yaml.dump", "yaml.safe_dump"],
+    "read": [
+      "json.load",
+      "yaml.load",
+      "yaml.safe_load"
+    ],
+    "write": [
+      "json.dump",
+      "yaml.dump",
+      "yaml.safe_dump"
+    ],
     "emit": [
       "print",
       "logging.debug",
@@ -30,7 +42,14 @@
       "logging.log",
       "warnings.warn"
     ],
-    "exec": ["__import__", "compile", "eval", "exec", "os.popen", "os.system"],
+    "exec": [
+      "__import__",
+      "compile",
+      "eval",
+      "exec",
+      "os.popen",
+      "os.system"
+    ],
     "pure": [
       "re.compile",
       "re.search",
@@ -41,53 +60,156 @@
       "re.split",
       "re.escape"
     ],
-    "networkExec": [
+    "networkRead": [
       "requests.get",
+      "requests.head",
+      "requests.options",
+      "requests.Session.get",
+      "requests.Session.head",
+      "requests.Session.options",
+      "httpx.get",
+      "httpx.head",
+      "httpx.options",
+      "httpx.Client.get",
+      "httpx.Client.head",
+      "httpx.Client.options",
+      "httpx.AsyncClient.get",
+      "httpx.AsyncClient.head",
+      "httpx.AsyncClient.options",
+      "aiohttp.ClientSession.get",
+      "aiohttp.ClientSession.head",
+      "aiohttp.ClientSession.options"
+    ],
+    "networkWrite": [
       "requests.post",
       "requests.put",
       "requests.delete",
       "requests.patch",
-      "requests.head",
-      "requests.options",
+      "requests.Session.post",
+      "requests.Session.put",
+      "requests.Session.delete",
+      "requests.Session.patch",
+      "httpx.post",
+      "httpx.put",
+      "httpx.delete",
+      "httpx.patch",
+      "httpx.Client.post",
+      "httpx.Client.put",
+      "httpx.Client.delete",
+      "httpx.Client.patch",
+      "httpx.AsyncClient.post",
+      "httpx.AsyncClient.put",
+      "httpx.AsyncClient.delete",
+      "httpx.AsyncClient.patch",
+      "aiohttp.ClientSession.post",
+      "aiohttp.ClientSession.put",
+      "aiohttp.ClientSession.delete",
+      "aiohttp.ClientSession.patch"
+    ],
+    "networkExec": [
+      "requests.Session",
       "urllib.request.urlopen",
       "urllib.request.urlretrieve",
       "http.client.HTTPConnection",
       "http.client.HTTPSConnection",
       "aiohttp.ClientSession",
-      "httpx.get",
-      "httpx.post",
-      "httpx.put",
-      "httpx.delete",
-      "httpx.patch",
       "httpx.Client",
       "httpx.AsyncClient",
       "socket.socket",
       "socket.create_connection"
     ],
-    "dbExec": ["sqlite3.connect", "psycopg2.connect", "pymysql.connect", "sqlalchemy.create_engine"],
+    "dbExec": [
+      "sqlite3.connect",
+      "psycopg2.connect",
+      "pymysql.connect",
+      "sqlalchemy.create_engine"
+    ],
     "tempfileWrite": [
       "tempfile.NamedTemporaryFile",
       "tempfile.mkdtemp",
       "tempfile.mkstemp",
       "tempfile.TemporaryDirectory"
     ],
-    "dangerousDeserializeExec": ["pickle.load", "pickle.loads", "marshal.load", "marshal.loads"]
+    "dangerousDeserializeExec": [
+      "pickle.load",
+      "pickle.loads",
+      "marshal.load",
+      "marshal.loads"
+    ]
   },
   "pathCalls": {
     "read": {
-      "oci.config.from_file": { "index": 0, "names": ["file_location"] }
+      "oci.config.from_file": {
+        "index": 0,
+        "names": [
+          "file_location"
+        ]
+      }
     },
     "write": {
-      "os.makedirs": { "index": 0, "names": ["name", "path"] },
-      "os.remove": { "index": 0, "names": ["path"] },
-      "os.rename": { "index": 1, "names": ["dst", "dst_dir_fd"] },
-      "os.replace": { "index": 1, "names": ["dst", "dst_dir_fd"] },
-      "os.unlink": { "index": 0, "names": ["path"] },
-      "shutil.copy": { "index": 1, "names": ["dst"] },
-      "shutil.copy2": { "index": 1, "names": ["dst"] },
-      "shutil.copytree": { "index": 1, "names": ["dst"] },
-      "shutil.move": { "index": 1, "names": ["dst"] },
-      "shutil.rmtree": { "index": 0, "names": ["path"] }
+      "os.makedirs": {
+        "index": 0,
+        "names": [
+          "name",
+          "path"
+        ]
+      },
+      "os.remove": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.rename": {
+        "index": 1,
+        "names": [
+          "dst",
+          "dst_dir_fd"
+        ]
+      },
+      "os.replace": {
+        "index": 1,
+        "names": [
+          "dst",
+          "dst_dir_fd"
+        ]
+      },
+      "os.unlink": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "shutil.copy": {
+        "index": 1,
+        "names": [
+          "dst"
+        ]
+      },
+      "shutil.copy2": {
+        "index": 1,
+        "names": [
+          "dst"
+        ]
+      },
+      "shutil.copytree": {
+        "index": 1,
+        "names": [
+          "dst"
+        ]
+      },
+      "shutil.move": {
+        "index": 1,
+        "names": [
+          "dst"
+        ]
+      },
+      "shutil.rmtree": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      }
     }
   },
   "sdk": {
@@ -133,11 +255,22 @@
         "ghapi.actions.create_workflow",
         "ghapi.actions.gh_create_workflow"
       ],
-      "instanceConstructors": ["GhApi", "ghapi.all.GhApi", "ghapi.core.GhApi"]
+      "instanceConstructors": [
+        "GhApi",
+        "ghapi.all.GhApi",
+        "ghapi.core.GhApi"
+      ]
     },
     "atlassian": {
       "constructors": [
-        { "family": "jira", "variants": ["Jira", "atlassian.Jira", "atlassian.jira.Jira"] },
+        {
+          "family": "jira",
+          "variants": [
+            "Jira",
+            "atlassian.Jira",
+            "atlassian.jira.Jira"
+          ]
+        },
         {
           "family": "confluence",
           "variants": [
@@ -172,14 +305,48 @@
             "atlassian.service_desk.ServiceDesk"
           ]
         },
-        { "variants": ["Crowd", "atlassian.Crowd"] },
-        { "variants": ["Xray", "atlassian.Xray"] },
-        { "variants": ["CloudAdminOrgs", "atlassian.CloudAdminOrgs"] },
-        { "variants": ["CloudAdminUsers", "atlassian.CloudAdminUsers"] }
+        {
+          "variants": [
+            "Crowd",
+            "atlassian.Crowd"
+          ]
+        },
+        {
+          "variants": [
+            "Xray",
+            "atlassian.Xray"
+          ]
+        },
+        {
+          "variants": [
+            "CloudAdminOrgs",
+            "atlassian.CloudAdminOrgs"
+          ]
+        },
+        {
+          "variants": [
+            "CloudAdminUsers",
+            "atlassian.CloudAdminUsers"
+          ]
+        }
       ],
       "clientMethods": {
-        "jira": ["jql", "issue", "create_issue", "issue_create", "issue_transition", "issue_add_comment"],
-        "confluence": ["get_page_by_id", "get_page_by_title", "create_page", "update_page", "cql", "attach_file"],
+        "jira": [
+          "jql",
+          "issue",
+          "create_issue",
+          "issue_create",
+          "issue_transition",
+          "issue_add_comment"
+        ],
+        "confluence": [
+          "get_page_by_id",
+          "get_page_by_title",
+          "create_page",
+          "update_page",
+          "cql",
+          "attach_file"
+        ],
         "bitbucket": [
           "get_repo",
           "create_repo",
@@ -188,9 +355,2114 @@
           "get_pipelines",
           "trigger_pipeline"
         ],
-        "servicedesk": ["get_service_desks", "create_customer_request", "get_queues", "create_request_comment"]
+        "servicedesk": [
+          "get_service_desks",
+          "create_customer_request",
+          "get_queues",
+          "create_request_comment"
+        ]
       }
     }
+  },
+  "guarded": {
+    "version": 1,
+    "calls": [
+      {
+        "call": "json.loads",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "kwargAbsent",
+            "names": [
+              "cls",
+              "object_hook",
+              "object_pairs_hook",
+              "parse_float",
+              "parse_int",
+              "parse_constant"
+            ]
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
+      },
+      {
+        "call": "max",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "max"
+            ]
+          },
+          {
+            "type": "kwargAbsent",
+            "names": [
+              "key"
+            ]
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
+      },
+      {
+        "call": "min",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "min"
+            ]
+          },
+          {
+            "type": "kwargAbsent",
+            "names": [
+              "key"
+            ]
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
+      },
+      {
+        "call": "sorted",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "sorted"
+            ]
+          },
+          {
+            "type": "kwargAbsent",
+            "names": [
+              "key"
+            ]
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
+      },
+      {
+        "call": "requests.request",
+        "effect": "network.read",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "GET",
+              "HEAD",
+              "OPTIONS"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "requests.request",
+        "effect": "network.write",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "httpx.request",
+        "effect": "network.read",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "GET",
+              "HEAD",
+              "OPTIONS"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "httpx.request",
+        "effect": "network.write",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "requests.Session.request",
+        "effect": "network.read",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "GET",
+              "HEAD",
+              "OPTIONS"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "requests.Session.request",
+        "effect": "network.write",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "httpx.Client.request",
+        "effect": "network.read",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "GET",
+              "HEAD",
+              "OPTIONS"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "httpx.Client.request",
+        "effect": "network.write",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "httpx.AsyncClient.request",
+        "effect": "network.read",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "GET",
+              "HEAD",
+              "OPTIONS"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "httpx.AsyncClient.request",
+        "effect": "network.write",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "aiohttp.ClientSession.request",
+        "effect": "network.read",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "GET",
+              "HEAD",
+              "OPTIONS"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "aiohttp.ClientSession.request",
+        "effect": "network.write",
+        "guards": [
+          {
+            "type": "argLiteralIn",
+            "index": 0,
+            "names": [
+              "method"
+            ],
+            "values": [
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "abs",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "abs"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "aiter",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "aiter"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "all",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "all"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "anext",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "anext"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "any",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "any"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ascii",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ascii"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "bin",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "bin"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "bool",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "bool"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "bytearray",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "bytearray"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "bytes",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "bytes"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "callable",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "callable"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "chr",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "chr"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "classmethod",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "classmethod"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "complex",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "complex"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "delattr",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "delattr"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "dict",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "dict"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "dir",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "dir"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "divmod",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "divmod"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "enumerate",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "enumerate"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "filter",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "filter"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "float",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "float"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "format",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "format"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "frozenset",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "frozenset"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "getattr",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "getattr"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "globals",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "globals"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "hasattr",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "hasattr"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "hash",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "hash"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "hex",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "hex"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "id",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "int",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "int"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "isinstance",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "isinstance"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "issubclass",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "issubclass"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "iter",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "iter"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "len",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "len"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "list",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "list"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "locals",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "locals"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "map",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "map"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "memoryview",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "memoryview"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "next",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "next"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "object",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "object"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "oct",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "oct"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ord",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ord"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "pow",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "pow"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "property",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "property"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "range",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "range"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "repr",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "repr"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "reversed",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "reversed"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "round",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "round"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "set",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "set"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "setattr",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "setattr"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "slice",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "slice"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "staticmethod",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "staticmethod"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "str",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "str"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "sum",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "sum"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "super",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "super"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "tuple",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "tuple"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "vars",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "vars"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "zip",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "zip"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "dict.fromkeys",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "dict"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ArithmeticError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ArithmeticError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "AssertionError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "AssertionError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "AttributeError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "AttributeError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "BaseException",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "BaseException"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "BaseExceptionGroup",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "BaseExceptionGroup"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "BlockingIOError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "BlockingIOError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "BrokenPipeError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "BrokenPipeError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "BufferError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "BufferError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "BytesWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "BytesWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ChildProcessError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ChildProcessError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ConnectionAbortedError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ConnectionAbortedError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ConnectionError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ConnectionError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ConnectionRefusedError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ConnectionRefusedError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ConnectionResetError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ConnectionResetError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "DeprecationWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "DeprecationWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "EOFError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "EOFError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "EncodingWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "EncodingWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "EnvironmentError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "EnvironmentError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "Exception",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "Exception"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ExceptionGroup",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ExceptionGroup"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "FileExistsError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "FileExistsError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "FileNotFoundError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "FileNotFoundError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "FloatingPointError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "FloatingPointError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "FutureWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "FutureWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "GeneratorExit",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "GeneratorExit"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "IOError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "IOError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ImportError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ImportError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ImportWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ImportWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "IndentationError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "IndentationError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "IndexError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "IndexError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "InterruptedError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "InterruptedError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "IsADirectoryError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "IsADirectoryError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "KeyError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "KeyError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "KeyboardInterrupt",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "KeyboardInterrupt"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "LookupError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "LookupError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "MemoryError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "MemoryError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ModuleNotFoundError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ModuleNotFoundError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "NameError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "NameError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "NotADirectoryError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "NotADirectoryError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "NotImplementedError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "NotImplementedError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "OSError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "OSError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "OverflowError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "OverflowError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "PendingDeprecationWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "PendingDeprecationWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "PermissionError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "PermissionError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ProcessLookupError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ProcessLookupError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "RecursionError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "RecursionError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ReferenceError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ReferenceError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ResourceWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ResourceWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "RuntimeError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "RuntimeError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "RuntimeWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "RuntimeWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "StopAsyncIteration",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "StopAsyncIteration"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "StopIteration",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "StopIteration"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "SyntaxError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "SyntaxError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "SyntaxWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "SyntaxWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "SystemError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "SystemError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "SystemExit",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "SystemExit"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "TabError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "TabError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "TimeoutError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "TimeoutError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "TypeError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "TypeError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "UnboundLocalError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "UnboundLocalError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "UnicodeDecodeError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "UnicodeDecodeError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "UnicodeEncodeError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "UnicodeEncodeError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "UnicodeError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "UnicodeError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "UnicodeTranslateError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "UnicodeTranslateError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "UnicodeWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "UnicodeWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "UserWarning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "UserWarning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ValueError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ValueError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "Warning",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "Warning"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "WindowsError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "WindowsError"
+            ]
+          }
+        ]
+      },
+      {
+        "call": "ZeroDivisionError",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "bindingAbsent",
+            "names": [
+              "ZeroDivisionError"
+            ]
+          }
+        ]
+      }
+    ],
+    "methods": [
+      {
+        "method": "exists",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "read_text",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "read_bytes",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "append_text",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "mkdir",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "rename",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "replace",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "rmdir",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "touch",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "unlink",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "write_bytes",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "write_text",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "__getitem__",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "match"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "end",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "match"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "expand",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "match"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "group",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "match"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "groupdict",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "match"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "groups",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "match"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "span",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "match"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "start",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "match"
+            ]
+          }
+        ]
+      }
+    ]
   },
   "candidates": {
     "unknown": []

@@ -6,9 +6,12 @@ import os from "os"
 import path from "path"
 import * as rl from "readline"
 import { fileURLToPath } from "url"
-import { analyze } from "./python/python-analyze"
+import { analyzeDetailed } from "./python/python-analyze"
+import { analyzerMetadata, type PythonEventEvidence } from "./python/python-ir"
 
-type ReviewDecision = "read" | "write" | "emit" | "exec" | "ignore" | "needs-code"
+type ReviewDecision = "read" | "write" | "emit" | "exec" | "pure" | "ignore" | "needs-code"
+type ScoreCategory = "read" | "write" | "emit" | "exec" | "pure" | "unknown"
+type ConfidenceStore = Record<ScoreCategory, number>
 
 type Opts = {
   db: string
@@ -23,6 +26,9 @@ type Opts = {
   reviewJson: boolean
   reviewNext: boolean
   reviewTui: boolean
+  suggestRules: boolean
+  compareRules?: string
+  includeEmit: boolean
   includePure: boolean
   decide?: string
   recordDecision?: string
@@ -59,9 +65,13 @@ type Sample = {
 type Occurrence = Sample & {
   kind: "unknown" | "emit" | "pure"
   call: string
+  sourceCall?: string
+  canonicalSource: string
+  evidence?: PythonEventEvidence
   fingerprint: string
   snippetFingerprint: string
   code: string
+  confidence: ConfidenceStore
   readConfidence: number
   writeConfidence: number
   reasons: string[]
@@ -85,6 +95,8 @@ type Hit = {
 export type Report = {
   generatedAt: string
   db: string
+  analyzerVersion: string
+  engineVersion: string
   filters: {
     since?: string
     samples: number
@@ -126,10 +138,17 @@ type ReviewLedger = {
   decisions: ReviewDecisionRecord[]
 }
 
+type DecisionLookup = {
+  byFingerprint: Map<string, ReviewDecision>
+  byCall: Map<string, ReviewDecision>
+}
+
 export type ReviewQueue = {
   generatedAt: string
   db: string
   ledger: string
+  analyzerVersion: string
+  engineVersion: string
   filters: {
     since?: string
     samples: number
@@ -145,10 +164,14 @@ export type ReviewQueue = {
     preview: string
     lastSeen: string
     occurrences: Sample[]
-    candidates: Array<{
-      kind: Occurrence["kind"]
-      call: string
-      fingerprint: string
+      candidates: Array<{
+        kind: Occurrence["kind"]
+        call: string
+        sourceCall?: string
+        canonicalSource: string
+        evidence?: PythonEventEvidence
+        fingerprint: string
+      confidence: ConfidenceStore
       readConfidence: number
       writeConfidence: number
       reasons: string[]
@@ -156,6 +179,58 @@ export type ReviewQueue = {
       decision?: ReviewDecision
     }>
   }>
+}
+
+type SuggestionDecision = "read" | "write" | "emit" | "exec" | "pure"
+
+export type RuleSuggestionReport = {
+  generatedAt: string
+  db: string
+  ledger: string
+  rules: string
+  totals: {
+    suggested: number
+    blocked: number
+  }
+  suggestions: Array<{
+    call: string
+    aliases: string[]
+    decision: SuggestionDecision
+    canonicalSource?: string
+    occurrences: number
+    snippetCount: number
+    examples: string[]
+    fragment: Record<string, unknown>
+    reason: string
+  }>
+  blocked: Array<{
+    call: string
+    occurrences: number
+    reasons: string[]
+  }>
+}
+
+export type RulesCompareReport = {
+  generatedAt: string
+  db: string
+  currentRules: string
+  alternateRules: string
+  baseline: {
+    unknownEvents: number
+    uniqueUnknownCalls: number
+    pendingCandidates: number
+    suggestedRules: number
+  }
+  alternate: {
+    unknownEvents: number
+    uniqueUnknownCalls: number
+    pendingCandidates: number
+    suggestedRules: number
+  }
+  resolvedUnknownCalls: string[]
+  newUnknownCalls: string[]
+  addedSuggestions: string[]
+  removedSuggestions: string[]
 }
 
 export type ReviewSnippet = ReviewQueue["snippets"][number]
@@ -213,10 +288,12 @@ type RulesDoc = {
 type ScoreRow = {
   fingerprint: string
   call: string
+  confidence: ConfidenceStore
   readConfidence: number
   writeConfidence: number
   reasons: string[]
   scoreSource: string
+  legacy?: boolean
 }
 
 type ScoreEntry = {
@@ -231,10 +308,24 @@ type ScoreDoc = {
 }
 
 const REVIEW_LEDGER_VERSION = 1
-const REVIEW_DECISIONS = ["read", "write", "emit", "exec", "ignore", "needs-code"] as const
+const REVIEW_DECISIONS = ["read", "write", "emit", "exec", "pure", "ignore", "needs-code"] as const
 const SCORE_CACHE_VERSION = 1
-const SCORE_PROMPT_VERSION = 1
+const SCORE_PROMPT_VERSION = 2
 const SCORE_TIMEOUT = 30000
+const SCORE_CATEGORIES = ["read", "write", "emit", "exec", "pure", "unknown"] as const
+const SUGGEST_GAP = 0.3
+const PY_KEYWORDS = /\b(?:and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield)\b/g
+const PY_STRINGS = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g
+
+const ANSI = {
+  reset: "\x1b[0m",
+  dim: "\x1b[2m",
+  keyword: "\x1b[38;5;75m",
+  string: "\x1b[38;5;114m",
+  comment: "\x1b[38;5;244m",
+  call: "\x1b[1;30;103m",
+  focus: "\x1b[1;33m",
+}
 
 function usage() {
   return [
@@ -247,12 +338,15 @@ function usage() {
     "  --score-cache <path>  Override review score-cache JSON path",
     "  --since <iso>    Only scan rows updated at or after this ISO timestamp",
     "  --samples <n>    Sample sessions/previews per unknown callable (default: 3)",
+    "  --include-emit  Include emit analyzer events in review queues",
     "  --include-pure  Include pure analyzer events in review queues",
     "  --update-candidates  Write findings into candidates.unknown",
     "  --promote-reviewed  Promote consistently reviewed callables into calls.read/write/emit/exec",
     "  --review-json    Emit snippet-centric review queue JSON",
     "  --review-next    Show the next pending snippet review item",
     "  --review-tui     Launch one-key interactive review UI",
+    "  --suggest-rules  Emit preview-only rule suggestions from reviewed evidence",
+    "  --compare-rules <file>  Diff report/review/suggestion output against an alternate rules file",
     "  --decide <spec>  Apply decisions like 1=read,2=write or fp=ignore",
     "  --record-decision <fp=decision>  Upsert a ledger decision",
     "  --json           Emit JSON instead of text",
@@ -300,40 +394,187 @@ function tail(call: string) {
   return parts[parts.length - 1] ?? call
 }
 
+function paint(text: string, color: string) {
+  return `${color}${text}${ANSI.reset}`
+}
+
+function escaped(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function callPattern(call: string) {
+  return new RegExp(`(^|[^A-Za-z0-9_])(${escaped(call)})(?=$|[^A-Za-z0-9_])`, "g")
+}
+
+function hasCall(text: string, call: string) {
+  if (!call) return false
+  const pattern = new RegExp(`(^|[^A-Za-z0-9_])${escaped(call)}(?=$|[^A-Za-z0-9_])`)
+  return pattern.test(text)
+}
+
+function pythonLine(text: string) {
+  const strings: string[] = []
+  const masked = text.replace(PY_STRINGS, (value) => {
+    const token = `\u0000${strings.length}\u0000`
+    strings.push(paint(value, ANSI.string))
+    return token
+  })
+  const pivot = masked.indexOf("#")
+  const body = pivot >= 0 ? masked.slice(0, pivot) : masked
+  const comment = pivot >= 0 ? masked.slice(pivot) : ""
+  const themed = body.replace(PY_KEYWORDS, (value) => paint(value, ANSI.keyword)) + (comment ? paint(comment, ANSI.comment) : "")
+  return themed.replace(/\u0000(\d+)\u0000/g, (_value, index) => strings[Number(index)] ?? "")
+}
+
+function defaults(kind: Occurrence["kind"] = "unknown"): ConfidenceStore {
+  if (kind === "emit") {
+    return {
+      read: 0.08,
+      write: 0.08,
+      emit: 0.82,
+      exec: 0.04,
+      pure: 0.03,
+      unknown: 0.2,
+    }
+  }
+  if (kind === "pure") {
+    return {
+      read: 0.08,
+      write: 0.05,
+      emit: 0.05,
+      exec: 0.03,
+      pure: 0.82,
+      unknown: 0.2,
+    }
+  }
+  return {
+    read: 0.1,
+    write: 0.1,
+    emit: 0.05,
+    exec: 0.08,
+    pure: 0.05,
+    unknown: 0.55,
+  }
+}
+
+function clipped(store: ConfidenceStore): ConfidenceStore {
+  return {
+    read: clamp(store.read),
+    write: clamp(store.write),
+    emit: clamp(store.emit),
+    exec: clamp(store.exec),
+    pure: clamp(store.pure),
+    unknown: clamp(store.unknown),
+  }
+}
+
+function fromLegacy(kind: Occurrence["kind"], read: number, write: number): ConfidenceStore {
+  const confidence = defaults(kind)
+  confidence.read = clamp(read)
+  confidence.write = clamp(write)
+  if (kind === "emit") confidence.emit = Math.max(confidence.emit, 0.85)
+  if (kind === "pure") confidence.pure = Math.max(confidence.pure, 0.85)
+  if (kind === "unknown") confidence.unknown = Math.max(confidence.unknown, 0.55)
+  return clipped(confidence)
+}
+
+function parseConfidence(input: unknown, label: string): ConfidenceStore {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) fail(`${label} must be an object`)
+  const data = input as Record<string, unknown>
+  const confidence = {} as ConfidenceStore
+  for (const key of SCORE_CATEGORIES) {
+    const value = data[key]
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 0.99) {
+      fail(`${label}.${key} must be a number between 0 and 0.99`)
+    }
+    confidence[key] = clamp(value)
+  }
+  return confidence
+}
+
+function viewConfidence(item: ConfidenceStore) {
+  return SCORE_CATEGORIES.map((kind) => `${kind}=${item[kind]}`).join(" ")
+}
+
+function strongest(store: ConfidenceStore, kinds: readonly ScoreCategory[]) {
+  return kinds.reduce((best, next) => (store[next] > store[best] ? next : best), kinds[0])
+}
+
+function decideFrom(kind: ScoreCategory): ReviewDecision {
+  if (kind === "read") return "read"
+  if (kind === "write") return "write"
+  if (kind === "emit") return "emit"
+  if (kind === "pure") return "pure"
+  return "ignore"
+}
+
 function isDecision(input: string): input is ReviewDecision {
   return REVIEW_DECISIONS.includes(input as ReviewDecision)
 }
 
-function score(call: string, code: string) {
+function score(call: string, code: string, kind: Occurrence["kind"]) {
   const lowCall = call.toLowerCase()
   const lowTail = tail(call).toLowerCase()
   const lowCode = code.toLowerCase()
-  let read = 0.1
-  let write = 0.1
+  const confidence = defaults(kind)
   const reasons: string[] = []
+  const httpLike =
+    /https?:\/\//.test(lowCode) ||
+    /\brequests\b/.test(lowCode) ||
+    /\bhttpx\b/.test(lowCode) ||
+    /\burllib\.request\b/.test(lowCode) ||
+    /\baiohttp\b/.test(lowCode) ||
+    /\b(url|uri|endpoint|api)\b/.test(lowCode)
 
-  const add = (kind: "read" | "write", amount: number, reason: string) => {
-    if (kind === "read") read += amount
-    else write += amount
+  const add = (bucket: ScoreCategory, amount: number, reason: string) => {
+    confidence[bucket] += amount
     if (!reasons.includes(reason) && reasons.length < 3) reasons.push(reason)
   }
 
-  for (const hint of ["read", "load", "fetch", "get", "list", "query", "scan", "download"]) {
-    if (lowTail.includes(hint)) add("read", hint === "get" ? 0.2 : 0.45, `call name suggests ${hint}`)
+  if (["requests.get", "requests.head", "requests.options", "httpx.get", "httpx.head", "httpx.options"].includes(lowCall)) {
+    add("read", 0.7, "call matches explicit HTTP read helper")
   }
-  for (const hint of ["write", "save", "dump", "append", "create", "update", "delete", "remove", "unlink", "touch", "mkdir", "rename", "replace", "move", "copy", "upload", "put", "post", "patch"]) {
-    if (lowTail.includes(hint)) add("write", ["put", "post", "patch"].includes(hint) ? 0.2 : 0.45, `call name suggests ${hint}`)
+  if (["requests.post", "requests.put", "requests.patch", "requests.delete", "httpx.post", "httpx.put", "httpx.patch", "httpx.delete"].includes(lowCall)) {
+    add("write", 0.7, "call matches explicit HTTP write helper")
+  }
+  for (const hint of ["read", "load", "fetch", "download"]) {
+    if (lowTail.includes(hint)) add("read", 0.45, `call name suggests ${hint}`)
+  }
+  if (httpLike && ["get", "head", "options"].includes(lowTail)) {
+    add("read", lowTail === "get" ? 0.35 : 0.25, `HTTP-like snippet uses ${lowTail}`)
+  }
+  for (const hint of ["write", "save", "dump", "unlink", "touch", "mkdir", "rename", "replace", "move", "copy", "upload"]) {
+    if (lowTail.includes(hint)) add("write", 0.45, `call name suggests ${hint}`)
+  }
+  if (httpLike && ["post", "put", "patch", "delete"].includes(lowTail)) {
+    add("write", ["post", "put", "patch"].includes(lowTail) ? 0.35 : 0.25, `HTTP-like snippet uses ${lowTail}`)
+  }
+  for (const hint of ["print", "log", "logger", "metric", "trace", "warn", "info", "error", "debug"]) {
+    if (lowTail.includes(hint)) add("emit", hint === "print" ? 0.5 : 0.35, `call name suggests ${hint}`)
+  }
+  for (const hint of ["exec", "system", "popen", "spawn", "fork", "compile", "eval", "run", "trigger"]) {
+    if (lowTail.includes(hint)) add("exec", ["run", "trigger"].includes(hint) ? 0.2 : 0.45, `call name suggests ${hint}`)
+  }
+  for (const hint of ["match", "search", "findall", "parse", "format", "normalize", "strip", "split"]) {
+    if (lowTail.includes(hint)) add("pure", ["parse", "format"].includes(hint) ? 0.2 : 0.35, `call name suggests ${hint}`)
   }
   if (/open\s*\([^\n]*['"]r[a-z+]*['"]/.test(lowCode)) add("read", 0.2, "snippet opens a file in read mode")
   if (/open\s*\([^\n]*['"][wax+][a-z+]*['"]/.test(lowCode)) add("write", 0.2, "snippet opens a file in write mode")
+  if (/\bprint\s*\(/.test(lowCode) || /\blog(?:ger)?\./.test(lowCode)) add("emit", 0.35, "snippet shows output or logging")
+  if (/\bsubprocess\.|\bos\.system\s*\(|\beval\s*\(|\bexec\s*\(|\bcompile\s*\(/.test(lowCode)) {
+    add("exec", 0.35, "snippet includes dynamic or subprocess execution")
+  }
+  if (/\bre\.(search|match|findall|finditer)\s*\(/.test(lowCode)) add("pure", 0.35, "snippet uses regex extraction patterns")
   if (/\b(path|file|src|input)\b/.test(lowCode)) add("read", 0.1, "snippet references input-like names")
-  if (/\b(dst|output|target)\b/.test(lowCode) || /\b(write|save|dump|append)\b/.test(lowCode)) {
+  if (/\b(dst|output|target)\b/.test(lowCode) || /\b(write|save|dump)\b/.test(lowCode)) {
     add("write", 0.1, "snippet references output-like names")
   }
 
+  const out = clipped(confidence)
   return {
-    readConfidence: clamp(read),
-    writeConfidence: clamp(write),
+    confidence: out,
+    readConfidence: out.read,
+    writeConfidence: out.write,
     reasons,
   }
 }
@@ -356,16 +597,17 @@ function scorekey(item: ReviewSnippet) {
 
 function scoreprompt(item: ReviewSnippet) {
   const body = item.candidates
-    .map((item) => [`- fingerprint: ${item.fingerprint}`, `  call: ${item.call}`].join("\n"))
+    .map((item) => [`- fingerprint: ${item.fingerprint}`, `  call: ${item.call}`, `  kind: ${item.kind}`].join("\n"))
     .join("\n")
   return [
     "Return JSON only. Do not use tools. Do not ask questions.",
     "You are scoring Python callables for a review tool.",
-    "For each candidate, estimate how likely it is to be a read or write operation based only on the snippet.",
+    "For each candidate, estimate confidence scores for read, write, emit, exec, pure, and unknown based only on the snippet.",
     "Use this exact JSON shape:",
-    '{"scores":[{"fingerprint":"...","call":"...","readConfidence":0.0,"writeConfidence":0.0,"reasons":["..."]}]}',
+    '{"scores":[{"fingerprint":"...","call":"...","confidence":{"read":0.0,"write":0.0,"emit":0.0,"exec":0.0,"pure":0.0,"unknown":0.0},"reasons":["..."]}]}',
     "Rules:",
     "- include every candidate exactly once",
+    "- include all six confidence keys for every candidate",
     "- keep confidences between 0 and 0.99",
     "- keep at most 3 short reasons per candidate",
     "- reasons should explain the score, not make the final decision",
@@ -394,39 +636,53 @@ function unwrap(text: string) {
   return raw
 }
 
-function scorerow(input: unknown, label: string): ScoreRow {
+function scoremeta(input: unknown, label: string) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) fail(`${label} must be an object`)
   const row = input as Record<string, unknown>
   if (typeof row.fingerprint !== "string" || !row.fingerprint) fail(`${label}.fingerprint must be a string`)
   if (typeof row.call !== "string" || !row.call) fail(`${label}.call must be a string`)
-  if (typeof row.readConfidence !== "number" || !Number.isFinite(row.readConfidence) || row.readConfidence < 0 || row.readConfidence > 0.99) {
-    fail(`${label}.readConfidence must be a number between 0 and 0.99`)
-  }
-  if (typeof row.writeConfidence !== "number" || !Number.isFinite(row.writeConfidence) || row.writeConfidence < 0 || row.writeConfidence > 0.99) {
-    fail(`${label}.writeConfidence must be a number between 0 and 0.99`)
+  return { row, fingerprint: row.fingerprint, call: row.call }
+}
+
+function scorerow(row: Record<string, unknown>, label: string, kind: Occurrence["kind"] = "unknown"): ScoreRow {
+  const legacy = row.confidence === undefined
+  let confidence: ConfidenceStore
+  if (!legacy) {
+    confidence = parseConfidence(row.confidence, `${label}.confidence`)
+  } else {
+    if (typeof row.readConfidence !== "number" || !Number.isFinite(row.readConfidence) || row.readConfidence < 0 || row.readConfidence > 0.99) {
+      fail(`${label}.readConfidence must be a number between 0 and 0.99`)
+    }
+    if (typeof row.writeConfidence !== "number" || !Number.isFinite(row.writeConfidence) || row.writeConfidence < 0 || row.writeConfidence > 0.99) {
+      fail(`${label}.writeConfidence must be a number between 0 and 0.99`)
+    }
+    confidence = fromLegacy(kind, row.readConfidence, row.writeConfidence)
   }
   return {
-    fingerprint: row.fingerprint,
-    call: row.call,
-    readConfidence: clamp(row.readConfidence),
-    writeConfidence: clamp(row.writeConfidence),
+    fingerprint: row.fingerprint as string,
+    call: row.call as string,
+    confidence,
+    readConfidence: confidence.read,
+    writeConfidence: confidence.write,
     reasons: Array.isArray(row.reasons) ? row.reasons.filter((item): item is string => typeof item === "string").slice(0, 3) : [],
     scoreSource: "opencode-run",
+    legacy,
   }
 }
 
 function parseoutput(text: string, item: ReviewSnippet) {
   const raw = JSON.parse(unwrap(text)) as { scores?: unknown }
   if (!Array.isArray(raw.scores)) fail("Scorer JSON must include scores[]")
-  const rows = raw.scores.map((item, i) => scorerow(item, `scores[${i}]`))
   const want = new Map(item.candidates.map((item) => [item.fingerprint, item]))
   const out = new Map<string, ScoreRow>()
-  for (const row of rows) {
-    const hit = want.get(row.fingerprint)
-    if (!hit) fail(`Unexpected scorer fingerprint: ${row.fingerprint}`)
-    if (hit.call !== row.call) fail(`Scorer call mismatch for ${row.fingerprint}`)
-    if (out.has(row.fingerprint)) fail(`Duplicate scorer fingerprint: ${row.fingerprint}`)
-    out.set(row.fingerprint, row)
+  for (let i = 0; i < raw.scores.length; i++) {
+    const label = `scores[${i}]`
+    const meta = scoremeta(raw.scores[i], label)
+    const hit = want.get(meta.fingerprint)
+    if (!hit) fail(`Unexpected scorer fingerprint: ${meta.fingerprint}`)
+    if (hit.call !== meta.call) fail(`Scorer call mismatch for ${meta.fingerprint}`)
+    if (out.has(meta.fingerprint)) fail(`Duplicate scorer fingerprint: ${meta.fingerprint}`)
+    out.set(meta.fingerprint, scorerow(meta.row, label, hit.kind))
   }
   if (out.size !== item.candidates.length) fail("Scorer output is missing candidates")
   return item.candidates.map((item) => out.get(item.fingerprint)!)
@@ -512,7 +768,13 @@ async function scoredoc(filePath: string) {
           return {
             key: typeof row.key === "string" ? row.key : "",
             createdAt: typeof row.createdAt === "string" ? row.createdAt : new Date(0).toISOString(),
-            scores: Array.isArray(row.scores) ? row.scores.map((item, i) => scorerow(item, `cache.scores[${i}]`)) : [],
+            scores: Array.isArray(row.scores)
+              ? row.scores.map((item, i) => {
+                  const label = `cache.scores[${i}]`
+                  const meta = scoremeta(item, label)
+                  return scorerow(meta.row, label)
+                })
+              : [],
           }
         })
         .filter((item) => item.key && item.scores.length),
@@ -534,10 +796,12 @@ function merge(item: ReviewSnippet, rows: ScoreRow[]) {
     candidates: item.candidates.map((item) => {
       const hit = by.get(item.fingerprint)
       if (!hit) return item
+      const confidence = hit.legacy ? fromLegacy(item.kind, hit.readConfidence, hit.writeConfidence) : hit.confidence
       return {
         ...item,
-        readConfidence: hit.readConfidence,
-        writeConfidence: hit.writeConfidence,
+        confidence,
+        readConfidence: confidence.read,
+        writeConfidence: confidence.write,
         reasons: hit.reasons,
         scoreSource: hit.scoreSource,
       }
@@ -619,6 +883,8 @@ export function parse(args: string[]) {
     reviewJson: false,
     reviewNext: false,
     reviewTui: false,
+    suggestRules: false,
+    includeEmit: false,
     includePure: false,
     update: false,
     promoteReviewed: false,
@@ -643,6 +909,10 @@ export function parse(args: string[]) {
       opts.includePure = true
       continue
     }
+    if (arg === "--include-emit") {
+      opts.includeEmit = true
+      continue
+    }
     if (arg === "--promote-reviewed") {
       opts.promoteReviewed = true
       continue
@@ -657,6 +927,10 @@ export function parse(args: string[]) {
     }
     if (arg === "--review-tui") {
       opts.reviewTui = true
+      continue
+    }
+    if (arg === "--suggest-rules") {
+      opts.suggestRules = true
       continue
     }
     if (arg === "--db") {
@@ -681,6 +955,12 @@ export function parse(args: string[]) {
       const val = args[++i]
       if (!val) fail("Missing value for --score-cache")
       opts.scoreCache = path.resolve(val)
+      continue
+    }
+    if (arg === "--compare-rules") {
+      const val = args[++i]
+      if (!val) fail("Missing value for --compare-rules")
+      opts.compareRules = path.resolve(val)
       continue
     }
     if (arg === "--record-decision") {
@@ -714,9 +994,18 @@ export function parse(args: string[]) {
     fail(`Unknown argument: ${arg}`)
   }
 
-  if (opts.json && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.promoteReviewed)) fail("Use --json only with the report output")
+  if (opts.json && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.promoteReviewed)) fail("Use --json only with scan, suggest, or compare output")
   if ([opts.reviewJson, opts.reviewNext, opts.reviewTui].filter(Boolean).length > 1) {
     fail("Use only one of --review-json, --review-next, or --review-tui")
+  }
+  if (opts.suggestRules && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.update || opts.promoteReviewed)) {
+    fail("--suggest-rules cannot be combined with review, update, or promotion modes")
+  }
+  if (opts.compareRules && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.update || opts.promoteReviewed || opts.suggestRules)) {
+    fail("--compare-rules cannot be combined with review, update, promotion, or suggest modes")
+  }
+  if (opts.recordDecision && (opts.suggestRules || opts.compareRules)) {
+    fail("--record-decision cannot be combined with suggest or compare rules modes")
   }
   if (opts.decide && !opts.reviewNext) fail("--decide requires --review-next")
   if (opts.recordDecision && opts.reviewTui) fail("--record-decision cannot be combined with --review-tui")
@@ -754,12 +1043,20 @@ function rows(db: Database, since?: number) {
   return (since !== undefined ? q.all(since) : q.all()) as Row[]
 }
 
-export async function scan(opts: { db: string; since?: number; samples?: number; includePure?: boolean }): Promise<Report> {
+export async function scan(opts: {
+  db: string
+  since?: number
+  samples?: number
+  includeEmit?: boolean
+  includePure?: boolean
+}): Promise<Report> {
   if (!(await Bun.file(opts.db).exists())) fail(`OpenCode session database not found: ${opts.db}`)
 
   const db = new Database(opts.db, { readonly: true })
   const sample = opts.samples ?? 3
+  const includeEmit = opts.includeEmit ?? false
   const includePure = opts.includePure ?? false
+  const analyzedMetadata = analyzerMetadata()
 
   try {
     const all = rows(db, opts.since)
@@ -786,7 +1083,7 @@ export async function scan(opts: { db: string; since?: number; samples?: number;
       if (!item.code) continue
       inlineSnippets++
 
-      const events = await analyze(item.code)
+      const events = (await analyzeDetailed(item.code)).events
       for (const event of events) {
         let kind: Occurrence["kind"] | undefined
         let call: string | undefined
@@ -796,7 +1093,7 @@ export async function scan(opts: { db: string; since?: number; samples?: number;
           kind = "unknown"
           call = event.call.slice("callable:".length)
           unknownEvents++
-        } else if (event.kind === "emit") {
+        } else if (event.kind === "emit" && includeEmit) {
           kind = "emit"
           call = event.call
         } else if (event.kind === "pure" && includePure) {
@@ -807,12 +1104,15 @@ export async function scan(opts: { db: string; since?: number; samples?: number;
         }
 
         const time = row.time_updated || row.time_created
-        const scored = score(call, item.code)
+        const scored = score(call, item.code, kind)
         const normalizedCode = normalized(item.code)
         const seed = kind === "unknown" ? `${call}\n${normalizedCode}` : `${kind}\n${call}\n${normalizedCode}`
         occurrences.push({
           kind,
           call,
+          sourceCall: event.sourceCall,
+          canonicalSource: event.sourceCall ?? event.call,
+          evidence: event.evidence,
           fingerprint: fingerprint(seed),
           snippetFingerprint: fingerprint(normalizedCode),
           sessionID: row.session_id,
@@ -822,6 +1122,7 @@ export async function scan(opts: { db: string; since?: number; samples?: number;
           time: when(time),
           preview: clip(item.code),
           code: item.code,
+          confidence: scored.confidence,
           readConfidence: scored.readConfidence,
           writeConfidence: scored.writeConfidence,
           reasons: scored.reasons,
@@ -876,6 +1177,8 @@ export async function scan(opts: { db: string; since?: number; samples?: number;
     return {
       generatedAt: new Date().toISOString(),
       db: opts.db,
+      analyzerVersion: analyzedMetadata.analyzerVersion,
+      engineVersion: analyzedMetadata.engineVersion,
       filters: {
         since: opts.since !== undefined ? when(opts.since) : undefined,
         samples: sample,
@@ -969,7 +1272,7 @@ function recordSpec(input: string) {
   if (pivot <= 0 || pivot === input.length - 1) fail("--record-decision must be fingerprint=decision")
   const fingerprint = input.slice(0, pivot)
   const outcome = input.slice(pivot + 1)
-  if (!isDecision(outcome)) fail("--record-decision must use read, write, emit, exec, ignore, or needs-code")
+  if (!isDecision(outcome)) fail("--record-decision must use read, write, emit, exec, pure, ignore, or needs-code")
   return { fingerprint, decision: outcome }
 }
 
@@ -979,7 +1282,7 @@ export async function recordDecision(opts: { ledger: string; fingerprint: string
 
 export async function review(report: Report, opts: { ledger: string }): Promise<ReviewQueue> {
   const data = await ledger(opts.ledger)
-  const byFingerprint = new Map(data.decisions.map((item) => [item.fingerprint, item]))
+  const decided = decisionLookup(data, report)
   const snippets = new Map<
     string,
     {
@@ -993,7 +1296,11 @@ export async function review(report: Report, opts: { ledger: string }): Promise<
         {
           kind: Occurrence["kind"]
           call: string
+          sourceCall?: string
+          canonicalSource: string
+          evidence?: PythonEventEvidence
           fingerprint: string
+          confidence: ConfidenceStore
           readConfidence: number
           writeConfidence: number
           reasons: string[]
@@ -1028,12 +1335,16 @@ export async function review(report: Report, opts: { ledger: string }): Promise<
         snippet.candidates.set(item.fingerprint, {
           kind: item.kind,
           call: item.call,
+          sourceCall: item.sourceCall,
+          canonicalSource: item.canonicalSource,
+          evidence: item.evidence,
           fingerprint: item.fingerprint,
+          confidence: item.confidence,
           readConfidence: item.readConfidence,
           writeConfidence: item.writeConfidence,
           reasons: item.reasons,
           scoreSource: item.scoreSource,
-          decision: byFingerprint.get(item.fingerprint)?.decision,
+          decision: resolvedDecision(decided, item.fingerprint, item.call),
         })
       }
     snippets.set(item.snippetFingerprint, snippet)
@@ -1066,6 +1377,8 @@ export async function review(report: Report, opts: { ledger: string }): Promise<
     generatedAt: new Date().toISOString(),
     db: report.db,
     ledger: opts.ledger,
+    analyzerVersion: report.analyzerVersion,
+    engineVersion: report.engineVersion,
     filters: report.filters,
     totals: {
       snippets: out.length,
@@ -1086,7 +1399,7 @@ function parsePair(input: string) {
   const left = input.slice(0, pivot).trim()
   const right = input.slice(pivot + 1).trim()
   if (!left) fail("--decide must use item=decision pairs")
-  if (!isDecision(right)) fail("--decide must use read, write, emit, exec, ignore, or needs-code")
+  if (!isDecision(right)) fail("--decide must use read, write, emit, exec, pure, ignore, or needs-code")
   return { left, decision: right }
 }
 
@@ -1137,8 +1450,11 @@ export function renderReview(item: ReviewSnippet) {
   item.candidates.forEach((candidate, i) => {
     const decision = candidate.decision ? ` decided=${candidate.decision}` : ""
     out.push(
-      `${i + 1}. ${candidate.call} [${candidate.fingerprint}] kind=${candidate.kind} read=${candidate.readConfidence} write=${candidate.writeConfidence} source=${candidate.scoreSource}${decision}`,
+      `${i + 1}. ${candidate.call} [${candidate.fingerprint}] kind=${candidate.kind} ${viewConfidence(candidate.confidence)} source=${candidate.scoreSource}${decision}`,
     )
+    if (candidate.sourceCall && candidate.sourceCall !== candidate.call) out.push(`   from: ${candidate.sourceCall}`)
+    const evidence = evidenceBits(candidate.evidence)
+    if (evidence.length) out.push(`   evidence: ${evidence.join(" | ")}`)
     if (candidate.reasons.length) out.push(`   reasons: ${candidate.reasons.join("; ")}`)
   })
 
@@ -1149,12 +1465,26 @@ export function renderReview(item: ReviewSnippet) {
 
 function suggest(item: ReviewSnippet["candidates"][number]) {
   if (item.kind === "emit") return "emit"
-  return item.readConfidence >= item.writeConfidence ? "read" : "write"
+  if (item.kind === "pure") return "pure"
+
+  const actionKind = strongest(item.confidence, ["read", "write", "emit"] as const)
+  const fallbackKind = strongest(item.confidence, ["unknown", "pure", "exec"] as const)
+  if (item.confidence[fallbackKind] >= item.confidence[actionKind] + SUGGEST_GAP) {
+    return decideFrom(fallbackKind)
+  }
+  return decideFrom(actionKind)
 }
 
-function other(item: ReviewDecision) {
-  if (item === "emit") return "ignore"
-  return item === "read" ? "write" : "read"
+function other(decision: ReviewDecision, item: ReviewSnippet["candidates"][number]) {
+  if (decision === "read") return "write"
+  if (decision === "write") return "read"
+  if (decision === "emit") return "ignore"
+  if (decision === "pure") return "ignore"
+  if (decision === "ignore") {
+    const next = strongest(item.confidence, ["read", "write", "emit", "pure"] as const)
+    return decideFrom(next)
+  }
+  return "ignore"
 }
 
 function key(input: string): ReviewKey | undefined {
@@ -1164,8 +1494,9 @@ function key(input: string): ReviewKey | undefined {
 export function action(input: string, item: ReviewSnippet["candidates"][number]): ReviewAction | undefined {
   const hit = key(input)
   if (!hit) return
-  if (hit === "y") return { type: "decide", decision: suggest(item) }
-  if (hit === "n") return { type: "decide", decision: other(suggest(item)) }
+  const pick = suggest(item)
+  if (hit === "y") return { type: "decide", decision: pick }
+  if (hit === "n") return { type: "decide", decision: other(pick, item) }
   if (hit === "r") return { type: "decide", decision: "read" }
   if (hit === "w") return { type: "decide", decision: "write" }
   if (hit === "e") return { type: "decide", decision: "emit" }
@@ -1180,22 +1511,50 @@ export function action(input: string, item: ReviewSnippet["candidates"][number])
 
 function marker(text: string, call: string) {
   if (!call) return text
-  return text.split(call).join(`[[${call}]]`)
+  return text.replace(callPattern(call), (_text, lead, value) => `${lead}${paint(`[[${value}]]`, ANSI.call)}`)
+}
+
+function evidenceBits(evidence?: PythonEventEvidence) {
+  const bits: string[] = []
+  if (evidence?.explain?.length) bits.push(`rule=${evidence.explain[0]}`)
+  if (evidence?.receiverKind) bits.push(`receiver=${evidence.receiverKind}`)
+  if (evidence?.dependencySignature?.length) bits.push(`deps=${evidence.dependencySignature.join(",")}`)
+  if (evidence?.guardFailure) bits.push(`guard=${evidence.guardFailure.type}${evidence.guardFailure.detail ? `(${evidence.guardFailure.detail})` : ""}`)
+  return bits
+}
+
+function evidenceKey(evidence?: PythonEventEvidence) {
+  return JSON.stringify({
+    receiverKind: evidence?.receiverKind,
+    dependencySignature: evidence?.dependencySignature ?? [],
+    guardFailure: evidence?.guardFailure ?? null,
+  })
 }
 
 function block(code: string, call: string, full: boolean) {
   const lines = normalized(code).split("\n")
-  const hits = lines.flatMap((text, i) => (text.includes(call) ? [i] : []))
+  const hits = lines.flatMap((text, i) => (hasCall(text, call) ? [i] : []))
   const start = full || !hits.length ? 0 : Math.max(0, hits[0] - 4)
   const end = full || !hits.length ? lines.length : Math.min(lines.length, hits[0] + 8)
-  const body = lines.slice(start, end).map((text, i) => `${String(start + i + 1).padStart(3, " ")} | ${marker(text, call)}`)
-  if (start > 0) body.unshift(`... ${start} earlier lines hidden ...`)
-  if (end < lines.length) body.push(`... ${lines.length - end} later lines hidden ...`)
+  const body = lines.slice(start, end).map((text, i) => {
+    const line = start + i + 1
+    const focus = hasCall(text, call)
+    const gutter = `${focus ? ">" : " "} ${String(line).padStart(3, " ")}`
+    const shown = focus ? paint(gutter, ANSI.focus) : paint(gutter, ANSI.dim)
+    return `${shown} | ${marker(pythonLine(text), call)}`
+  })
+  if (start > 0) body.unshift(paint(`... ${start} earlier lines hidden ...`, ANSI.dim))
+  if (end < lines.length) body.push(paint(`... ${lines.length - end} later lines hidden ...`, ANSI.dim))
   return body.join("\n")
 }
 
 function clear(output: NodeJS.WriteStream) {
   output.write("\x1b[2J\x1b[H")
+}
+
+function status(output: NodeJS.WriteStream, text: string) {
+  clear(output)
+  output.write(`${paint(text, ANSI.dim)}\n`)
 }
 
 export function item(queue: ReviewQueue, skip = new Set<string>()) {
@@ -1228,25 +1587,30 @@ export function renderTui(item: ReviewItem, full: boolean, help = false) {
   const out = [
     `Python Review ${item.snippetIndex}/${item.snippetCount} | candidate 1/${item.candidateCount} | pending ${item.pendingCount}`,
     `Call: ${item.candidate.call}`,
-    `Suggested: ${pick} | read=${item.candidate.readConfidence} write=${item.candidate.writeConfidence} | source=${item.candidate.scoreSource}`,
   ]
+  if (item.candidate.sourceCall && item.candidate.sourceCall !== item.candidate.call) out.push(`From: ${item.candidate.sourceCall}`)
+  const evidence = evidenceBits(item.candidate.evidence)
+  if (evidence.length) out.push(`Evidence: ${evidence.join(" | ")}`)
+  out.push(`Suggested: ${pick} | ${viewConfidence(item.candidate.confidence)} | source=${item.candidate.scoreSource}`)
   if (item.candidate.reasons.length) out.push(`Why: ${item.candidate.reasons.join("; ")}`)
   out.push("", "Code:", block(item.snippet.code, item.candidate.call, full), "")
   if (help) {
-    out.push("Keys: y accept, n opposite, r read, w write, e emit, x exec, i ignore, c needs-code, s skip, v toggle code, q quit")
+    out.push(
+      "Keys: y accept, n opposite (read<->write, emit->ignore, pure->ignore, ignore->best read/write/emit/pure), r read, w write, e emit, x exec, i ignore, c needs-code, s skip, v toggle full/focused code, q quit",
+    )
     return out.join("\n")
   }
   out.push("Keys: y/n r/w e x i c s v ? q")
   return out.join("\n")
 }
 
-function settled(queue: ReviewQueue, fingerprint: string, decision: ReviewDecision) {
+function settled(queue: ReviewQueue, fingerprint: string, decision: ReviewDecision, call?: string) {
   return {
     ...queue,
     snippets: queue.snippets.map((snippet) => ({
       ...snippet,
       candidates: snippet.candidates.map((candidate) =>
-        candidate.fingerprint === fingerprint ? { ...candidate, decision } : candidate,
+        candidate.fingerprint === fingerprint || (call && candidate.call === call) ? { ...candidate, decision } : candidate,
       ),
     })),
   }
@@ -1272,7 +1636,7 @@ export async function tui(queue: ReviewQueue, opts: { ledger: string; cache: str
   input.resume()
   const skip = new Set<string>()
   let help = false
-  let full = false
+  let full = true
 
   try {
     while (true) {
@@ -1281,6 +1645,7 @@ export async function tui(queue: ReviewQueue, opts: { ledger: string; cache: str
         output.write("No pending review items.\n")
         return
       }
+      status(output, `Processing next item (${head.candidate.call})...`)
       const scored = await rescore(head.snippet, { cache: opts.cache })
       const current = item({ ...queue, snippets: [scored.item, ...queue.snippets.filter((row) => row.snippetFingerprint !== head.snippet.snippetFingerprint)] }, skip)
       if (!current) {
@@ -1302,16 +1667,18 @@ export async function tui(queue: ReviewQueue, opts: { ledger: string; cache: str
         continue
       }
       if (hit.type === "skip") {
+        status(output, `Skipping ${current.candidate.call}; loading next item...`)
         skip.add(current.candidate.fingerprint)
         continue
       }
+      status(output, `Saving ${hit.decision} for ${current.candidate.call}...`)
       await recordDecision({
         ledger: opts.ledger,
         fingerprint: current.candidate.fingerprint,
         decision: hit.decision,
         call: current.candidate.call,
       })
-      queue = settled(queue, current.candidate.fingerprint, hit.decision)
+      queue = settled(queue, current.candidate.fingerprint, hit.decision, current.candidate.call)
     }
   } finally {
     input.setRawMode?.(false)
@@ -1337,13 +1704,322 @@ function callBuckets(doc: RulesDoc) {
   }
 }
 
-function ledgerDecisions(data: ReviewLedger) {
-  return new Map(data.decisions.map((item) => [item.fingerprint, item.decision]))
+function decisionLookup(data: ReviewLedger, report?: Report): DecisionLookup {
+  const byFingerprint = new Map<string, ReviewDecision>()
+  for (const item of data.decisions) byFingerprint.set(item.fingerprint, item.decision)
+
+  const callByFingerprint = new Map<string, string>()
+  if (report) {
+    for (const item of report.occurrences) {
+      if (!callByFingerprint.has(item.fingerprint)) callByFingerprint.set(item.fingerprint, item.call)
+    }
+  }
+
+  const byCallChoices = new Map<string, Set<ReviewDecision>>()
+  for (const item of [...data.decisions].sort((a, b) => a.decidedAt.localeCompare(b.decidedAt) || a.fingerprint.localeCompare(b.fingerprint))) {
+    const call = item.call ?? callByFingerprint.get(item.fingerprint)
+    if (!call) continue
+    const choices = byCallChoices.get(call) ?? new Set<ReviewDecision>()
+    choices.add(item.decision)
+    byCallChoices.set(call, choices)
+  }
+
+  const byCall = new Map<string, ReviewDecision>()
+  for (const [call, choices] of byCallChoices) {
+    if (choices.size !== 1) continue
+    byCall.set(call, [...choices][0])
+  }
+
+  return { byFingerprint, byCall }
+}
+
+function resolvedDecision(data: DecisionLookup, fingerprint: string, call: string) {
+  return data.byFingerprint.get(fingerprint) ?? data.byCall.get(call)
+}
+
+function suggestionDecision(decision: ReviewDecision): SuggestionDecision | undefined {
+  if (decision === "read" || decision === "write" || decision === "emit" || decision === "exec" || decision === "pure") return decision
+}
+
+function effectForSuggestion(decision: SuggestionDecision) {
+  if (decision === "read") return "fs.read"
+  if (decision === "write") return "fs.write"
+  if (decision === "emit") return "emit.signal"
+  if (decision === "exec") return "dynamic.exec"
+  return "pure.compute"
+}
+
+function suggestionFragment(decision: SuggestionDecision, call: string, canonicalSource: string | undefined, evidence?: PythonEventEvidence) {
+  const guardedMethod = evidence?.explain?.find((item) => item.startsWith("guarded-method:"))
+  const receiverKind = evidence?.receiverKind
+  if (guardedMethod && (receiverKind === "path" || receiverKind === "match")) {
+    return {
+      guarded: {
+        methods: [
+          {
+            method: guardedMethod.slice("guarded-method:".length),
+            effect: effectForSuggestion(decision),
+            guards: [{ type: "receiverKindIn", kinds: [receiverKind] }],
+          },
+        ],
+      },
+    }
+  }
+
+  if (canonicalSource && canonicalSource !== call) return
+
+  return {
+    calls: {
+      [decision]: [call],
+    },
+  }
+}
+
+export async function suggestRules(report: Report, opts: { ledger: string; rules: string }): Promise<RuleSuggestionReport> {
+  const data = await ledger(opts.ledger)
+  const decided = decisionLookup(data, report)
+  const byCall = new Map<
+    string,
+    {
+      occurrences: number
+      pending: number
+      decisions: Set<ReviewDecision>
+      canonicalSources: Set<string>
+      evidenceKeys: Set<string>
+      evidenceBits: Set<string>
+      snippets: Set<string>
+      examples: Set<string>
+      representativeEvidence?: PythonEventEvidence
+      representativeEvidenceKey?: string
+    }
+  >()
+
+  for (const item of report.occurrences) {
+    const row = byCall.get(item.call) ?? {
+      occurrences: 0,
+      pending: 0,
+      decisions: new Set<ReviewDecision>(),
+      canonicalSources: new Set<string>(),
+      evidenceKeys: new Set<string>(),
+      evidenceBits: new Set<string>(),
+      snippets: new Set<string>(),
+      examples: new Set<string>(),
+      representativeEvidence: undefined,
+      representativeEvidenceKey: undefined,
+    }
+    row.occurrences++
+    row.snippets.add(item.snippetFingerprint)
+    row.examples.add(`${item.sessionID} | ${item.title} | ${item.preview}`)
+    row.canonicalSources.add(item.sourceCall ?? item.call)
+    const currentEvidenceKey = evidenceKey(item.evidence)
+    row.evidenceKeys.add(currentEvidenceKey)
+    for (const bit of evidenceBits(item.evidence)) row.evidenceBits.add(bit)
+    if (!row.representativeEvidenceKey || currentEvidenceKey < row.representativeEvidenceKey) {
+      row.representativeEvidenceKey = currentEvidenceKey
+      row.representativeEvidence = item.evidence
+    }
+    const decision = resolvedDecision(decided, item.fingerprint, item.call)
+    if (decision) row.decisions.add(decision)
+    else row.pending++
+    byCall.set(item.call, row)
+  }
+
+  const suggestions: Array<RuleSuggestionReport["suggestions"][number] & { snippetKeys: string[] }> = []
+  const blocked: RuleSuggestionReport["blocked"] = []
+
+  for (const [call, row] of [...byCall.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (!row.decisions.size) continue
+    const reasons: string[] = []
+    if (row.pending) reasons.push("unresolved contexts remain")
+    const decisions = [...row.decisions]
+    const suggestable = decisions.map(suggestionDecision).filter((item): item is SuggestionDecision => Boolean(item))
+    if (suggestable.length !== decisions.length) reasons.push("contains non-suggestable decisions")
+    const uniqueDecisions = [...new Set(suggestable)]
+    if (uniqueDecisions.length > 1) reasons.push("conflicting reviewed decisions")
+    const canonicalSources = [...row.canonicalSources]
+    if (canonicalSources.length !== 1) reasons.push("multiple canonical sources")
+    if (row.evidenceKeys.size > 1) reasons.push("multiple evidence signatures")
+    const canonicalSource = canonicalSources[0]
+    const decision = uniqueDecisions[0]
+    const fragment = decision ? suggestionFragment(decision, call, canonicalSource, row.representativeEvidence) : undefined
+    if (!fragment) reasons.push("no safe structured fragment")
+
+    if (reasons.length) {
+      blocked.push({ call, occurrences: row.occurrences, reasons })
+      continue
+    }
+
+    if (!decision) continue
+    suggestions.push({
+      call,
+      aliases: [call],
+      decision,
+      canonicalSource,
+      occurrences: row.occurrences,
+      snippetCount: row.snippets.size,
+      snippetKeys: [...row.snippets],
+      examples: [...row.examples].sort().slice(0, 3),
+      fragment: fragment as Record<string, unknown>,
+      reason: row.evidenceBits.size ? `unanimous reviewed contexts with one canonical source and ${[...row.evidenceBits].join(", ")}` : "unanimous reviewed contexts with one canonical source",
+    })
+  }
+
+  const merged = new Map<string, (RuleSuggestionReport["suggestions"][number] & { exampleSet?: Set<string>; aliasSet?: Set<string>; snippetSet?: Set<string> })>()
+  for (const item of suggestions) {
+    const key = JSON.stringify(item.fragment)
+    const current = merged.get(key)
+    if (!current) {
+      merged.set(key, {
+        ...item,
+        exampleSet: new Set(item.examples),
+        aliasSet: new Set(item.aliases),
+        snippetSet: new Set(item.snippetKeys),
+      })
+      continue
+    }
+    current.occurrences += item.occurrences
+    current.exampleSet ??= new Set(current.examples)
+    for (const example of item.examples) current.exampleSet.add(example)
+    current.aliasSet ??= new Set(current.aliases)
+    for (const alias of item.aliases) current.aliasSet.add(alias)
+    current.aliases = [...current.aliasSet].sort()
+    current.examples = [...current.exampleSet].sort().slice(0, 3)
+    current.snippetSet ??= new Set()
+    for (const snippetKey of item.snippetKeys) current.snippetSet.add(snippetKey)
+    current.snippetCount = current.snippetSet.size
+  }
+
+  const mergedSuggestions = [...merged.values()].map((item) => ({
+    call: item.call,
+    aliases: item.aliases,
+    decision: item.decision,
+    canonicalSource: item.canonicalSource,
+    occurrences: item.occurrences,
+    snippetCount: item.snippetCount,
+    examples: item.examples,
+    fragment: item.fragment,
+    reason: item.reason,
+  }))
+
+  return {
+    generatedAt: new Date().toISOString(),
+    db: report.db,
+    ledger: opts.ledger,
+    rules: opts.rules,
+    totals: {
+      suggested: mergedSuggestions.length,
+      blocked: blocked.length,
+    },
+    suggestions: mergedSuggestions,
+    blocked,
+  }
+}
+
+export function renderSuggestions(report: RuleSuggestionReport) {
+  const out = [`Rules: ${report.rules}`, `Ledger: ${report.ledger}`, `suggested: ${report.totals.suggested}`, `blocked: ${report.totals.blocked}`]
+  for (const item of report.suggestions) {
+    out.push("")
+    out.push(`${item.call} -> ${item.decision} (${item.occurrences})`)
+    if (item.aliases.length > 1) out.push(`  aliases: ${item.aliases.join(", ")}`)
+    if (item.canonicalSource && item.canonicalSource !== item.call) out.push(`  source: ${item.canonicalSource}`)
+    out.push(`  reason: ${item.reason}`)
+    out.push(`  fragment: ${JSON.stringify(item.fragment)}`)
+    for (const example of item.examples) out.push(`  - ${example}`)
+  }
+  if (report.blocked.length) {
+    out.push("", `blocked: ${report.blocked.length}`)
+    for (const item of report.blocked) out.push(`  - ${item.call}: ${item.reasons.join('; ')}`)
+  }
+  return out.join("\n")
+}
+
+async function withRulesFile<T>(rulesPath: string, run: () => Promise<T>) {
+  const previous = process.env.OPENCODE_PYTHON_RULES
+  process.env.OPENCODE_PYTHON_RULES = rulesPath
+  try {
+    return await run()
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODE_PYTHON_RULES
+    else process.env.OPENCODE_PYTHON_RULES = previous
+  }
+}
+
+async function scenario(opts: {
+  db: string
+  since?: number
+  samples: number
+  includeEmit: boolean
+  includePure: boolean
+  ledger: string
+  rules: string
+}) {
+  return await withRulesFile(opts.rules, async () => {
+    const report = await scan({ db: opts.db, since: opts.since, samples: opts.samples, includeEmit: opts.includeEmit, includePure: opts.includePure })
+    const queue = await review(report, { ledger: opts.ledger })
+    const suggestions = await suggestRules(report, { ledger: opts.ledger, rules: opts.rules })
+    return { report, queue, suggestions }
+  })
+}
+
+export async function compareRules(opts: {
+  db: string
+  since?: number
+  samples: number
+  includeEmit: boolean
+  includePure: boolean
+  ledger: string
+  rules: string
+  compareRules: string
+}): Promise<RulesCompareReport> {
+  const baseline = await scenario({ ...opts, rules: opts.rules })
+  const alternate = await scenario({ ...opts, rules: opts.compareRules })
+  const baselineUnknown = new Set(baseline.report.unknown.map((item) => item.call))
+  const alternateUnknown = new Set(alternate.report.unknown.map((item) => item.call))
+  const baselineSuggestions = new Set(baseline.suggestions.suggestions.map((item) => JSON.stringify(item.fragment)))
+  const alternateSuggestions = new Set(alternate.suggestions.suggestions.map((item) => JSON.stringify(item.fragment)))
+
+  return {
+    generatedAt: new Date().toISOString(),
+    db: opts.db,
+    currentRules: opts.rules,
+    alternateRules: opts.compareRules,
+    baseline: {
+      unknownEvents: baseline.report.totals.unknownEvents,
+      uniqueUnknownCalls: baseline.report.totals.uniqueUnknownCalls,
+      pendingCandidates: baseline.queue.totals.pendingCandidates,
+      suggestedRules: baseline.suggestions.totals.suggested,
+    },
+    alternate: {
+      unknownEvents: alternate.report.totals.unknownEvents,
+      uniqueUnknownCalls: alternate.report.totals.uniqueUnknownCalls,
+      pendingCandidates: alternate.queue.totals.pendingCandidates,
+      suggestedRules: alternate.suggestions.totals.suggested,
+    },
+    resolvedUnknownCalls: [...baselineUnknown].filter((call) => !alternateUnknown.has(call)).sort(),
+    newUnknownCalls: [...alternateUnknown].filter((call) => !baselineUnknown.has(call)).sort(),
+    addedSuggestions: [...alternateSuggestions].filter((item) => !baselineSuggestions.has(item)).sort(),
+    removedSuggestions: [...baselineSuggestions].filter((item) => !alternateSuggestions.has(item)).sort(),
+  }
+}
+
+export function renderRulesCompare(report: RulesCompareReport) {
+  return [
+    `Current rules: ${report.currentRules}`,
+    `Alternate rules: ${report.alternateRules}`,
+    `Unknown events: ${report.baseline.unknownEvents} -> ${report.alternate.unknownEvents}`,
+    `Unique unknown calls: ${report.baseline.uniqueUnknownCalls} -> ${report.alternate.uniqueUnknownCalls}`,
+    `Pending review candidates: ${report.baseline.pendingCandidates} -> ${report.alternate.pendingCandidates}`,
+    `Suggested rules: ${report.baseline.suggestedRules} -> ${report.alternate.suggestedRules}`,
+    report.resolvedUnknownCalls.length ? `Resolved unknown calls: ${report.resolvedUnknownCalls.join(', ')}` : "Resolved unknown calls: none",
+    report.newUnknownCalls.length ? `New unknown calls: ${report.newUnknownCalls.join(', ')}` : "New unknown calls: none",
+    report.addedSuggestions.length ? `Added suggestions: ${report.addedSuggestions.join(', ')}` : "Added suggestions: none",
+    report.removedSuggestions.length ? `Removed suggestions: ${report.removedSuggestions.join(', ')}` : "Removed suggestions: none",
+  ].join("\n")
 }
 
 export async function promotions(report: Report, opts: { ledger: string; rules: string }): Promise<PromotionPlan> {
   const data = await ledger(opts.ledger)
-  const decided = ledgerDecisions(data)
+  const decided = decisionLookup(data, report)
   const byCall = new Map<
     string,
     {
@@ -1354,7 +2030,7 @@ export async function promotions(report: Report, opts: { ledger: string; rules: 
 
   for (const item of report.occurrences) {
     const row = byCall.get(item.call) ?? { decisions: new Map<string, ReviewDecision>(), pending: new Set<string>() }
-    const outcome = decided.get(item.fingerprint)
+    const outcome = resolvedDecision(decided, item.fingerprint, item.call)
     if (outcome) row.decisions.set(item.fingerprint, outcome)
     else row.pending.add(item.fingerprint)
     byCall.set(item.call, row)
@@ -1541,8 +2217,28 @@ export async function main(args = process.argv.slice(2)) {
     db: opts.db,
     since: opts.since,
     samples: opts.samples,
+    includeEmit: opts.includeEmit,
     includePure: opts.includePure,
   })
+  if (opts.compareRules) {
+    const compared = await compareRules({
+      db: opts.db,
+      since: opts.since,
+      samples: opts.samples,
+      includeEmit: opts.includeEmit,
+      includePure: opts.includePure,
+      ledger: opts.ledger,
+      rules: opts.rules,
+      compareRules: opts.compareRules,
+    })
+    console.log(opts.json ? JSON.stringify(compared, null, 2) : renderRulesCompare(compared))
+    return
+  }
+  if (opts.suggestRules) {
+    const suggestions = await suggestRules(report, { ledger: opts.ledger, rules: opts.rules })
+    console.log(opts.json ? JSON.stringify(suggestions, null, 2) : renderSuggestions(suggestions))
+    return
+  }
   if (opts.reviewJson) {
     console.log(JSON.stringify(await review(report, { ledger: opts.ledger }), null, 2))
     return
