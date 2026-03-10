@@ -1,0 +1,32 @@
+flowchart TD
+    Source["Python snippet\ninline code or script text"] --> Parse
+    Parse["Tree-sitter parse\nAST build"] --> Timeline
+    Timeline["Timeline collection\nimports, assignments, rebinds, calls, raises"] --> Scope
+
+    Scope["Scoped provenance state\n- bindings\n- path instances\n- tracked containers\n- iterated values\n- receiver paths"] --> Classify
+
+    Classify{"Per-call classification"}
+
+    Classify --> Exact["Exact rules\npython-rules.json\nknown builtins / known SDK calls"]
+    Classify --> Provenance["Receiver provenance\ntracked Path / string / json / match / builtin type"]
+    Classify --> Guards["Shadowing and guardrails\nunshadowed builtins, customizer checks, exact import binding"]
+
+    Exact --> Event
+    Provenance --> Event
+    Guards --> Event
+
+    Event["PythonEvent[]\nkind + call + sourceCall + path"] --> Runtime
+    Event --> Review
+
+    Runtime["Runtime permission planner\nsrc/python.ts\nread:* write:* exec:* unknown:*"] --> Ask["Permission ask / execution plan"]
+    Review["Session re-scan and clustering\nsrc/python-session-report.ts"] --> TUI["Review CLI / TUI\nshows Call plus From when available"]
+
+    classDef source fill:#e8f4fd,stroke:#2980b9,stroke-width:2px,color:#000
+    classDef process fill:#eafaf1,stroke:#27ae60,stroke-width:2px,color:#000
+    classDef decision fill:#fdf2e9,stroke:#e67e22,stroke-width:2px,color:#000
+    classDef sink fill:#f4ecf7,stroke:#8e44ad,stroke-width:2px,color:#000
+
+    class Source source
+    class Parse,Timeline,Scope,Exact,Provenance,Guards,Event,Runtime,Review process
+    class Classify decision
+    class Ask,TUI sink
