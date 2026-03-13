@@ -12,6 +12,7 @@ export type GuardFailureEvidence = {
 }
 
 export type PythonEventEvidence = {
+  localDefinition?: boolean
   receiverKind?: ReceiverKind
   dependencySignature?: string[]
   guardFailure?: GuardFailureEvidence

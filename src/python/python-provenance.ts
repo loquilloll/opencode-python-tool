@@ -22,6 +22,9 @@ export type ContainerKind =
   | "float"
   | "complex"
   | "match"
+  | "inspect-signature"
+  | "inspect-parameter"
+  | "inspect-bound-arguments"
 
 export type ReceiverContainer = {
   kind: ContainerKind

@@ -3,15 +3,42 @@
   "methods": {
     "read": [
       "exists",
+      "glob",
+      "group",
+      "is_block_device",
+      "is_char_device",
+      "is_dir",
+      "is_fifo",
+      "is_file",
+      "is_junction",
+      "is_mount",
+      "is_socket",
+      "is_symlink",
+      "iterdir",
+      "lstat",
+      "owner",
+      "read_bytes",
       "read_text",
-      "read_bytes"
+      "readlink",
+      "resolve",
+      "rglob",
+      "samefile",
+      "stat",
+      "walk"
     ],
     "write": [
-      "append_text",
+      "chmod",
+      "copy",
+      "copy_into",
+      "hardlink_to",
+      "lchmod",
       "mkdir",
+      "move",
+      "move_into",
       "rename",
       "replace",
       "rmdir",
+      "symlink_to",
       "touch",
       "unlink",
       "write_bytes",
@@ -24,7 +51,24 @@
     "read": [
       "json.load",
       "yaml.load",
-      "yaml.safe_load"
+      "yaml.safe_load",
+      "inspect.currentframe",
+      "inspect.findsource",
+      "inspect.getabsfile",
+      "inspect.getargvalues",
+      "inspect.getasyncgenlocals",
+      "inspect.getcomments",
+      "inspect.getcoroutinelocals",
+      "inspect.getfile",
+      "inspect.getframeinfo",
+      "inspect.getgeneratorlocals",
+      "inspect.getinnerframes",
+      "inspect.getouterframes",
+      "inspect.getsource",
+      "inspect.getsourcefile",
+      "inspect.getsourcelines",
+      "inspect.stack",
+      "inspect.trace"
     ],
     "write": [
       "json.dump",
@@ -58,7 +102,56 @@
       "re.findall",
       "re.finditer",
       "re.split",
-      "re.escape"
+      "re.escape",
+      "inspect.BoundArguments",
+      "inspect.Parameter",
+      "inspect.Signature",
+      "inspect.classify_class_attrs",
+      "inspect.cleandoc",
+      "inspect.formatannotation",
+      "inspect.formatannotationrelativeto",
+      "inspect.formatargvalues",
+      "inspect.getargs",
+      "inspect.getasyncgenstate",
+      "inspect.getattr_static",
+      "inspect.getblock",
+      "inspect.getcallargs",
+      "inspect.getclasstree",
+      "inspect.getclosurevars",
+      "inspect.getcoroutinestate",
+      "inspect.getdoc",
+      "inspect.getfullargspec",
+      "inspect.getgeneratorstate",
+      "inspect.getlineno",
+      "inspect.getmodule",
+      "inspect.getmodulename",
+      "inspect.getmro",
+      "inspect.isabstract",
+      "inspect.isasyncgen",
+      "inspect.isasyncgenfunction",
+      "inspect.isawaitable",
+      "inspect.isbuiltin",
+      "inspect.isclass",
+      "inspect.iscode",
+      "inspect.iscoroutine",
+      "inspect.iscoroutinefunction",
+      "inspect.isdatadescriptor",
+      "inspect.isframe",
+      "inspect.isfunction",
+      "inspect.isgenerator",
+      "inspect.isgeneratorfunction",
+      "inspect.isgetsetdescriptor",
+      "inspect.iskeyword",
+      "inspect.ismemberdescriptor",
+      "inspect.ismethod",
+      "inspect.ismethoddescriptor",
+      "inspect.ismethodwrapper",
+      "inspect.ismodule",
+      "inspect.ispackage",
+      "inspect.isroutine",
+      "inspect.istraceback",
+      "inspect.markcoroutinefunction",
+      "inspect.unwrap"
     ],
     "networkRead": [
       "requests.get",
@@ -2219,6 +2312,57 @@
             ]
           }
         ]
+      },
+      {
+        "call": "inspect.get_annotations",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "kwargAbsent",
+            "names": [
+              "globals",
+              "locals",
+              "eval_str"
+            ]
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
+      },
+      {
+        "call": "inspect.signature",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "kwargAbsent",
+            "names": [
+              "globals",
+              "locals",
+              "eval_str"
+            ]
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
+      },
+      {
+        "call": "inspect.Signature.from_callable",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "kwargAbsent",
+            "names": [
+              "globals",
+              "locals",
+              "eval_str"
+            ]
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
       }
     ],
     "methods": [
@@ -2235,7 +2379,163 @@
         ]
       },
       {
-        "method": "read_text",
+        "method": "glob",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "group",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "is_block_device",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "is_char_device",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "is_dir",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "is_fifo",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "is_file",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "is_junction",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "is_mount",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "is_socket",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "is_symlink",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "iterdir",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "lstat",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "owner",
         "effect": "fs.read",
         "guards": [
           {
@@ -2259,7 +2559,139 @@
         ]
       },
       {
-        "method": "append_text",
+        "method": "read_text",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "readlink",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "resolve",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "rglob",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "samefile",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "stat",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "walk",
+        "effect": "fs.read",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "chmod",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "copy",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "copy_into",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "hardlink_to",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "lchmod",
         "effect": "fs.write",
         "guards": [
           {
@@ -2272,6 +2704,30 @@
       },
       {
         "method": "mkdir",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "move",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "move_into",
         "effect": "fs.write",
         "guards": [
           {
@@ -2308,6 +2764,18 @@
       },
       {
         "method": "rmdir",
+        "effect": "fs.write",
+        "guards": [
+          {
+            "type": "receiverKindIn",
+            "kinds": [
+              "path"
+            ]
+          }
+        ]
+      },
+      {
+        "method": "symlink_to",
         "effect": "fs.write",
         "guards": [
           {

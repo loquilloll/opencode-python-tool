@@ -74,6 +74,26 @@ async function executeExpectingEnoent(
   }
 }
 
+async function collectInlinePermissionParity(source: string) {
+  return withWorkspace(async ({ worktree }) => {
+    const context = createMockContext({ worktree, directory: worktree })
+
+    await executeExpectingEnoent(
+      {
+        code: source,
+        args: [],
+        description: "phase 1 parity",
+      },
+      context,
+    )
+
+    return {
+      ask: getAsk(context, "python"),
+      metadata: context.metadatas[0]?.metadata,
+    }
+  })
+}
+
 describe("python tool runtime", () => {
   describe("arg validation", () => {
     it("errors when neither code nor scriptPath is provided", async () => {
@@ -561,6 +581,163 @@ describe("python tool runtime", () => {
             }),
           ]),
         )
+      })
+    })
+
+    describe("phase 1 runtime parity smoke fixtures", () => {
+      it("preserves tracked path and guarded metadata projection", async () => {
+        const result = await collectInlinePermissionParity(
+          ["from pathlib import Path", "home = Path.home()", "home.read_text()", "obj.group(1)"].join("\n"),
+        )
+
+        expect(result.ask?.patterns).toEqual(["read:<dynamic>", "unknown:callable:obj.group"])
+        expect(result.ask?.always).toEqual(["read:*", "unknown:callable:obj.group"])
+        expect(result.metadata?.permissionPatterns).toEqual(["read:<dynamic>", "unknown:callable:obj.group"])
+        expect(result.metadata?.permissionAlways).toEqual(["read:*", "unknown:callable:obj.group"])
+        expect(result.metadata?.operations).toEqual([
+          {
+            kind: "pure",
+            call: "pathlib.Path.home",
+            pattern: "pure:pathlib.Path.home",
+            always: "pure:pathlib.*",
+            canonicalSource: "pathlib.Path.home",
+          },
+          {
+            kind: "read",
+            call: "home.read_text",
+            pattern: "read:<dynamic>",
+            always: "read:*",
+            canonicalSource: "pathlib.Path.read_text",
+            receiverKind: "path",
+            ruleHit: "guarded-method:read_text",
+          },
+          {
+            kind: "unknown",
+            call: "callable:obj.group",
+            pattern: "unknown:callable:obj.group",
+            always: "unknown:callable:obj.group",
+            canonicalSource: "callable:obj.group",
+            ruleHit: "guarded-method:group",
+            guardFailure: {
+              type: "receiverKindIn",
+              detail: "expected=path actual=none",
+            },
+          },
+        ])
+      })
+
+      it("preserves direct-import HTTP projection", async () => {
+        const result = await collectInlinePermissionParity(
+          [
+            "from requests import request",
+            "from httpx import request as http_request",
+            "request('GET', 'https://example.com/a')",
+            "http_request('HEAD', 'https://example.com/b')",
+          ].join("\n"),
+        )
+
+        expect(result.ask?.patterns).toEqual(["read:requests.get", "read:httpx.head"])
+        expect(result.ask?.always).toEqual(["read:requests.*", "read:httpx.*"])
+        expect(result.metadata?.permissionPatterns).toEqual(["read:requests.get", "read:httpx.head"])
+        expect(result.metadata?.permissionAlways).toEqual(["read:requests.*", "read:httpx.*"])
+        expect(result.metadata?.operations).toEqual([
+          {
+            kind: "read",
+            call: "requests.get",
+            pattern: "read:requests.get",
+            always: "read:requests.*",
+            canonicalSource: "requests.get",
+            ruleHit: "guarded-call:requests.request",
+          },
+          {
+            kind: "read",
+            call: "httpx.head",
+            pattern: "read:httpx.head",
+            always: "read:httpx.*",
+            canonicalSource: "httpx.head",
+            ruleHit: "guarded-call:httpx.request",
+          },
+        ])
+      })
+
+      it("preserves assignment invalidation projection", async () => {
+        const result = await collectInlinePermissionParity(
+          [
+            "import requests",
+            "client = requests.Session()",
+            "client.get('https://example.com/a')",
+            "client = obj",
+            "client.get('https://example.com/b')",
+          ].join("\n"),
+        )
+
+        expect(result.ask?.patterns).toEqual(["exec:requests.Session", "read:requests.Session.get", "unknown:callable:obj.get"])
+        expect(result.ask?.always).toEqual(["exec:requests.*", "read:requests.*", "unknown:callable:obj.get"])
+        expect(result.metadata?.permissionPatterns).toEqual([
+          "exec:requests.Session",
+          "read:requests.Session.get",
+          "unknown:callable:obj.get",
+        ])
+        expect(result.metadata?.permissionAlways).toEqual(["exec:requests.*", "read:requests.*", "unknown:callable:obj.get"])
+        expect(result.metadata?.operations).toEqual([
+          {
+            kind: "exec",
+            call: "requests.Session",
+            pattern: "exec:requests.Session",
+            always: "exec:requests.*",
+            canonicalSource: "requests.Session",
+          },
+          {
+            kind: "read",
+            call: "requests.Session.get",
+            pattern: "read:requests.Session.get",
+            always: "read:requests.*",
+            canonicalSource: "requests.Session.get",
+          },
+          {
+            kind: "unknown",
+            call: "callable:obj.get",
+            pattern: "unknown:callable:obj.get",
+            always: "unknown:callable:obj.get",
+            canonicalSource: "callable:obj.get",
+          },
+        ])
+      })
+
+      it("preserves parse-error projection", async () => {
+        const result = await collectInlinePermissionParity("def broken(")
+
+        expect(result.ask?.patterns).toEqual(["unknown:parse-error"])
+        expect(result.ask?.always).toEqual(["unknown:*"])
+        expect(result.metadata?.permissionPatterns).toEqual(["unknown:parse-error"])
+        expect(result.metadata?.permissionAlways).toEqual(["unknown:*"])
+        expect(result.metadata?.operations).toEqual([
+          {
+            kind: "unknown",
+            call: "parse-error",
+            pattern: "unknown:parse-error",
+            always: "unknown:*",
+            canonicalSource: "parse-error",
+          },
+        ])
+      })
+
+      it("preserves no-calls-detected projection", async () => {
+        const result = await collectInlinePermissionParity("value = 1 + 1")
+
+        expect(result.ask?.patterns).toEqual(["unknown:no-calls-detected"])
+        expect(result.ask?.always).toEqual(["unknown:*"])
+        expect(result.metadata?.permissionPatterns).toEqual(["unknown:no-calls-detected"])
+        expect(result.metadata?.permissionAlways).toEqual(["unknown:*"])
+        expect(result.metadata?.operations).toEqual([
+          {
+            kind: "unknown",
+            call: "no-calls-detected",
+            pattern: "unknown:no-calls-detected",
+            always: "unknown:*",
+            canonicalSource: "no-calls-detected",
+          },
+        ])
       })
     })
 

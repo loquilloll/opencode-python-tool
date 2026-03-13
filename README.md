@@ -46,7 +46,7 @@ flowchart TD
     source["Source Resolution<br/><i>inline code or read scriptPath</i>"]
     source --> analyzer
 
-    analyzer["AST Analyzer<br/><code>python-analyze.ts</code><br/><i>Tree-sitter parse -> classify calls<br/>-> PythonEvent[] (kind + call + path)</i>"]
+    analyzer["AST Analyzer Orchestrator<br/><code>python-analyze.ts + helper modules</code><br/><i>Parse -> build timeline -> replay scope<br/>-> classify -> PythonEvent[]</i>"]
     analyzer --> guard
 
     guard{"Subprocess Guard<br/><i>subprocess.* detected?</i>"}
@@ -82,7 +82,15 @@ flowchart TD
 | File | Purpose |
 |------|---------|
 | `src/python.ts` | Runtime entry point: arg validation, source loading, analyzer call, permission asks, subprocess guard, process execution, timeout/abort handling, metadata streaming. |
-| `src/python/python-analyze.ts` | Frontend-backed analyzer core that classifies Python calls into `read \| write \| emit \| exec \| pure \| unknown` events with optional path extraction. Exposes `analyze()` for stable `PythonEvent[]` output plus `analyzeDetailed()` for analyzer-version metadata. |
+| `src/python/python-analyze.ts` | Thin analyzer orchestrator: loads rules/frontend, computes import provenance, builds timeline, replays scoped state, delegates raise/call classification, and exposes `analyzeDetailed()` / `analyze()`. |
+| `src/python/python-analyze-types.ts` | Shared analyzer contracts for `PythonEvent`, `Scope`, `TimelineEntry`, `Rules`, and supporting internal types. |
+| `src/python/python-known-methods.ts` | Static analyzer data tables: pure-method inventories, builtin/HTTP constants, effect-kind mapping, and rules-file constants. |
+| `src/python/python-bootstrap.ts` | Rules/frontend bootstrap seam: JSON validation, rules loading, `OPENCODE_PYTHON_RULES` handling, and parser caching. |
+| `src/python/python-events.ts` | Outward event helpers: `ResolvedEffect` construction, public-event folding, dedupe, and `PythonAnalyzeResult` assembly. |
+| `src/python/python-scope.ts` | Lexical scope helpers: bindings/import normalization, invalidation, callable-factory lookup, and tracked-instance/path/container maps. |
+| `src/python/python-timeline.ts` | Timeline builder: assignment/rebind/definition/import/call/raise collection plus comprehension-aware ordering rules. |
+| `src/python/python-inference.ts` | Value/path/container inference helpers: literal parsing, tracked Path/container derivation, iterable/rebind seeding, and response-json/builtin-pure support logic. |
+| `src/python/python-classifier.ts` | Call/raise classifier seam: builtin/guarded/HTTP/Path/GHAPI/Atlassian/subprocess/fallback resolution to internal effects. |
 | `src/python/frontend/interface.ts` | Minimal parser frontend contract consumed by the analyzer core. |
 | `src/python/frontend/tree-sitter.ts` | Default tree-sitter-backed frontend implementation, including parser/WASM loading and caching. |
 | `src/python/python-rule-schema.ts` | Guarded-rule schema parsing and validation for declarative rule extensions that now back the default analyzer path for migrated families. |
@@ -155,6 +163,19 @@ mkdir -p "$DST/.opencode/tool" "$DST/src/python" "$DST/src/python/frontend"
 
 cp "$SRC/src/python.ts" "$DST/src/python.ts"
 cp "$SRC/src/python/python-analyze.ts" "$DST/src/python/python-analyze.ts"
+cp "$SRC/src/python/python-analyze-types.ts" "$DST/src/python/python-analyze-types.ts"
+cp "$SRC/src/python/python-known-methods.ts" "$DST/src/python/python-known-methods.ts"
+cp "$SRC/src/python/python-bootstrap.ts" "$DST/src/python/python-bootstrap.ts"
+cp "$SRC/src/python/python-events.ts" "$DST/src/python/python-events.ts"
+cp "$SRC/src/python/python-scope.ts" "$DST/src/python/python-scope.ts"
+cp "$SRC/src/python/python-timeline.ts" "$DST/src/python/python-timeline.ts"
+cp "$SRC/src/python/python-inference.ts" "$DST/src/python/python-inference.ts"
+cp "$SRC/src/python/python-classifier.ts" "$DST/src/python/python-classifier.ts"
+cp "$SRC/src/python/python-ir.ts" "$DST/src/python/python-ir.ts"
+cp "$SRC/src/python/python-values.ts" "$DST/src/python/python-values.ts"
+cp "$SRC/src/python/python-provenance.ts" "$DST/src/python/python-provenance.ts"
+cp "$SRC/src/python/python-rule-schema.ts" "$DST/src/python/python-rule-schema.ts"
+cp "$SRC/src/python/python-guard-eval.ts" "$DST/src/python/python-guard-eval.ts"
 cp "$SRC/src/python/frontend/interface.ts" "$DST/src/python/frontend/interface.ts"
 cp "$SRC/src/python/frontend/tree-sitter.ts" "$DST/src/python/frontend/tree-sitter.ts"
 cp "$SRC/src/python/python-rules.json" "$DST/src/python/python-rules.json"
@@ -224,6 +245,19 @@ mkdir -p "$OPENCODE_HOME/tools/python" "$OPENCODE_HOME/tools/python/frontend"
 
 cp "$SRC/src/python.ts" "$OPENCODE_HOME/tools/python.ts"
 cp "$SRC/src/python/python-analyze.ts" "$OPENCODE_HOME/tools/python/python-analyze.ts"
+cp "$SRC/src/python/python-analyze-types.ts" "$OPENCODE_HOME/tools/python/python-analyze-types.ts"
+cp "$SRC/src/python/python-known-methods.ts" "$OPENCODE_HOME/tools/python/python-known-methods.ts"
+cp "$SRC/src/python/python-bootstrap.ts" "$OPENCODE_HOME/tools/python/python-bootstrap.ts"
+cp "$SRC/src/python/python-events.ts" "$OPENCODE_HOME/tools/python/python-events.ts"
+cp "$SRC/src/python/python-scope.ts" "$OPENCODE_HOME/tools/python/python-scope.ts"
+cp "$SRC/src/python/python-timeline.ts" "$OPENCODE_HOME/tools/python/python-timeline.ts"
+cp "$SRC/src/python/python-inference.ts" "$OPENCODE_HOME/tools/python/python-inference.ts"
+cp "$SRC/src/python/python-classifier.ts" "$OPENCODE_HOME/tools/python/python-classifier.ts"
+cp "$SRC/src/python/python-ir.ts" "$OPENCODE_HOME/tools/python/python-ir.ts"
+cp "$SRC/src/python/python-values.ts" "$OPENCODE_HOME/tools/python/python-values.ts"
+cp "$SRC/src/python/python-provenance.ts" "$OPENCODE_HOME/tools/python/python-provenance.ts"
+cp "$SRC/src/python/python-rule-schema.ts" "$OPENCODE_HOME/tools/python/python-rule-schema.ts"
+cp "$SRC/src/python/python-guard-eval.ts" "$OPENCODE_HOME/tools/python/python-guard-eval.ts"
 cp "$SRC/src/python/frontend/interface.ts" "$OPENCODE_HOME/tools/python/frontend/interface.ts"
 cp "$SRC/src/python/frontend/tree-sitter.ts" "$OPENCODE_HOME/tools/python/frontend/tree-sitter.ts"
 cp "$SRC/src/python/python-rules.json" "$OPENCODE_HOME/tools/python/python-rules.json"
@@ -496,7 +530,7 @@ Terminal conditions append `<python_metadata>` to the output:
 ## JSON Rules and Session Report
 
 - The analyzer loads declarative rule data from `src/python/python-rules.json` by default. Set `OPENCODE_PYTHON_RULES` to point at a different rules file.
-- `src/python-session-report.ts` scans saved OpenCode sessions, re-analyzes inline `state.input.code`, and skips `scriptPath` entries.
+- `src/python-session-report.ts` scans saved OpenCode sessions, re-analyzes inline `state.input.code`, skips `scriptPath` entries, and suppresses calls back into definitions declared in the same snippet.
 - `--update-candidates` only updates `candidates.unknown` in the rules JSON. It does not automatically change live `methods`, `calls`, or `pathCalls` classifier buckets.
 - `--review-next` and `--decide` provide a snippet-centric human review loop backed by a sidecar ledger, with decisions such as `read`, `write`, `emit`, `exec`, `pure`, `ignore`, and `needs-code`.
 - The review ledger stores the exact occurrence fingerprint plus review identity metadata (`kind` and `sourceCall` when available). Exact fingerprint matches always replay, while cross-snippet reuse only happens when the later occurrence resolves to the same review identity.
@@ -603,6 +637,19 @@ When this repo changes, use one of these refresh paths.
 2. Re-copy core files:
    - `src/python.ts`
    - `src/python/python-analyze.ts`
+   - `src/python/python-analyze-types.ts`
+   - `src/python/python-known-methods.ts`
+   - `src/python/python-bootstrap.ts`
+   - `src/python/python-events.ts`
+   - `src/python/python-scope.ts`
+   - `src/python/python-timeline.ts`
+   - `src/python/python-inference.ts`
+   - `src/python/python-classifier.ts`
+   - `src/python/python-ir.ts`
+   - `src/python/python-values.ts`
+   - `src/python/python-provenance.ts`
+   - `src/python/python-rule-schema.ts`
+   - `src/python/python-guard-eval.ts`
    - `src/python/frontend/interface.ts`
    - `src/python/frontend/tree-sitter.ts`
    - `src/python/python-rules.json`
@@ -622,6 +669,19 @@ When this repo changes, use one of these refresh paths.
 2. Re-copy core files:
    - `src/python.ts` -> `tools/python.ts`
    - `src/python/python-analyze.ts` -> `tools/python/python-analyze.ts`
+   - `src/python/python-analyze-types.ts` -> `tools/python/python-analyze-types.ts`
+   - `src/python/python-known-methods.ts` -> `tools/python/python-known-methods.ts`
+   - `src/python/python-bootstrap.ts` -> `tools/python/python-bootstrap.ts`
+   - `src/python/python-events.ts` -> `tools/python/python-events.ts`
+   - `src/python/python-scope.ts` -> `tools/python/python-scope.ts`
+   - `src/python/python-timeline.ts` -> `tools/python/python-timeline.ts`
+   - `src/python/python-inference.ts` -> `tools/python/python-inference.ts`
+   - `src/python/python-classifier.ts` -> `tools/python/python-classifier.ts`
+   - `src/python/python-ir.ts` -> `tools/python/python-ir.ts`
+   - `src/python/python-values.ts` -> `tools/python/python-values.ts`
+   - `src/python/python-provenance.ts` -> `tools/python/python-provenance.ts`
+   - `src/python/python-rule-schema.ts` -> `tools/python/python-rule-schema.ts`
+   - `src/python/python-guard-eval.ts` -> `tools/python/python-guard-eval.ts`
    - `src/python/frontend/interface.ts` -> `tools/python/frontend/interface.ts`
    - `src/python/frontend/tree-sitter.ts` -> `tools/python/frontend/tree-sitter.ts`
    - `src/python/python-rules.json` -> `tools/python/python-rules.json`
@@ -646,7 +706,20 @@ opencode-python-tool/
     python.ts                    # Runtime entry point
     python-session-report.ts     # Saved-session reporting utility
     python/
-      python-analyze.ts          # AST analyzer
+      python-analyze.ts          # Thin analyzer orchestrator
+      python-analyze-types.ts    # Shared analyzer contracts
+      python-known-methods.ts    # Static method/HTTP/effect tables
+      python-bootstrap.ts        # Rules/frontend loading
+      python-events.ts           # Public event/result folding
+      python-scope.ts            # Scope + import helpers
+      python-timeline.ts         # Timeline collection
+      python-inference.ts        # Value/path/container inference
+      python-classifier.ts       # Call/raise classification
+      python-ir.ts               # Internal IR + analyzer metadata
+      python-values.ts           # Shared PythonValue / PythonArgs types
+      python-provenance.ts       # Receiver/self provenance helpers
+      python-rule-schema.ts      # Guarded rule schema parsing
+      python-guard-eval.ts       # Guard predicate evaluation
       python-rules.json          # Declarative classifier rules
       python.txt                 # Tool prompt
       env.d.ts                   # .txt module declaration
@@ -672,7 +745,7 @@ opencode-python-tool/
 2. Use `bun run ../src/python-session-report.ts --update-candidates` from `.opencode/` to gather unknown-call evidence into `candidates.unknown`.
 3. Use `--review-next` and `--decide` to classify candidates in the sidecar review ledger. Exact fingerprint matches replay directly, and cross-snippet reuse only happens when `kind` plus canonical callable context match; then use `--promote-reviewed` to move only safe single-identity call targets into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
 4. Use `--suggest-rules` to preview unanimous reviewed clusters as copy-pasteable rule fragments (`calls.*` today, or bounded `guarded.methods` fragments when receiver evidence is sufficient), and `--compare-rules <file>` to diff review outcomes against an alternate rules file before promoting changes.
-5. Prefer guarded declarative rules before adding new procedural branches in `src/python/python-analyze.ts`; the schema lives in `src/python/python-rule-schema.ts` and `src/python/python-guard-eval.ts`.
+5. Prefer guarded declarative rules before adding new procedural branches. Put classification logic in `src/python/python-classifier.ts`, inference/path/container logic in `src/python/python-inference.ts`, and scope/timeline mechanics in `src/python/python-scope.ts` or `src/python/python-timeline.ts`; the guarded schema lives in `src/python/python-rule-schema.ts` and `src/python/python-guard-eval.ts`.
 6. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.
 7. If the new pattern should be denied by default, add the corresponding
    `exec:<pattern>` deny rule to both `.opencode/opencode.jsonc` and the
@@ -683,9 +756,9 @@ opencode-python-tool/
 
 For SDK-specific instance tracking (like ghapi/Atlassian patterns):
 
-1. Define constructor sets and method allowlists in the analyzer.
-2. Add instance tracking logic in the `analyze()` function's timeline loop.
-3. Pass the instance map to `classify()` for method resolution.
+1. Define constructor sets and method allowlists in `src/python/python-rules.json` or `src/python/python-known-methods.ts`, depending on whether the surface is declarative or static-data-backed.
+2. Add instance tracking or replay seeding in `src/python/python-analyze.ts` only when it truly belongs to orchestrator-owned replay order; otherwise prefer `src/python/python-scope.ts` or `src/python/python-inference.ts`.
+3. Resolve call behavior in `src/python/python-classifier.ts`, keeping the orchestrator limited to replay sequencing and event folding.
 4. Add comprehensive tests covering: direct calls, instance method calls,
    reassignment invalidation, alias deferral, and provenance requirements.
 

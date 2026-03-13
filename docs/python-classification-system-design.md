@@ -18,7 +18,7 @@ Provide a bounded, provenance-aware classifier for inline Python snippets so the
 - suppress noise for safe in-memory operations
 - surface uncertain behavior as reviewable `unknown` events
 
-This design is implemented primarily in `src/python/python-analyze.ts`, consumed by `src/python.ts`, and audited through `src/python-session-report.ts`.
+This design is implemented as a thin orchestrator in `src/python/python-analyze.ts` plus focused helper seams under `src/python/`, consumed by `src/python.ts`, and audited through `src/python-session-report.ts`.
 
 ## Non-Goals
 
@@ -54,12 +54,12 @@ See also the standalone diagram in `docs/python-classification-system-architectu
 ```mermaid
 flowchart TD
     Source["Python snippet\ninline code or script text"] --> Parse
-    Parse["Tree-sitter parse\nAST build"] --> Timeline
-    Timeline["Timeline collection\nimports, assignments, rebinds, calls, raises"] --> Scope
+    Parse["Tree-sitter parse\npython-bootstrap.ts + frontend\nAST build"] --> Timeline
+    Timeline["Timeline collection\npython-timeline.ts\nimports, assignments, rebinds, calls, raises"] --> Scope
 
-    Scope["Scoped provenance state\n- bindings\n- path instances\n- tracked containers\n- iterated values\n- receiver paths"] --> Classify
+    Scope["Scoped provenance state\npython-scope.ts + python-provenance.ts\n- bindings\n- path instances\n- tracked containers\n- iterated values\n- receiver paths"] --> Classify
 
-    Classify{"Per-call classification"}
+    Classify{"Per-call classification\npython-classifier.ts\nwith python-inference.ts"}
 
     Classify --> Exact["Exact rules\npython-rules.json\nknown builtins / known SDK calls"]
     Classify --> Provenance["Receiver provenance\ntracked Path / string / json / match / builtin type"]
@@ -69,7 +69,7 @@ flowchart TD
     Provenance --> Event
     Guards --> Event
 
-    Event["PythonEvent[]\nkind + call + sourceCall + path"] --> Runtime
+    Event["PythonEvent[]\npython-events.ts\nkind + call + sourceCall + path"] --> Runtime
     Event --> Review
 
     Runtime["Runtime permission planner\nsrc/python.ts\nread:* write:* exec:* unknown:*"] --> Ask["Permission ask / execution plan"]
@@ -87,6 +87,16 @@ flowchart TD
 ```
 
 ## Processing Pipeline
+
+### Module ownership
+
+- `src/python/python-analyze.ts`: orchestrates parse, timeline build, scoped replay, classification dispatch, and final event folding
+- `src/python/python-bootstrap.ts`: loads and validates rules plus parser frontend caches
+- `src/python/python-timeline.ts`: builds source-ordered timeline entries with comprehension-aware rebinding semantics
+- `src/python/python-scope.ts`: manages bindings, invalidation, imports, and tracked instances
+- `src/python/python-inference.ts`: parses literals/args and derives path/container/iterable provenance
+- `src/python/python-classifier.ts`: resolves calls and raises into internal effects
+- `src/python/python-events.ts`: folds internal effects into outward `PythonEvent[]`
 
 ### 1. Parse and normalize
 
@@ -202,7 +212,7 @@ The next layer of declarative growth is a guarded schema parsed by `src/python/p
 
 ### Procedural rules
 
-`src/python/python-analyze.ts` implements bounded logic that depends on AST shape and provenance, such as:
+The procedural layer is now split primarily across `src/python/python-classifier.ts`, `src/python/python-inference.ts`, `src/python/python-scope.ts`, and `src/python/python-timeline.ts`. Together they implement bounded logic that depends on AST shape and provenance, such as:
 
 - shadow-aware builtin handling
 - HTTP response `.json()` tracking
@@ -249,7 +259,14 @@ This keeps the classifier useful without drifting into unsafe overgeneralization
 
 ## Key Files
 
-- `src/python/python-analyze.ts`: analyzer core, timeline, provenance, and call classification
+- `src/python/python-analyze.ts`: public orchestrator for parse -> timeline -> replay -> classify -> fold
+- `src/python/python-bootstrap.ts`: rules loading and parser bootstrap
+- `src/python/python-events.ts`: outward event folding and result assembly
+- `src/python/python-scope.ts`: bindings, imports, invalidation, and tracked-instance lookup
+- `src/python/python-timeline.ts`: timeline collection and ordering semantics
+- `src/python/python-inference.ts`: literal parsing, path/container inference, and rebinding support
+- `src/python/python-classifier.ts`: call/raise classification and evidence construction
+- `src/python/python-analyze-types.ts`: shared analyzer contracts
 - `src/python/frontend/interface.ts`: parser frontend boundary used by the analyzer core
 - `src/python/frontend/tree-sitter.ts`: default tree-sitter-backed parser frontend
 - `src/python/python-provenance.ts`: bounded receiver/self provenance graph helpers used by the analyzer's mainline provenance path

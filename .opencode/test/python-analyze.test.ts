@@ -4,6 +4,13 @@ import os from "os"
 import path from "path"
 import { analyze, analyzeDetailed } from "../tool/python-analyze"
 
+function stripEvidence(events: readonly Record<string, unknown>[]) {
+  return events.map((event) => {
+    const { evidence: _evidence, ...rest } = event
+    return rest
+  })
+}
+
 describe("python analyzer", () => {
   it("returns stable analyzer metadata without changing event output", async () => {
     const detailed = await analyzeDetailed("print('hello')")
@@ -55,6 +62,166 @@ describe("python analyzer", () => {
         }),
       ]),
     )
+  })
+
+  it("marks calls to inline definitions so review tooling can skip them", async () => {
+    const detailed = await analyzeDetailed(["def helper():", "    writer.save('x')", "helper()"].join("\n"))
+
+    expect(detailed.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "unknown",
+          call: "callable:helper",
+          evidence: expect.objectContaining({ localDefinition: true }),
+        }),
+        expect.objectContaining({
+          kind: "unknown",
+          call: "callable:writer.save",
+        }),
+      ]),
+    )
+  })
+
+  describe("phase 1 parity fixtures", () => {
+    const fixtures = [
+      {
+        name: "builtin and guarded evidence",
+        source: ["print('hello')", "obj.group(1)"].join("\n"),
+        expectedDetailed: [
+          { kind: "emit", call: "print" },
+          {
+            kind: "unknown",
+            call: "callable:obj.group",
+            evidence: {
+              explain: ["guarded-method:group"],
+              guardFailure: {
+                type: "receiverKindIn",
+                detail: "expected=path actual=none",
+              },
+            },
+          },
+        ],
+      },
+      {
+        name: "tracked path dynamic-path metadata",
+        source: ["from pathlib import Path", "home = Path.home()", "home.read_text()"].join("\n"),
+        expectedDetailed: [
+          { kind: "pure", call: "pathlib.Path.home" },
+          {
+            kind: "read",
+            call: "home.read_text",
+            sourceCall: "pathlib.Path.read_text",
+            dynamicPath: true,
+            evidence: {
+              receiverKind: "path",
+              explain: ["guarded-method:read_text"],
+            },
+          },
+        ],
+      },
+      {
+        name: "direct-import http canonicalization",
+        source: [
+          "from requests import request",
+          "from httpx import request as http_request",
+          "request('GET', 'https://example.com/a')",
+          "http_request('HEAD', 'https://example.com/b')",
+        ].join("\n"),
+        expectedDetailed: [
+          {
+            kind: "read",
+            call: "requests.get",
+            evidence: {
+              explain: ["guarded-call:requests.request"],
+            },
+          },
+          {
+            kind: "read",
+            call: "httpx.head",
+            evidence: {
+              explain: ["guarded-call:httpx.request"],
+            },
+          },
+        ],
+      },
+      {
+        name: "assignment invalidation",
+        source: [
+          "import requests",
+          "client = requests.Session()",
+          "client.get('https://example.com/a')",
+          "client = obj",
+          "client.get('https://example.com/b')",
+        ].join("\n"),
+        expectedDetailed: [
+          { kind: "exec", call: "requests.Session" },
+          { kind: "read", call: "requests.Session.get" },
+          { kind: "unknown", call: "callable:obj.get" },
+        ],
+      },
+      {
+        name: "ghapi grouped instance normalization",
+        source: ["api = GhApi()", "api.git.get_ref(owner='o', repo='r', ref='heads/main')"].join("\n"),
+        expectedDetailed: [
+          { kind: "unknown", call: "callable:GhApi" },
+          { kind: "exec", call: "ghapi.git.get_ref" },
+        ],
+      },
+      {
+        name: "atlassian instance normalization",
+        source: [
+          "from atlassian import ConfluenceServer",
+          "cf = ConfluenceServer(url='https://example.atlassian.net/wiki')",
+          "cf.create_page(space='ENG', title='t', body='b')",
+        ].join("\n"),
+        expectedDetailed: [
+          { kind: "exec", call: "ConfluenceServer" },
+          { kind: "exec", call: "atlassian.confluence.create_page" },
+        ],
+      },
+      {
+        name: "subprocess execution classification",
+        source: ["import os", "import subprocess", "os.system('ls')", "subprocess.run(['ls'])"].join("\n"),
+        expectedDetailed: [
+          { kind: "exec", call: "os.system" },
+          { kind: "exec", call: "subprocess.run" },
+        ],
+      },
+      {
+        name: "comprehension rebinding",
+        source: ["rows = [{'x': 1}]", "[item.get('x') for item in rows]"].join("\n"),
+        expectedDetailed: [{ kind: "pure", call: "item.get" }],
+      },
+      {
+        name: "unknown callable fallback",
+        source: "mypkg.do_thing()",
+        expectedDetailed: [{ kind: "unknown", call: "callable:mypkg.do_thing" }],
+      },
+      {
+        name: "empty source sentinel",
+        source: "",
+        expectedDetailed: [{ kind: "unknown", call: "empty-source" }],
+      },
+      {
+        name: "parse error sentinel",
+        source: "def broken(",
+        expectedDetailed: [{ kind: "unknown", call: "parse-error" }],
+      },
+      {
+        name: "no calls detected sentinel",
+        source: "value = 1 + 1",
+        expectedDetailed: [{ kind: "unknown", call: "no-calls-detected" }],
+      },
+    ] as const
+
+    for (const fixture of fixtures) {
+      it(`preserves ${fixture.name}`, async () => {
+        const detailed = await analyzeDetailed(fixture.source)
+
+        expect(detailed.events).toEqual(fixture.expectedDetailed)
+        expect(await analyze(fixture.source)).toEqual(stripEvidence(fixture.expectedDetailed as readonly Record<string, unknown>[]))
+      })
+    }
   })
 
   describe("open() mode and path handling", () => {
@@ -209,13 +376,120 @@ describe("python analyzer", () => {
     })
 
     it("keeps arbitrary Path-like receivers conservative", async () => {
-      const events = await analyze("obj.exists()\nobj.read_text()\nobj.write_text('x')\nobj.joinpath('a')")
+      const events = await analyze(
+        "obj.exists()\nobj.read_text()\nobj.write_text('x')\nobj.joinpath('a')\nobj.resolve()\nobj.stat()\nobj.open()",
+      )
       expect(events).toEqual(
         expect.arrayContaining([
           { kind: "unknown", call: "callable:obj.exists" },
           { kind: "unknown", call: "callable:obj.read_text" },
           { kind: "unknown", call: "callable:obj.write_text" },
           { kind: "unknown", call: "callable:obj.joinpath" },
+          { kind: "unknown", call: "callable:obj.resolve" },
+          { kind: "unknown", call: "callable:obj.stat" },
+          { kind: "unknown", call: "callable:obj.open" },
+        ]),
+      )
+    })
+
+    it("classifies the remaining public Path pure helpers", async () => {
+      const cases = [
+        ["Path('f').absolute()", { kind: "pure", call: "Path.absolute" }],
+        ["Path('f').as_posix()", { kind: "pure", call: "Path.as_posix" }],
+        ["Path('/tmp/f').as_uri()", { kind: "pure", call: "Path.as_uri" }],
+        ["Path('~/f').expanduser()", { kind: "pure", call: "Path.expanduser" }],
+        ["Path.from_uri('file:///tmp/f')", { kind: "pure", call: "Path.from_uri" }],
+        ["Path('f').full_match('*.txt')", { kind: "pure", call: "Path.full_match" }],
+        ["Path.home()", { kind: "pure", call: "Path.home" }],
+        ["Path('f').is_absolute()", { kind: "pure", call: "Path.is_absolute" }],
+        ["Path('f').is_relative_to('base')", { kind: "pure", call: "Path.is_relative_to" }],
+        ["Path('f').is_reserved()", { kind: "pure", call: "Path.is_reserved" }],
+        ["Path('f').match('*.txt')", { kind: "pure", call: "Path.match" }],
+        ["Path('f').relative_to('.')", { kind: "pure", call: "Path.relative_to" }],
+        ["Path('f').with_name('g')", { kind: "pure", call: "Path.with_name" }],
+        ["Path('f').with_segments('a', 'b')", { kind: "pure", call: "Path.with_segments" }],
+        ["Path('f.txt').with_stem('g')", { kind: "pure", call: "Path.with_stem" }],
+        ["Path('f.txt').with_suffix('.md')", { kind: "pure", call: "Path.with_suffix" }],
+      ] as const
+
+      const events = await analyze(cases.map(([source]) => source).join("\n"))
+      expect(events).toEqual(expect.arrayContaining(cases.map(([, event]) => event)))
+    })
+
+    it("classifies the remaining public Path read and write methods", async () => {
+      const cases = [
+        ["Path('f').glob('*.py')", { kind: "read", call: "Path.glob", path: "f" }],
+        ["Path('f').group()", { kind: "read", call: "Path.group", path: "f" }],
+        ["Path('f').is_block_device()", { kind: "read", call: "Path.is_block_device", path: "f" }],
+        ["Path('f').is_char_device()", { kind: "read", call: "Path.is_char_device", path: "f" }],
+        ["Path('f').is_dir()", { kind: "read", call: "Path.is_dir", path: "f" }],
+        ["Path('f').is_fifo()", { kind: "read", call: "Path.is_fifo", path: "f" }],
+        ["Path('f').is_file()", { kind: "read", call: "Path.is_file", path: "f" }],
+        ["Path('f').is_junction()", { kind: "read", call: "Path.is_junction", path: "f" }],
+        ["Path('f').is_mount()", { kind: "read", call: "Path.is_mount", path: "f" }],
+        ["Path('f').is_socket()", { kind: "read", call: "Path.is_socket", path: "f" }],
+        ["Path('f').is_symlink()", { kind: "read", call: "Path.is_symlink", path: "f" }],
+        ["Path('f').iterdir()", { kind: "read", call: "Path.iterdir", path: "f" }],
+        ["Path('f').lstat()", { kind: "read", call: "Path.lstat", path: "f" }],
+        ["Path('f').owner()", { kind: "read", call: "Path.owner", path: "f" }],
+        ["Path('f').readlink()", { kind: "read", call: "Path.readlink", path: "f" }],
+        ["Path('f').resolve()", { kind: "read", call: "Path.resolve", path: "f" }],
+        ["Path('f').rglob('*.py')", { kind: "read", call: "Path.rglob", path: "f" }],
+        ["Path('f').samefile('g')", { kind: "read", call: "Path.samefile", path: "f" }],
+        ["Path('f').stat()", { kind: "read", call: "Path.stat", path: "f" }],
+        ["Path('f').walk()", { kind: "read", call: "Path.walk", path: "f" }],
+        ["Path('f').chmod(0o644)", { kind: "write", call: "Path.chmod", path: "f" }],
+        ["Path('f').copy('g')", { kind: "write", call: "Path.copy", path: "f" }],
+        ["Path('f').copy_into('dir')", { kind: "write", call: "Path.copy_into", path: "f" }],
+        ["Path('f').hardlink_to('target')", { kind: "write", call: "Path.hardlink_to", path: "f" }],
+        ["Path('f').lchmod(0o644)", { kind: "write", call: "Path.lchmod", path: "f" }],
+        ["Path('f').move('g')", { kind: "write", call: "Path.move", path: "f" }],
+        ["Path('f').move_into('dir')", { kind: "write", call: "Path.move_into", path: "f" }],
+        ["Path('f').symlink_to('target')", { kind: "write", call: "Path.symlink_to", path: "f" }],
+      ] as const
+
+      const events = await analyze(cases.map(([source]) => source).join("\n"))
+      expect(events).toEqual(expect.arrayContaining(cases.map(([, event]) => event)))
+    })
+
+    it("classifies Path.open modes and tracks returned Path helpers through assignments", async () => {
+      const events = await analyze(
+        [
+          "reader = Path('f')",
+          "reader.open()",
+          "writer = Path('g')",
+          "writer.open('w')",
+          "home = Path.home()",
+          "home.read_text()",
+          "resolved = Path('h').resolve()",
+          "resolved.read_text()",
+          "linked = Path('i').readlink()",
+          "linked.write_text('x')",
+          "renamed = Path('j').rename('k')",
+          "renamed.read_text()",
+          "derived = Path('l').with_name('m')",
+          "derived.write_text('y')",
+          "from_uri = Path.from_uri('file:///tmp/n')",
+          "from_uri.read_text()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "read", call: "reader.open", path: "f", sourceCall: "pathlib.Path.open" },
+          { kind: "write", call: "writer.open", path: "g", sourceCall: "pathlib.Path.open" },
+          { kind: "pure", call: "Path.home" },
+          { kind: "read", call: "home.read_text", dynamicPath: true, sourceCall: "pathlib.Path.read_text" },
+          { kind: "read", call: "Path.resolve", path: "h" },
+          { kind: "read", call: "resolved.read_text", dynamicPath: true, sourceCall: "pathlib.Path.read_text" },
+          { kind: "read", call: "Path.readlink", path: "i" },
+          { kind: "write", call: "linked.write_text", dynamicPath: true, sourceCall: "pathlib.Path.write_text" },
+          { kind: "write", call: "Path.rename", path: "j" },
+          { kind: "read", call: "renamed.read_text", dynamicPath: true, sourceCall: "pathlib.Path.read_text" },
+          { kind: "pure", call: "Path.with_name" },
+          { kind: "write", call: "derived.write_text", dynamicPath: true, sourceCall: "pathlib.Path.write_text" },
+          { kind: "pure", call: "Path.from_uri" },
+          { kind: "read", call: "from_uri.read_text", dynamicPath: true, sourceCall: "pathlib.Path.read_text" },
         ]),
       )
     })
@@ -918,6 +1192,58 @@ describe("python analyzer", () => {
       )
     })
 
+    it("tracks json-subscripted comprehension items and nested generator items as pure", async () => {
+      const events = await analyze([
+        "data = json.loads(text)",
+        "guards = data['guarded']['methods']",
+        "non_path = [item for item in guards if not any(g.get('type') == 'receiverKindIn' and g.get('kinds') == ['path'] for g in item.get('guards', []))]",
+      ].join("\n"))
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "json.loads" },
+          { kind: "pure", call: "item.get" },
+          { kind: "pure", call: "g.get" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:item.get" },
+          { kind: "unknown", call: "callable:g.get" },
+        ]),
+      )
+    })
+
+    it("tracks standard-container elements through literals, comprehensions, and next()", async () => {
+      const events = await analyze([
+        "rows = [{'x': 1}]",
+        "[item.get('x') for item in rows]",
+        "buckets = [[1]]",
+        "[bucket.append(2) for bucket in buckets]",
+        "bag = next((entry for entry in [set()]), None)",
+        "bag.add('x')",
+        "pair = next((entry for entry in [(1, 2, 1)]), None)",
+        "pair.count(1)",
+      ].join("\n"))
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "item.get" },
+          { kind: "pure", call: "bucket.append" },
+          { kind: "pure", call: "bag.add" },
+          { kind: "pure", call: "pair.count" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:item.get" },
+          { kind: "unknown", call: "callable:bucket.append" },
+          { kind: "unknown", call: "callable:bag.add" },
+          { kind: "unknown", call: "callable:pair.count" },
+        ]),
+      )
+    })
+
     it("keeps arbitrary and customized response json calls conservative", async () => {
       const events = await analyze([
         "payload = obj.json() or {}",
@@ -1004,6 +1330,27 @@ describe("python analyzer", () => {
       )
     })
 
+    it("classifies direct-imported re helpers as pure", async () => {
+      const events = await analyze(
+        [
+          "from re import search, compile, split, escape",
+          "search('a+', text)",
+          "compile('a+')",
+          "split('a+', text)",
+          "escape('a+')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "re.search" },
+          { kind: "pure", call: "re.compile" },
+          { kind: "pure", call: "re.split" },
+          { kind: "pure", call: "re.escape" },
+        ]),
+      )
+    })
+
     it("classifies regex match-result methods as pure", async () => {
       const events = await analyze(
         [
@@ -1062,6 +1409,97 @@ describe("python analyzer", () => {
     it("keeps re.sub outside pure classification", async () => {
       const events = await analyze("re.sub('a+', '-', text)")
       expect(events).toEqual([{ kind: "unknown", call: "callable:re.sub" }])
+    })
+  })
+
+  describe("inspect classification", () => {
+    it("classifies inspect module helpers as pure or read", async () => {
+      const events = await analyze(
+        [
+          "import inspect",
+          "inspect.isfunction(fn)",
+          "inspect.unwrap(fn)",
+          "inspect.signature(fn)",
+          "inspect.get_annotations(obj)",
+          "inspect.getsource(fn)",
+          "inspect.stack()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "inspect.isfunction" },
+          { kind: "pure", call: "inspect.unwrap" },
+          { kind: "pure", call: "inspect.signature" },
+          { kind: "pure", call: "inspect.get_annotations" },
+          { kind: "read", call: "inspect.getsource" },
+          { kind: "read", call: "inspect.stack" },
+        ]),
+      )
+    })
+
+    it("classifies direct-imported inspect helpers and tracked inspect methods", async () => {
+      const events = await analyze(
+        [
+          "from inspect import Signature, Parameter, getsource, isfunction, signature",
+          "sig = signature(fn)",
+          "sig.bind(1)",
+          "bound = sig.bind_partial(2)",
+          "bound.apply_defaults()",
+          "sig2 = Signature.from_callable(fn)",
+          "sig2.replace(return_annotation=int)",
+          "rendered = sig2.format()",
+          "rendered.startswith('(')",
+          "param = Parameter('x', Parameter.POSITIONAL_ONLY)",
+          "param.replace(default=1)",
+          "getsource(fn)",
+          "isfunction(fn)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "inspect.signature" },
+          { kind: "pure", call: "sig.bind" },
+          { kind: "pure", call: "sig.bind_partial" },
+          { kind: "pure", call: "bound.apply_defaults" },
+          { kind: "pure", call: "inspect.Signature.from_callable" },
+          { kind: "pure", call: "sig2.replace" },
+          { kind: "pure", call: "sig2.format" },
+          { kind: "pure", call: "rendered.startswith" },
+          { kind: "pure", call: "inspect.Parameter" },
+          { kind: "pure", call: "param.replace" },
+          { kind: "read", call: "inspect.getsource" },
+          { kind: "pure", call: "inspect.isfunction" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:sig.bind" },
+          { kind: "unknown", call: "callable:bound.apply_defaults" },
+          { kind: "unknown", call: "callable:sig2.replace" },
+          { kind: "unknown", call: "callable:param.replace" },
+        ]),
+      )
+    })
+
+    it("keeps risky inspect annotation evaluation paths conservative", async () => {
+      const events = await analyze(
+        [
+          "import inspect",
+          "inspect.signature(fn, eval_str=True)",
+          "inspect.get_annotations(obj, eval_str=True)",
+          "inspect.Signature.from_callable(fn, eval_str=True)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:inspect.signature" },
+          { kind: "unknown", call: "callable:inspect.get_annotations" },
+          { kind: "unknown", call: "callable:inspect.Signature.from_callable" },
+        ]),
+      )
     })
   })
 
