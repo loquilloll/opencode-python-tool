@@ -120,7 +120,7 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
       const invalidations = trackableInvalidationDeps(left, assignedNames)
       for (const targetName of assignedNames(left)) invalidateTrackedName(entry.scope, targetName)
       clearReceiverDeps(entry.scope, invalidations)
-      if (applyAssignmentProvenance(entry.scope, left, localContainer)) {
+      if (applyAssignmentProvenance(entry.scope, left, localContainer, localPath)) {
         continue
       }
       if (!left || left.type !== "identifier") continue

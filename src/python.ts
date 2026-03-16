@@ -1,7 +1,7 @@
 /// <reference path="./python/env.d.ts" />
 import { tool } from "../.opencode/node_modules/@opencode-ai/plugin/dist/index.js"
 import { spawn } from "child_process"
-import { access, readFile } from "fs/promises"
+import { access, lstat, readFile, readlink } from "fs/promises"
 import os from "os"
 import path from "path"
 import DESCRIPTION from "./python/python.txt"
@@ -71,6 +71,13 @@ function resolvePath(input: string, cwd: string) {
   return path.normalize(path.resolve(cwd, expanded))
 }
 
+function resolveBoundaryInput(input: string, cwd: string) {
+  const expanded = expandHome(input)
+  if (path.isAbsolute(expanded)) return expanded
+  const prefix = cwd.endsWith(path.sep) ? cwd : cwd + path.sep
+  return prefix + expanded
+}
+
 async function fileExists(target: string) {
   try {
     await access(target)
@@ -102,6 +109,68 @@ function isInside(root: string, target: string) {
   if (relative === "..") return false
   if (relative.startsWith(".." + path.sep)) return false
   return !path.isAbsolute(relative)
+}
+
+function errorCode(error: unknown) {
+  return error && typeof error === "object" && "code" in error ? ((error as { code?: string }).code ?? "") : ""
+}
+
+function appendPathSegments(base: string, segments: string[]) {
+  let current = base
+  for (const segment of segments) {
+    if (!segment || segment === ".") continue
+    if (segment === "..") current = path.dirname(current)
+    else current = path.join(current, segment)
+  }
+  return current
+}
+
+async function canonicalBoundaryPath(target: string, resolving = new Set<string>()): Promise<string> {
+  const absolute = path.isAbsolute(target) ? target : path.resolve(target)
+  const root = path.parse(absolute).root || path.sep
+  const segments = absolute.slice(root.length).split(/[\\/]+/)
+  let current = root
+
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index]
+    if (!segment || segment === ".") continue
+    if (segment === "..") {
+      current = path.dirname(current)
+      continue
+    }
+
+    const candidate = path.join(current, segment)
+    try {
+      const stat = await lstat(candidate)
+      if (stat.isSymbolicLink()) {
+        const link = await readlink(candidate)
+        const targetPath = path.isAbsolute(link) ? link : path.resolve(path.dirname(candidate), link)
+        const loopKey = path.normalize(candidate)
+        if (resolving.has(loopKey)) {
+          throw Object.assign(new Error(`Too many symbolic links while resolving ${target}`), { code: "ELOOP" })
+        }
+        resolving.add(loopKey)
+        current = await canonicalBoundaryPath(targetPath, resolving)
+        resolving.delete(loopKey)
+        continue
+      }
+      current = candidate
+    } catch (error) {
+      const code = errorCode(error)
+      if (code !== "ENOENT") throw error
+      return appendPathSegments(current, [segment, ...segments.slice(index + 1)])
+    }
+  }
+
+  return current
+}
+
+async function boundaryPathOrFallback(target: string) {
+  try {
+    return { path: await canonicalBoundaryPath(target), trusted: true }
+  } catch {
+    return { path: path.normalize(target), trusted: false }
+  }
 }
 
 function asGlob(target: string, kind: "file" | "directory") {
@@ -145,14 +214,17 @@ function operationMetadata(event: PythonEvent) {
   }
 }
 
-function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: string, script?: string): PermissionPlan {
+async function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: string): Promise<PermissionPlan> {
   const patterns = new Set<string>()
   const always = new Set<string>()
   const external = new Set<string>()
   const operations: PermissionItem[] = []
+  const canonicalWorktree = await boundaryPathOrFallback(worktree)
+  const canonicalCwd = await boundaryPathOrFallback(cwd)
 
-  if (!isInside(worktree, cwd)) external.add(asGlob(cwd, "directory"))
-  if (script && !isInside(worktree, script)) external.add(asGlob(script, "file"))
+  if (!canonicalWorktree.trusted || !canonicalCwd.trusted || !isInside(canonicalWorktree.path, canonicalCwd.path)) {
+    external.add(asGlob(canonicalCwd.path, "directory"))
+  }
 
   for (const event of events) {
     if (event.kind === "exec") {
@@ -175,9 +247,12 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
 
     if (event.path) {
       const resolved = resolvePath(event.path, cwd)
+      const canonicalResolved = await boundaryPathOrFallback(resolveBoundaryInput(event.path, cwd))
       const pattern = `${event.kind}:${toSlash(resolved)}`
       const allow = `${event.kind}:${asGlob(resolved, "file")}`
-      if (!isInside(worktree, resolved)) external.add(asGlob(resolved, "file"))
+      if (!canonicalWorktree.trusted || !canonicalResolved.trusted || !isInside(canonicalWorktree.path, canonicalResolved.path)) {
+        external.add(asGlob(canonicalResolved.path, "file"))
+      }
       operations.push({
         kind: event.kind,
         call: event.call,
@@ -186,7 +261,7 @@ function buildPermissionPlan(events: PythonEvent[], cwd: string, worktree: strin
         always: allow,
         ...operationMetadata(event),
       })
-      if (isPermissionKind(event.kind)) {
+      if (isPermissionKind(event.kind) && event.kind !== "read") {
         patterns.add(pattern)
         always.add(allow)
       }
@@ -352,8 +427,8 @@ export default tool({
     const timeout = args.timeout ?? DEFAULT_TIMEOUT
     const cwd = args.workdir
       ? path.isAbsolute(args.workdir)
-        ? path.normalize(args.workdir)
-        : path.resolve(context.directory, args.workdir)
+        ? args.workdir
+        : resolveBoundaryInput(args.workdir, context.directory)
       : context.directory
 
     const python = await resolvePython(context.worktree)
@@ -364,14 +439,26 @@ export default tool({
     if (hasCode) source = args.code ?? ""
 
     if (hasScriptPath) {
-      script = path.isAbsolute(args.scriptPath!) ? path.normalize(args.scriptPath!) : path.resolve(cwd, args.scriptPath!)
+      script = path.isAbsolute(args.scriptPath!) ? args.scriptPath! : resolveBoundaryInput(args.scriptPath!, cwd)
+      const canonicalWorktree = await boundaryPathOrFallback(context.worktree)
+      const canonicalScript = await boundaryPathOrFallback(script)
+      if (!canonicalWorktree.trusted || !canonicalScript.trusted || !isInside(canonicalWorktree.path, canonicalScript.path)) {
+        await context.ask({
+          permission: "external_directory",
+          patterns: [asGlob(canonicalScript.path, "file")],
+          always: [asGlob(canonicalScript.path, "file")],
+          metadata: {
+            source: script,
+            description: args.description,
+            mode: "script",
+            scriptPath: script,
+          },
+        })
+      }
       try {
         source = await readFile(script, "utf8")
       } catch (error) {
-        const code =
-          error && typeof error === "object" && "code" in error
-            ? ((error as { code?: string }).code ?? "")
-            : ""
+        const code = errorCode(error)
         if (code === "ENOENT") {
           throw new Error(`Python script file not found: ${script}`)
         }
@@ -401,7 +488,7 @@ export default tool({
       )
     }
 
-    const plan = buildPermissionPlan(events, cwd, context.worktree, script)
+    const plan = await buildPermissionPlan(events, cwd, context.worktree)
     const mode = script ? "script" : "inline"
     const codePreview = buildPermissionCodePreview(source)
     const codeExpanded = buildPermissionCodeExpanded(source, codePreview)

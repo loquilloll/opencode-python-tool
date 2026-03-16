@@ -1,7 +1,7 @@
 import type { PythonAstNode as Node } from "./frontend/interface"
 import { DIRECT_IMPORT_BINDINGS, HTTP_REQUEST_CALL_BASES, TRACKED_HTTP_CLIENT_CONSTRUCTORS } from "./python-known-methods"
 import type { AtlassianClientFamily, Rules, Scope } from "./python-analyze-types"
-import { clearTrackedProvenanceForName, type ContainerKind, type ReceiverContainer } from "./python-provenance"
+import { clearTrackedProvenanceForName, type ContainerKind, type ReceiverContainer, type ReceiverPath } from "./python-provenance"
 import type { PythonArgs as Args, PythonValue as Value } from "./python-values"
 
 type ImportBinding = {
@@ -36,6 +36,7 @@ export function scope(parent?: Scope): Scope {
     iteratedElementInstances: new Map<string, ContainerKind>(),
     iteratedPathInstances: new Map<string, Value>(),
     receiverContainers: new Map<string, ReceiverContainer>(),
+    receiverPaths: new Map<string, ReceiverPath>(),
     pathInstances: new Map<string, Value>(),
     httpClientInstances: new Map<string, string>(),
     httpResponseInstances: new Set<string>(),
@@ -208,7 +209,9 @@ export function importBindings(node: Node) {
 export function shouldBindDirectImport(target: string, rules: Rules) {
   return (
     DIRECT_IMPORT_BINDINGS.has(target) ||
+    (target.startsWith("ast.") && rules.calls.pure.has(target)) ||
     (target.startsWith("re.") && rules.calls.pure.has(target)) ||
+    (target.startsWith("unittest.mock.") && rules.calls.pure.has(target)) ||
     (target.startsWith("inspect.") &&
       (rules.calls.pure.has(target) ||
         rules.calls.read.has(target) ||
@@ -244,11 +247,10 @@ export function callableFactory(node: Node) {
 
   const returned = statement.childForFieldName("value") ?? statement.namedChildren[0]
   if (!returned) return
-  if (returned.type !== "identifier" && returned.type !== "attribute") return
   return { name, returned }
 }
 
-export function callableFactoryTarget(node: Node | null, current: Scope, input?: Args) {
+export function callableFactoryReturn(node: Node | null, current: Scope, input?: Args) {
   if (!node || node.type !== "call" || !input) return
   if (input.positional.length > 0) return
   if (Object.keys(input.keyword).length > 0) return
@@ -256,7 +258,11 @@ export function callableFactoryTarget(node: Node | null, current: Scope, input?:
   const call = resolvedName(node.childForFieldName("function"), current)
   if (!call) return
 
-  const returned = lookupCallableFactory(current, call)
-  if (!returned) return
+  return lookupCallableFactory(current, call)
+}
+
+export function callableFactoryTarget(node: Node | null, current: Scope, input?: Args) {
+  const returned = callableFactoryReturn(node, current, input)
+  if (!returned || (returned.type !== "identifier" && returned.type !== "attribute")) return
   return aliasTarget(returned, current)
 }

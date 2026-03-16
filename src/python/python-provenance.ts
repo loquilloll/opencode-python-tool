@@ -1,3 +1,5 @@
+import type { PythonValue as Value } from "./python-values"
+
 type NodeLike = {
   type: string
   text: string
@@ -25,9 +27,16 @@ export type ContainerKind =
   | "inspect-signature"
   | "inspect-parameter"
   | "inspect-bound-arguments"
+  | "mock"
+  | "async-mock"
 
 export type ReceiverContainer = {
   kind: ContainerKind
+  deps: string[]
+}
+
+export type ReceiverPath = {
+  path: Value
   deps: string[]
 }
 
@@ -46,6 +55,7 @@ export type ProvenanceScope = {
   bindings: Map<string, string>
   containerInstances: Map<string, ContainerKind>
   receiverContainers: Map<string, ReceiverContainer>
+  receiverPaths: Map<string, ReceiverPath>
 }
 
 export function uniqueDependencyKeys(values: string[]) {
@@ -122,15 +132,21 @@ export function trackableInvalidationDeps(node: NodeLike | null, assignedNames: 
   return uniqueDependencyKeys(deps)
 }
 
-export function clearReceiverDeps(current: Pick<ProvenanceScope, "receiverContainers">, deps: string[]) {
+export function clearReceiverDeps(current: Pick<ProvenanceScope, "receiverContainers" | "receiverPaths">, deps: string[]) {
   if (deps.length === 0) return
   const target = new Set(deps)
   for (const [key, tracked] of current.receiverContainers) {
     if (tracked.deps.some((dep) => target.has(dep))) current.receiverContainers.delete(key)
   }
+  for (const [key, tracked] of current.receiverPaths) {
+    if (tracked.deps.some((dep) => target.has(dep))) current.receiverPaths.delete(key)
+  }
 }
 
-export function clearTrackedProvenanceForName(current: Pick<ProvenanceScope, "containerInstances" | "receiverContainers">, name: string) {
+export function clearTrackedProvenanceForName(
+  current: Pick<ProvenanceScope, "containerInstances" | "receiverContainers" | "receiverPaths">,
+  name: string,
+) {
   current.containerInstances.delete(name)
   for (const key of current.containerInstances.keys()) {
     if (key.startsWith(`${name}.`)) current.containerInstances.delete(key)
@@ -138,10 +154,17 @@ export function clearTrackedProvenanceForName(current: Pick<ProvenanceScope, "co
   for (const [key, tracked] of current.receiverContainers) {
     if (tracked.deps.includes(name)) current.receiverContainers.delete(key)
   }
+  for (const [key, tracked] of current.receiverPaths) {
+    if (tracked.deps.includes(name)) current.receiverPaths.delete(key)
+  }
 }
 
 export function receiverContainerInstance(current: Pick<ProvenanceScope, "receiverContainers">, path: string) {
   return current.receiverContainers.get(path)?.kind
+}
+
+export function receiverPathInstance(current: Pick<ProvenanceScope, "receiverPaths">, path: string) {
+  return current.receiverPaths.get(path)?.path
 }
 
 export function lookupTrackedReceiverContainerKind(current: ProvenanceScope, node: NodeLike | null): ContainerKind | undefined {
@@ -166,18 +189,38 @@ export function lookupTrackedReceiverContainerKind(current: ProvenanceScope, nod
   }
 }
 
-export function applyAssignmentProvenance(current: Pick<ProvenanceScope, "containerInstances" | "receiverContainers">, left: NodeLike | null, localContainer: ContainerKind | undefined) {
+export function lookupTrackedReceiverPathValue(current: ProvenanceScope, node: NodeLike | null): Value | undefined {
+  if (!node) return
+
+  const selfAttributePath = trackableSelfAttributePath(node)
+  if (selfAttributePath) return receiverPathInstance(current, selfAttributePath)
+
+  const trackedReceiver = trackableReceiverInfo(node)
+  if (!trackedReceiver) return
+  return receiverPathInstance(current, trackedReceiver.path)
+}
+
+export function applyAssignmentProvenance(
+  current: Pick<ProvenanceScope, "containerInstances" | "receiverContainers" | "receiverPaths">,
+  left: NodeLike | null,
+  localContainer: ContainerKind | undefined,
+  localPath: Value | undefined,
+) {
   const selfAttributePath = trackableSelfAttributePath(left)
   if (selfAttributePath) {
     current.containerInstances.delete(selfAttributePath)
+    current.receiverPaths.delete(selfAttributePath)
     if (localContainer) current.containerInstances.set(selfAttributePath, localContainer)
+    if (localPath) current.receiverPaths.set(selfAttributePath, { path: localPath, deps: ["self"] })
     return true
   }
 
   const receiverInfo = trackableReceiverInfo(left)
   if (receiverInfo) {
     current.receiverContainers.delete(receiverInfo.path)
+    current.receiverPaths.delete(receiverInfo.path)
     if (localContainer) current.receiverContainers.set(receiverInfo.path, { kind: localContainer, deps: receiverInfo.deps })
+    if (localPath) current.receiverPaths.set(receiverInfo.path, { path: localPath, deps: receiverInfo.deps })
     return true
   }
 

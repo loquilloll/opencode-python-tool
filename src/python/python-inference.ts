@@ -16,6 +16,7 @@ import {
   INSPECT_PARAMETER_PURE_METHODS,
   INSPECT_SIGNATURE_CALLS,
   INSPECT_SIGNATURE_PURE_METHODS,
+  ASYNC_MOCK_PURE_METHODS,
   INT_PURE_METHODS,
   JSON_CONTAINER_CALLS,
   JSON_CONTAINER_CUSTOMIZER_KEYWORDS,
@@ -24,6 +25,7 @@ import {
   LIST_PURE_METHODS,
   MATCH_RESULT_CALLS,
   MEMORYVIEW_PURE_METHODS,
+  MOCK_PURE_METHODS,
   PATH_DYNAMIC_RETURNING_METHODS,
   RANGE_PURE_METHODS,
   SET_PURE_METHODS,
@@ -36,6 +38,7 @@ import {
 } from "./python-known-methods"
 import type { Rules, Scope } from "./python-analyze-types"
 import {
+  callableFactoryReturn,
   containerInstance,
   hasBoundName,
   hasHttpResponseInstance,
@@ -45,7 +48,7 @@ import {
   pathInstanceValue,
   resolvedName,
 } from "./python-scope"
-import { lookupTrackedReceiverContainerKind, type ContainerKind } from "./python-provenance"
+import { lookupTrackedReceiverContainerKind, lookupTrackedReceiverPathValue, type ContainerKind } from "./python-provenance"
 import { assignedNames } from "./python-timeline"
 import type { ResolvedEffect } from "./python-ir"
 import type { PythonArgs as Args, PythonValue as Value } from "./python-values"
@@ -73,6 +76,14 @@ export function parseString(input: string) {
       .replace(/\\\"/g, "\"")
       .replace(/\\'/g, "'")
   }
+}
+
+function unwrapParenthesized(node: Node | null): Node | null {
+  let current = node
+  while (current?.type === "parenthesized_expression") {
+    current = current.namedChildren[0] ?? null
+  }
+  return current
 }
 
 export function value(node: Node | null): Value {
@@ -182,6 +193,7 @@ function isBytesLiteralText(text: string) {
 }
 
 function bytesKind(node: Node | null, current: Scope): "bytes" | "bytearray" | "memoryview" | undefined {
+  node = unwrapParenthesized(node)
   if (!node) return
   if ((node.type === "string" || node.type === "concatenated_string") && isBytesLiteralText(node.text)) return "bytes"
   if (node.type !== "call") return
@@ -206,6 +218,7 @@ function numericKind(node: Node | null, current: Scope): "int" | "float" | "comp
 }
 
 function stringKind(node: Node | null, current: Scope): "string" | undefined {
+  node = unwrapParenthesized(node)
   if (!node) return
   if ((node.type === "string" || node.type === "concatenated_string") && !isBytesLiteralText(node.text)) return "string"
   if (node.type !== "call") return
@@ -214,12 +227,38 @@ function stringKind(node: Node | null, current: Scope): "string" | undefined {
   const fn = node.childForFieldName("function")
   const method = call ? tail(call) : undefined
   const receiver = fn?.type === "attribute" ? fn.childForFieldName("object") : null
+  const receiverKind = trackedReceiverContainerKind(receiver, current)
+  if ((receiverKind === "bytes" || receiverKind === "bytearray") && method === "decode") return "string"
   if (method === "read_text" && trackedPathValue(receiver, current)) return "string"
 }
 
-export function trackedPathValue(node: Node | null, current: Scope): Value | undefined {
+function callableFactoryPathValue(node: Node, current: Scope, seenFactories: Set<string>): Value | undefined {
+  const input = args(node)
+  const call = resolvedName(node.childForFieldName("function"), current)
+  if (!call || seenFactories.has(call)) return
+
+  const returned = callableFactoryReturn(node, current, input)
+  if (!returned) return
+  if (
+    returned.type !== "identifier" &&
+    returned.type !== "attribute" &&
+    returned.type !== "call" &&
+    returned.type !== "binary_operator"
+  ) {
+    return
+  }
+
+  const nextSeen = new Set(seenFactories)
+  nextSeen.add(call)
+  return trackedPathValue(returned, current, nextSeen)
+}
+
+export function trackedPathValue(node: Node | null, current: Scope, seenFactories = new Set<string>()): Value | undefined {
+  node = unwrapParenthesized(node)
   if (!node) return
   if (node.type === "identifier") return pathInstanceValue(current, node.text)
+  const receiverPath = lookupTrackedReceiverPathValue(current, node)
+  if (receiverPath) return receiverPath
 
   if (node.type === "binary_operator") {
     const left = node.childForFieldName("left")
@@ -227,13 +266,16 @@ export function trackedPathValue(node: Node | null, current: Scope): Value | und
     const base = trackedPathValue(left, current)
     const segment = right?.type === "string" ? parseString(right.text) : undefined
     const between = left && right ? node.text.slice(left.text.length, node.text.length - right.text.length) : ""
-    if (base && segment !== undefined && between.includes("/")) {
-      if (base.dynamic || base.literal === undefined) return { dynamic: true }
+    if (base && between.includes("/")) {
+      if (segment === undefined || base.dynamic || base.literal === undefined) return { dynamic: true }
       return { dynamic: false, literal: path.join(base.literal, segment) }
     }
   }
 
   if (node.type !== "call") return
+
+  const factoryValue = callableFactoryPathValue(node, current, seenFactories)
+  if (factoryValue) return factoryValue
 
   const call = resolvedName(node.childForFieldName("function"), current)
   if (!call) return
@@ -280,6 +322,8 @@ export function pureContainerMethod(kind: ContainerKind, method: string) {
   if (kind === "inspect-signature") return INSPECT_SIGNATURE_PURE_METHODS.has(method)
   if (kind === "inspect-parameter") return INSPECT_PARAMETER_PURE_METHODS.has(method)
   if (kind === "inspect-bound-arguments") return INSPECT_BOUND_ARGUMENTS_PURE_METHODS.has(method)
+  if (kind === "mock") return MOCK_PURE_METHODS.has(method)
+  if (kind === "async-mock") return ASYNC_MOCK_PURE_METHODS.has(method)
   return SET_PURE_METHODS.has(method)
 }
 
@@ -362,6 +406,16 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope):
   if (INSPECT_SIGNATURE_CALLS.has(call)) return "inspect-signature"
   if (INSPECT_PARAMETER_CALLS.has(call)) return "inspect-parameter"
   if (INSPECT_BOUND_ARGUMENTS_CALLS.has(call)) return "inspect-bound-arguments"
+  if (
+    call === "unittest.mock.Mock" ||
+    call === "unittest.mock.MagicMock" ||
+    call === "unittest.mock.PropertyMock" ||
+    call === "unittest.mock.NonCallableMock" ||
+    call === "unittest.mock.NonCallableMagicMock"
+  ) {
+    return "mock"
+  }
+  if (call === "unittest.mock.AsyncMock") return "async-mock"
 
   if (call === "list" || call === "dict" || call === "set") {
     const effect = classifyBuiltinPureCall(call, node, input, current)

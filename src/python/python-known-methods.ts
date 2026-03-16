@@ -31,6 +31,29 @@ export const RANGE_PURE_METHODS = new Set(["count", "index"])
 export const INSPECT_SIGNATURE_PURE_METHODS = new Set(["bind", "bind_partial", "format", "replace"])
 export const INSPECT_PARAMETER_PURE_METHODS = new Set(["replace"])
 export const INSPECT_BOUND_ARGUMENTS_PURE_METHODS = new Set(["apply_defaults"])
+export const MOCK_PURE_METHODS = new Set([
+  "assert_any_call",
+  "assert_called",
+  "assert_called_once",
+  "assert_called_once_with",
+  "assert_called_with",
+  "assert_has_calls",
+  "assert_not_called",
+  "attach_mock",
+  "configure_mock",
+  "mock_add_spec",
+  "reset_mock",
+])
+export const ASYNC_MOCK_PURE_METHODS = new Set([
+  ...MOCK_PURE_METHODS,
+  "assert_any_await",
+  "assert_awaited",
+  "assert_awaited_once",
+  "assert_awaited_once_with",
+  "assert_awaited_with",
+  "assert_has_awaits",
+  "assert_not_awaited",
+])
 export const STRING_ITERABLE_METHODS = new Set(["split", "rsplit", "splitlines"])
 export const STRING_RETURNING_METHODS = new Set([
   "capitalize",

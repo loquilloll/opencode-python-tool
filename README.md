@@ -15,9 +15,10 @@ Use this project when you need:
 - **Pre-execution static analysis** of Python source via Tree-sitter AST
   parsing, classifying every call into `read`, `write`, `emit`, `exec`,
   `pure`, or `unknown` events.
-- **Explicit permission asks** (`python` + `external_directory`) before any code
-  runs, with structured metadata including code preview, event patterns,
-  always-allow suggestions, and non-blocking `emit`/`pure` observability.
+- **Permission asks when needed** (`python` and/or `external_directory`) before
+  execution, with structured metadata including event patterns,
+  always-allow suggestions, non-blocking `emit`/`pure` observability, and
+  bounded source preview when that source is already available.
 - **Guardrails for high-risk execution paths** -- subprocess invocations are
   hard-blocked, dangerous builtins and deserialization calls are denied by
   default.
@@ -43,7 +44,7 @@ flowchart TD
     validate["Arg Validation<br/><i>code XOR scriptPath, timeout > 0</i>"]
     validate --> source
 
-    source["Source Resolution<br/><i>inline code or read scriptPath</i>"]
+    source["Source Resolution<br/><i>inline code or preflight scriptPath</i>"]
     source --> analyzer
 
     analyzer["AST Analyzer Orchestrator<br/><code>python-analyze.ts + helper modules</code><br/><i>Parse -> build timeline -> replay scope<br/>-> classify -> PythonEvent[]</i>"]
@@ -56,11 +57,11 @@ flowchart TD
     plan["Permission Plan<br/><i>Build patterns / always / external<br/>from classified events</i>"]
     plan --> extcheck{"Outside paths<br/>detected?"}
 
-    extcheck -- "Yes" --> extask["Ask: <b>external_directory</b><br/><i>with code preview metadata</i>"]
+    extcheck -- "Yes" --> extask["Ask: <b>external_directory</b><br/><i>with path/mode metadata (preview when available)</i>"]
     extask --> pyask
     extcheck -- "No" --> pyask
 
-    pyask["Ask: <b>python</b><br/><i>read:* / write:* / exec:* / unknown:*<br/>with code preview + operations metadata</i>"]
+    pyask["Ask: <b>python</b><br/><i>read:&lt;dynamic&gt; / write:* / exec:* / unknown:*<br/>with code preview + operations metadata</i>"]
     pyask --> exec
 
     exec["Process Execution<br/><i>spawn python3<br/>PYTHONUNBUFFERED=1<br/>Stream stdout/stderr -> metadata<br/>Handle timeout, abort, exit code</i>"]
@@ -316,7 +317,7 @@ Operational guidance:
 
 | Rule | Rationale |
 |------|-----------|
-| `python:*` = `ask` | Forces explicit human review for all classified operations. |
+| `python:*` = `ask` | Forces explicit human review for emitted `python` permission patterns (`read:<dynamic>`, `write:*`, `exec:*`, `unknown:*`). Literal reads that stay inside the worktree are auto-allowed because no `python` read pattern is emitted. |
 | `exec:eval`, `exec:exec`, `exec:compile`, `exec:__import__` = `deny` | Blocks dynamic code execution that bypasses static analysis. |
 | `exec:subprocess` = `deny` | Defense-in-depth alongside the runtime subprocess guard. |
 | `exec:os.system`, `exec:os.popen`, `exec:os.exec*` = `deny` | Blocks shell/process spawning that should use the `bash` tool. |
@@ -343,7 +344,7 @@ runtime behavior or security posture.
 | **Permission prompt rendering** | Generic/fallback prompt — shows permission patterns (`read:*`, `exec:*`, etc.) and Allow/Reject actions. No Python-specific context. | Python-specific compact summary showing description, mode (`inline`/`script`), script path, args, workdir, and code preview with line/byte counts. |
 | **Code preview in prompt body** | Not rendered. Metadata is sent by the tool but the stock TUI does not display it. | Compact code preview displayed inline with truncation status. |
 | **`ctrl+f` fullscreen view** | Generic permission info. | Full Python source code with precedence: `codeExpanded` (≤50 KB) → inline `code` → `codePreview` fallback. |
-| **`external_directory` context** | Generic directory information. | Python-aware context showing mode, description, and source preview alongside directory details. |
+| **`external_directory` context** | Generic directory information. | Python-aware context showing mode, description, and path details; source preview is included after source is loaded, but preflight outside-script approval may omit it. |
 | **Config schema for `python` key** | Works at runtime via `.catchall()` but `python` does not appear in config schema autocompletion. | `python` registered as a named permission key — editors provide autocompletion for `permission.python.*` rules. |
 
 ### Fork status
@@ -442,15 +443,17 @@ The runtime resolves a Python interpreter in this order:
 Before execution, the runtime analyzes source and asks permissions with metadata:
 
 - Asks `external_directory` when `workdir`, `scriptPath`, or literal file paths
-  resolve outside the worktree.
-- Asks `python` with event-derived patterns (`read:*`, `write:*`, `exec:*`,
-  `unknown:*`).
+  resolve outside the worktree. Outside-worktree `scriptPath` approval happens
+  before the script file is loaded.
+- Auto-allows literal filesystem reads that resolve inside the worktree.
+- Asks `python` with event-derived patterns for dynamic reads plus
+  `write:*`, `exec:*`, and `unknown:*` operations.
 - Keeps `emit`/`pure` in runtime `operations` metadata for observability, but does
   not ask `python` permissions for those kinds by default.
 - Adds optional operation metadata such as `canonicalSource`, `receiverKind`,
   `ruleHit`, `guardFailure`, and dependency signatures when the analyzer has
   bounded evidence for them.
-- Includes bounded executable-source preview in ask metadata.
+- Includes bounded executable-source preview in `python` ask metadata and in `external_directory` asks once source is loaded; preflight outside-worktree `scriptPath` approval may not include source preview.
 
 #### Preview limits
 

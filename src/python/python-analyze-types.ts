@@ -1,6 +1,6 @@
 import type { PythonAstNode as Node } from "./frontend/interface"
 import type { PythonEventEvidence } from "./python-ir"
-import type { ContainerKind, ReceiverContainer } from "./python-provenance"
+import type { ContainerKind, ReceiverContainer, ReceiverPath } from "./python-provenance"
 import type { GuardedCallRule, GuardedMethodRule } from "./python-rule-schema"
 import type { PythonValue as Value } from "./python-values"
 
@@ -36,6 +36,7 @@ export type Scope = {
   iteratedElementInstances: Map<string, ContainerKind>
   iteratedPathInstances: Map<string, Value>
   receiverContainers: Map<string, ReceiverContainer>
+  receiverPaths: Map<string, ReceiverPath>
   pathInstances: Map<string, Value>
   httpClientInstances: Map<string, string>
   httpResponseInstances: Set<string>

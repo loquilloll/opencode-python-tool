@@ -337,7 +337,9 @@ export function classify(
 
   const trackedReceiverContainer = trackedReceiverContainerKind(temporaryReceiver, current)
   const trackedReceiverInfo = trackableReceiverInfo(temporaryReceiver)
-  const dependencySignature = trackedReceiverInfo ? current.receiverContainers.get(trackedReceiverInfo.path)?.deps : undefined
+  const dependencySignature = trackedReceiverInfo
+    ? current.receiverContainers.get(trackedReceiverInfo.path)?.deps ?? current.receiverPaths.get(trackedReceiverInfo.path)?.deps
+    : undefined
   if (trackedReceiverContainer && pureContainerMethod(trackedReceiverContainer, method)) {
     return effect("pure.compute", { resolvedCall: call })
   }
@@ -473,4 +475,3 @@ export function atlassianFamilyForConstructor(call: string, rules: Rules, hasAtl
   if (metadata.bare && !hasAtlassianImportProvenance) return
   return metadata.family
 }
-

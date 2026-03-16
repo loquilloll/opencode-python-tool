@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { mkdir, mkdtemp, rm, writeFile } from "fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
 import pythonTool from "../tool/python"
@@ -307,7 +307,7 @@ describe("python tool runtime", () => {
       })
     })
 
-    it("asks for read path", async () => {
+    it("auto-allows literal read paths inside the worktree and keeps read metadata", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
 
@@ -320,8 +320,20 @@ describe("python tool runtime", () => {
           context,
         )
 
-        const ask = getAsk(context, "python")
-        expect(ask?.patterns).toContain(`read:${toSlash(path.join(worktree, "notes.txt"))}`)
+        expect(getAsk(context, "python")).toBeUndefined()
+
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "read",
+              call: "open",
+              path: toSlash(path.join(worktree, "notes.txt")),
+              pattern: `read:${toSlash(path.join(worktree, "notes.txt"))}`,
+            }),
+          ]),
+        )
       })
     })
 
@@ -467,6 +479,70 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("skips python ask for pure-only ast helpers and keeps canonical pure metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from ast import parse, dump, literal_eval",
+              "tree = parse('x = 1')",
+              "dump(tree)",
+              "literal_eval('[1, 2, 3]')",
+            ].join("\n"),
+            args: [],
+            description: "pure ast helpers",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "ast.parse", pattern: "pure:ast.parse" }),
+            expect.objectContaining({ kind: "pure", call: "ast.dump", pattern: "pure:ast.dump" }),
+            expect.objectContaining({ kind: "pure", call: "ast.literal_eval", pattern: "pure:ast.literal_eval" }),
+          ]),
+        )
+      })
+    })
+
+    it("skips python ask for pure-only unittest.mock helpers and keeps pure metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from unittest.mock import Mock, patch",
+              "VALUE = 0",
+              "mock = Mock(return_value='service')",
+              "mock.assert_not_called()",
+              "with patch('__main__.VALUE', 1):",
+              "    pass",
+            ].join("\n"),
+            args: [],
+            description: "pure mock helpers",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "unittest.mock.Mock", pattern: "pure:unittest.mock.Mock" }),
+            expect.objectContaining({ kind: "pure", call: "mock.assert_not_called", pattern: "pure:mock.assert_not_called" }),
+            expect.objectContaining({ kind: "pure", call: "unittest.mock.patch", pattern: "pure:unittest.mock.patch" }),
+          ]),
+        )
+      })
+    })
+
     it("skips python ask for tracked Path aliases, match methods, and exact path joins", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -501,13 +577,8 @@ describe("python tool runtime", () => {
         )
 
         const ask = getAsk(context, "python")
-        expect(ask?.patterns).toEqual(
-          expect.arrayContaining([
-            `read:${path.join(worktree, "f")}`,
-            `read:${path.join(worktree, "f")}`,
-            `write:${path.join(worktree, "o")}`,
-          ]),
-        )
+        expect(ask?.patterns).toEqual(expect.arrayContaining([`write:${path.join(worktree, "o")}`]))
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining([`read:${path.join(worktree, "f")}`]))
         expect(ask?.patterns).not.toEqual(
           expect.arrayContaining([
             "unknown:callable:Path",
@@ -558,9 +629,8 @@ describe("python tool runtime", () => {
         )
 
         const ask = getAsk(context, "python")
-        expect(ask?.patterns).toEqual(
-          expect.arrayContaining([`read:${toSlash(path.join(worktree, "f"))}`, "unknown:callable:item.group"]),
-        )
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.group"]))
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining([`read:${toSlash(path.join(worktree, "f"))}`]))
 
         const metadata = getAskMetadata(context, "python")
         expect(metadata?.operations).toEqual(
@@ -578,6 +648,196 @@ describe("python tool runtime", () => {
               canonicalSource: "callable:item.group",
               ruleHit: "guarded-method:group",
               guardFailure: expect.objectContaining({ type: "receiverKindIn" }),
+            }),
+          ]),
+        )
+      })
+    })
+
+    it("tracks dynamic and receiver-assigned Path provenance in runtime permission metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "base = Path('docs')",
+              "joined = base / name",
+              "joined.read_bytes()",
+              "paths = {}",
+              "paths['cfg'] = joined",
+              "paths['cfg'].exists()",
+              "state.path = Path('notes.txt')",
+              "state.path.read_text()",
+              "self.path = base / name",
+              "self.path.write_text('x')",
+            ].join("\n"),
+            args: [],
+            description: "receiver path provenance",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["read:<dynamic>", "write:<dynamic>"]))
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining([`read:${toSlash(path.join(worktree, "notes.txt"))}`]))
+        expect(ask?.patterns).not.toEqual(
+          expect.arrayContaining([
+            "unknown:callable:joined.read_bytes",
+            "unknown:callable:paths.exists",
+            "unknown:callable:state.path.read_text",
+            "unknown:callable:self.path.write_text",
+          ]),
+        )
+
+        const metadata = getAskMetadata(context, "python")
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "read",
+              call: "joined.read_bytes",
+              pattern: "read:<dynamic>",
+              canonicalSource: "pathlib.Path.read_bytes",
+              receiverKind: "path",
+              ruleHit: "guarded-method:read_bytes",
+            }),
+            expect.objectContaining({
+              kind: "read",
+              call: "paths.exists",
+              pattern: "read:<dynamic>",
+              canonicalSource: "pathlib.Path.exists",
+              receiverKind: "path",
+              ruleHit: "guarded-method:exists",
+            }),
+            expect.objectContaining({
+              kind: "read",
+              call: "state.path.read_text",
+              path: toSlash(path.join(worktree, "notes.txt")),
+              canonicalSource: "pathlib.Path.read_text",
+              receiverKind: "path",
+              ruleHit: "guarded-method:read_text",
+            }),
+            expect.objectContaining({
+              kind: "write",
+              call: "self.path.write_text",
+              pattern: "write:<dynamic>",
+              canonicalSource: "pathlib.Path.write_text",
+              receiverKind: "path",
+              ruleHit: "guarded-method:write_text",
+            }),
+          ]),
+        )
+      })
+    })
+
+    it("tracks parenthesized Path read_bytes receivers into bytes decode chains in runtime metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('docs')",
+              "blob = (root / name).read_bytes()",
+              "blob.decode('utf8').replace('a', 'b')",
+            ].join("\n"),
+            args: [],
+            description: "parenthesized path read_bytes",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["read:<dynamic>"]))
+        expect(ask?.patterns).not.toEqual(
+          expect.arrayContaining([
+            "unknown:callable:read_bytes",
+            "unknown:callable:blob.decode",
+            "unknown:callable:blob.decode.replace",
+          ]),
+        )
+
+        const metadata = getAskMetadata(context, "python")
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "read",
+              call: "read_bytes",
+              pattern: "read:<dynamic>",
+              canonicalSource: "pathlib.Path.read_bytes",
+              receiverKind: "path",
+              ruleHit: "guarded-method:read_bytes",
+            }),
+            expect.objectContaining({ kind: "pure", call: "blob.decode", pattern: "pure:blob.decode" }),
+            expect.objectContaining({ kind: "pure", call: "blob.decode.replace", pattern: "pure:blob.decode.replace" }),
+          ]),
+        )
+      })
+    })
+
+    it("tracks zero-arg local factories that return Path values in runtime permission metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "def get_note():",
+              "    return Path('notes.txt')",
+              "note = get_note()",
+              "note.read_text()",
+              "def get_child():",
+              "    return Path('docs') / name",
+              "get_child().exists()",
+              "state.path = get_note()",
+              "state.path.read_text()",
+            ].join("\n"),
+            args: [],
+            description: "path factory provenance",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["read:<dynamic>"]))
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining([`read:${toSlash(path.join(worktree, "notes.txt"))}`]))
+        expect(ask?.patterns).not.toEqual(
+          expect.arrayContaining([
+            "unknown:callable:note.read_text",
+            "unknown:callable:get_child.exists",
+            "unknown:callable:state.path.read_text",
+          ]),
+        )
+
+        const metadata = getAskMetadata(context, "python")
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "read",
+              call: "note.read_text",
+              path: toSlash(path.join(worktree, "notes.txt")),
+              canonicalSource: "pathlib.Path.read_text",
+              receiverKind: "path",
+              ruleHit: "guarded-method:read_text",
+            }),
+            expect.objectContaining({
+              kind: "read",
+              call: "get_child.exists",
+              pattern: "read:<dynamic>",
+              canonicalSource: "pathlib.Path.exists",
+              receiverKind: "path",
+              ruleHit: "guarded-method:exists",
+            }),
+            expect.objectContaining({
+              kind: "read",
+              call: "state.path.read_text",
+              path: toSlash(path.join(worktree, "notes.txt")),
+              canonicalSource: "pathlib.Path.read_text",
+              receiverKind: "path",
+              ruleHit: "guarded-method:read_text",
             }),
           ]),
         )
@@ -951,28 +1211,9 @@ describe("python tool runtime", () => {
           context,
         )
 
-        const ask = getAsk(context, "python")
-        expect(ask?.patterns).toEqual(
-          expect.arrayContaining([
-            `read:${path.join(worktree, "README.md")}`,
-            `read:${path.join(worktree, "notes.txt")}`,
-          ]),
-        )
-        expect(ask?.patterns).not.toEqual(
-          expect.arrayContaining([
-            "unknown:callable:join",
-            "unknown:callable:replace",
-            "unknown:callable:text.join",
-            "unknown:callable:text.find",
-            "unknown:callable:text.replace",
-            "unknown:callable:text.strip",
-            "unknown:callable:data.partition",
-            "unknown:callable:literal.split",
-            "unknown:callable:pathlib.Path.read_text.lower",
-          ]),
-        )
+        expect(getAsk(context, "python")).toBeUndefined()
 
-        const metadata = getAskMetadata(context, "python")
+        const metadata = context.metadatas[0]?.metadata
         expect(metadata?.operations).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ kind: "pure", call: "join", pattern: "pure:join" }),
@@ -1028,6 +1269,19 @@ describe("python tool runtime", () => {
             expect.objectContaining({ kind: "pure", call: "pathlib.Path.read_text.lower", pattern: "pure:pathlib.Path.read_text.lower" }),
           ]),
         )
+        expect(metadata?.operations).not.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "unknown", call: "callable:join" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:replace" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:text.join" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:text.find" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:text.replace" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:text.strip" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:data.partition" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:literal.split" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:pathlib.Path.read_text.lower" }),
+          ]),
+        )
       })
     })
 
@@ -1052,11 +1306,9 @@ describe("python tool runtime", () => {
           context,
         )
 
-        const ask = getAsk(context, "python")
-        expect(ask?.patterns).toEqual(expect.arrayContaining([`read:${path.join(worktree, "README.md")}`]))
-        expect(ask?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:text.replace"]))
+        expect(getAsk(context, "python")).toBeUndefined()
 
-        const metadata = getAskMetadata(context, "python")
+        const metadata = context.metadatas[0]?.metadata
         expect(metadata?.operations).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ kind: "read", call: "readme.read_text", path: path.join(worktree, "README.md") }),
@@ -1138,13 +1390,9 @@ describe("python tool runtime", () => {
           context,
         )
 
-        const ask = getAsk(context, "python")
-        expect(ask?.patterns).toEqual(expect.arrayContaining([`read:${path.join(worktree, "README.md")}`]))
-        expect(ask?.patterns).not.toEqual(
-          expect.arrayContaining(["unknown:callable:line.strip", "unknown:callable:item.strip", "unknown:callable:later.strip"]),
-        )
+        expect(getAsk(context, "python")).toBeUndefined()
 
-        const metadata = getAskMetadata(context, "python")
+        const metadata = context.metadatas[0]?.metadata
         expect(metadata?.operations).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ kind: "read", call: "pathlib.Path.read_text" }),
@@ -1183,14 +1431,15 @@ describe("python tool runtime", () => {
         const ask = getAsk(context, "python")
         expect(ask?.patterns).toEqual(
           expect.arrayContaining([
-            `read:${path.join(worktree, "README.md")}`,
-            `read:${path.join(worktree, "other.txt")}`,
             "unknown:callable:open.read",
             "unknown:callable:open.read.splitlines",
             "unknown:callable:line.strip",
             "unknown:callable:custom",
             "unknown:callable:item.strip",
           ]),
+        )
+        expect(ask?.patterns).not.toEqual(
+          expect.arrayContaining([`read:${path.join(worktree, "README.md")}`, `read:${path.join(worktree, "other.txt")}`]),
         )
         expect(ask?.patterns).not.toEqual(expect.arrayContaining(["pure:line.strip", "pure:item.strip"]))
 
@@ -1257,23 +1506,9 @@ describe("python tool runtime", () => {
           context,
         )
 
-        const ask = getAsk(context, "python")
-        expect(ask?.patterns).toEqual(expect.arrayContaining([`read:${path.join(worktree, "data.bin")}`]))
-        expect(ask?.patterns).not.toEqual(
-          expect.arrayContaining([
-            "unknown:callable:tup.count",
-            "unknown:callable:rng.index",
-            "unknown:callable:blob.decode",
-            "unknown:callable:blob.join",
-            "unknown:callable:buf.append",
-            "unknown:callable:view.tobytes",
-            "unknown:callable:num.bit_length",
-            "unknown:callable:flt.hex",
-            "unknown:callable:comp.conjugate",
-          ]),
-        )
+        expect(getAsk(context, "python")).toBeUndefined()
 
-        const metadata = getAskMetadata(context, "python")
+        const metadata = context.metadatas[0]?.metadata
         expect(metadata?.operations).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ kind: "pure", call: "tup.count", pattern: "pure:tup.count" }),
@@ -1305,7 +1540,7 @@ describe("python tool runtime", () => {
       })
     })
 
-    it("keeps unsupported built-in type method receivers and return-chain cases on unknown permission patterns", async () => {
+    it("keeps unsupported built-in type method receivers conservative while allowing tracked decode chains on permission patterns", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
 
@@ -1335,11 +1570,10 @@ describe("python tool runtime", () => {
             "unknown:callable:obj.bit_length",
             "unknown:callable:obj.tobytes",
             "unknown:callable:open.read.decode",
-            `read:${path.join(worktree, "f")}`,
-            "unknown:callable:data.decode.split",
             "unknown:callable:str.encode",
           ]),
         )
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining([`read:${path.join(worktree, "f")}`]))
         expect(ask?.patterns).not.toEqual(
           expect.arrayContaining([
             "pure:obj.decode",
@@ -1349,6 +1583,7 @@ describe("python tool runtime", () => {
             "pure:open.read.decode",
             "pure:data.decode.split",
             "pure:str.encode",
+            "unknown:callable:data.decode.split",
           ]),
         )
       })
@@ -1455,7 +1690,6 @@ describe("python tool runtime", () => {
         expect(ask?.patterns).toEqual(
           expect.arrayContaining([
             "read:input",
-            `read:${path.join(worktree, "f")}`,
             "exec:breakpoint",
             "exec:compile",
             "exec:eval",
@@ -1463,6 +1697,7 @@ describe("python tool runtime", () => {
             "exec:__import__",
           ]),
         )
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining([`read:${path.join(worktree, "f")}`]))
         expect(ask?.patterns).not.toEqual(
           expect.arrayContaining([
             "unknown:callable:abs",
@@ -2827,10 +3062,10 @@ describe("python tool runtime", () => {
   })
 
   describe("script-file permission behavior", () => {
-    it("includes script code preview metadata in python ask", async () => {
+    it("includes script code preview metadata when a script still needs a python ask", async () => {
       await withWorkspace(async ({ worktree }) => {
         const scriptPath = path.join(worktree, "preview.py")
-        const scriptSource = "open('preview.txt', 'r')\n"
+        const scriptSource = "mypkg.do_thing()\n"
         await writeFile(scriptPath, scriptSource, "utf8")
 
         const context = createMockContext({ worktree, directory: worktree })
@@ -2871,6 +3106,27 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("does not ask external_directory when a symlinked script still resolves inside the worktree", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const realScript = path.join(worktree, "real.py")
+        await writeFile(realScript, "print('ok')\n", "utf8")
+        const scriptPath = path.join(worktree, "inside-link.py")
+        await symlink(realScript, scriptPath)
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            scriptPath,
+            args: [],
+            description: "inside symlink script",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "external_directory")).toBeUndefined()
+      })
+    })
+
     it("asks external_directory when script path is outside worktree", async () => {
       await withWorkspace(async ({ root, worktree }) => {
         const scriptPath = path.join(root, "outside.py")
@@ -2888,6 +3144,135 @@ describe("python tool runtime", () => {
 
         const ask = getAsk(context, "external_directory")
         expect(ask?.patterns).toContain(`${toSlash(path.dirname(scriptPath))}/*`)
+        const metadata = getAskMetadata(context, "external_directory")
+        expect(metadata?.mode).toBe("script")
+        expect(metadata?.source).toBe(scriptPath)
+        expect(metadata?.scriptPath).toBe(scriptPath)
+        expect(metadata?.codePreview).toBeUndefined()
+      })
+    })
+
+    it("asks external_directory before reading a symlinked outside script path", async () => {
+      await withWorkspace(async ({ root, worktree }) => {
+        const outsideDir = path.join(root, "outside")
+        await mkdir(outsideDir, { recursive: true })
+        const realScript = path.join(outsideDir, "outside.py")
+        await writeFile(realScript, "print('outside')\n", "utf8")
+
+        const scriptPath = path.join(worktree, "outside-link.py")
+        await symlink(realScript, scriptPath)
+
+        const context = createMockContext({ worktree, directory: worktree })
+        const previous = process.env.OPENCODE_PYTHON_BIN
+        process.env.OPENCODE_PYTHON_BIN = INVALID_PYTHON_BIN
+        context.ask = async (input) => {
+          context.asks.push(input)
+          if (input.permission === "external_directory") {
+            expect((input.metadata as { codePreview?: string } | undefined)?.codePreview).toBeUndefined()
+            await rm(realScript, { force: true })
+          }
+        }
+
+        try {
+          await expect(
+            pythonTool.execute(
+              {
+                scriptPath,
+                args: [],
+                description: "symlink outside script",
+              },
+              context,
+            ),
+          ).rejects.toThrow(`Python script file not found: ${scriptPath}`)
+        } finally {
+          if (previous === undefined) delete process.env.OPENCODE_PYTHON_BIN
+          else process.env.OPENCODE_PYTHON_BIN = previous
+        }
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(outsideDir)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+        expect(context.metadatas).toHaveLength(0)
+      })
+    })
+
+    it("asks external_directory for script paths that escape through symlink plus dotdot", async () => {
+      await withWorkspace(async ({ root, worktree }) => {
+        const outside = path.join(root, "outside")
+        const nested = path.join(outside, "nested")
+        await mkdir(nested, { recursive: true })
+        await writeFile(path.join(outside, "outside.py"), "print('outside')\n", "utf8")
+        await symlink(nested, path.join(worktree, "outside-link"))
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            scriptPath: "outside-link/../outside.py",
+            args: [],
+            description: "symlink dotdot outside script",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(outside)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("falls back conservatively to external_directory when script boundary resolution fails", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const scriptPath = path.join(worktree, "loop.py")
+        await symlink("loop.py", scriptPath)
+
+        const context = createMockContext({ worktree, directory: worktree })
+        context.ask = async (input) => {
+          context.asks.push(input)
+          if (input.permission === "external_directory") throw new Error("script fallback ask")
+        }
+
+        await expect(
+          pythonTool.execute(
+            {
+              scriptPath,
+              args: [],
+              description: "script fallback ask",
+            },
+            context,
+          ),
+        ).rejects.toThrow("script fallback ask")
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(worktree)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("falls back conservatively to external_directory when script boundary resolution hits ENOTDIR", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const notDir = path.join(worktree, "not-dir")
+        await writeFile(notDir, "x\n", "utf8")
+
+        const context = createMockContext({ worktree, directory: worktree })
+        context.ask = async (input) => {
+          context.asks.push(input)
+          if (input.permission === "external_directory") throw new Error("script enotdir ask")
+        }
+
+        await expect(
+          pythonTool.execute(
+            {
+              scriptPath: "not-dir/child.py",
+              args: [],
+              description: "script enotdir ask",
+            },
+            context,
+          ),
+        ).rejects.toThrow("script enotdir ask")
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(notDir)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
       })
     })
 
@@ -2927,18 +3312,17 @@ describe("python tool runtime", () => {
           context,
         )
 
-        const pythonMetadata = getAskMetadata(context, "python")
         const externalMetadata = getAskMetadata(context, "external_directory")
 
+        expect(getAsk(context, "python")).toBeUndefined()
         expect(externalMetadata?.mode).toBe("inline")
         expect(externalMetadata?.source).toBe("<inline>")
         expect(externalMetadata?.codePreview).toBe(source)
         expect(externalMetadata?.codePreviewTruncated).toBeFalse()
-        expect(externalMetadata?.codePreview).toBe(pythonMetadata?.codePreview)
-        expect(externalMetadata?.codePreviewBytes).toEqual(pythonMetadata?.codePreviewBytes)
-        expect(externalMetadata?.codePreviewLines).toEqual(pythonMetadata?.codePreviewLines)
-        expect(externalMetadata?.codeExpanded).toEqual(pythonMetadata?.codeExpanded)
-        expect(externalMetadata?.codeExpandedAvailable).toEqual(pythonMetadata?.codeExpandedAvailable)
+        expect(externalMetadata?.codePreviewBytes).toEqual({ total: source.length, preview: source.length })
+        expect(externalMetadata?.codePreviewLines).toEqual({ total: 2, preview: 2 })
+        expect(externalMetadata?.codeExpanded).toBeUndefined()
+        expect(externalMetadata?.codeExpandedAvailable).toBeUndefined()
       })
     })
 
@@ -2960,6 +3344,113 @@ describe("python tool runtime", () => {
 
         const ask = getAsk(context, "external_directory")
         expect(ask?.patterns).toContain(`${toSlash(outside)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("asks external_directory when workdir is a symlink into an outside directory", async () => {
+      await withWorkspace(async ({ root, worktree }) => {
+        const outside = path.join(root, "outside")
+        await mkdir(outside, { recursive: true })
+        const symlinked = path.join(worktree, "linked-outside")
+        await symlink(outside, symlinked)
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "open('data.txt', 'r')",
+            workdir: "linked-outside",
+            args: [],
+            description: "symlinked outside workdir",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(outside)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("asks external_directory when workdir escapes through symlink plus dotdot", async () => {
+      await withWorkspace(async ({ root, worktree }) => {
+        const outside = path.join(root, "outside")
+        const nested = path.join(outside, "nested")
+        await mkdir(nested, { recursive: true })
+        await symlink(nested, path.join(worktree, "outside-link"))
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "open('secret.txt', 'r')",
+            workdir: "outside-link/..",
+            args: [],
+            description: "symlink dotdot outside workdir",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(outside)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("falls back conservatively to external_directory when workdir boundary resolution fails", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const loop = path.join(worktree, "loop")
+        await symlink("loop", loop)
+
+        const context = createMockContext({ worktree, directory: worktree })
+        context.ask = async (input) => {
+          context.asks.push(input)
+          if (input.permission === "external_directory") throw new Error("workdir fallback ask")
+        }
+
+        await expect(
+          pythonTool.execute(
+            {
+              code: "open('data.txt', 'r')",
+              workdir: "loop",
+              args: [],
+              description: "workdir fallback ask",
+            },
+            context,
+          ),
+        ).rejects.toThrow("workdir fallback ask")
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(path.join(worktree, "loop"))}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("falls back conservatively to external_directory when workdir boundary resolution hits ENOTDIR", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const notDir = path.join(worktree, "not-dir")
+        await writeFile(notDir, "x\n", "utf8")
+
+        const context = createMockContext({ worktree, directory: worktree })
+        context.ask = async (input) => {
+          context.asks.push(input)
+          if (input.permission === "external_directory") throw new Error("workdir enotdir ask")
+        }
+
+        await expect(
+          pythonTool.execute(
+            {
+              code: "open('data.txt', 'r')",
+              workdir: "not-dir/child",
+              args: [],
+              description: "workdir enotdir ask",
+            },
+            context,
+          ),
+        ).rejects.toThrow("workdir enotdir ask")
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(path.join(worktree, "not-dir", "child"))}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
       })
     })
 
@@ -3010,6 +3501,29 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("does not ask external_directory when a symlinked workdir still resolves inside the worktree", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const inside = path.join(worktree, "inside-target")
+        await mkdir(inside, { recursive: true })
+        const symlinked = path.join(worktree, "inside-link")
+        await symlink(inside, symlinked)
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "open('data.txt', 'r')",
+            workdir: "inside-link",
+            args: [],
+            description: "symlinked inside workdir",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "external_directory")).toBeUndefined()
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
     it("asks external_directory for inline literal outside path", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -3025,18 +3539,132 @@ describe("python tool runtime", () => {
 
         const ask = getAsk(context, "external_directory")
         expect(ask?.patterns).toContain("/tmp/*")
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("does not ask external_directory for literal reads through an in-worktree symlink that stays inside", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const inside = path.join(worktree, "nested")
+        await mkdir(inside, { recursive: true })
+        await writeFile(path.join(inside, "secret.txt"), "ok\n", "utf8")
+        const link = path.join(worktree, "inside-link")
+        await symlink(inside, link)
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "open('inside-link/secret.txt', 'r')",
+            args: [],
+            description: "symlinked inside read",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "external_directory")).toBeUndefined()
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("asks external_directory for literal reads through an in-worktree symlink to outside", async () => {
+      await withWorkspace(async ({ root, worktree }) => {
+        const outside = path.join(root, "outside")
+        await mkdir(outside, { recursive: true })
+        await writeFile(path.join(outside, "secret.txt"), "shh\n", "utf8")
+        const link = path.join(worktree, "outside-link")
+        await symlink(outside, link)
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "open('outside-link/secret.txt', 'r')",
+            args: [],
+            description: "symlinked outside read",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(outside)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("asks external_directory for symlink plus dotdot literal reads that resolve outside the worktree", async () => {
+      await withWorkspace(async ({ root, worktree }) => {
+        const outside = path.join(root, "outside")
+        const nested = path.join(outside, "nested")
+        await mkdir(nested, { recursive: true })
+        await writeFile(path.join(outside, "secret.txt"), "shh\n", "utf8")
+        const link = path.join(worktree, "outside-link")
+        await symlink(nested, link)
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "open('outside-link/../secret.txt', 'r')",
+            args: [],
+            description: "symlink dotdot outside read",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(outside)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("falls back conservatively to external_directory on boundary-resolution errors", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        await symlink("loop", path.join(worktree, "loop"))
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "open('loop/file.txt', 'r')",
+            args: [],
+            description: "boundary fallback read",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(path.join(worktree, "loop"))}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("falls back conservatively to external_directory for literal reads when boundary resolution hits ENOTDIR", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const notDir = path.join(worktree, "not-dir")
+        await writeFile(notDir, "x\n", "utf8")
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "open('not-dir/child.txt', 'r')",
+            args: [],
+            description: "literal enotdir fallback",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "external_directory")
+        expect(ask?.patterns).toContain(`${toSlash(notDir)}/*`)
+        expect(getAsk(context, "python")).toBeUndefined()
       })
     })
   })
 
   describe("always pattern checks", () => {
-    it("includes read parent-dir glob", async () => {
+    it("includes read wildcard for dynamic read paths", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
 
         await executeExpectingEnoent(
           {
-            code: "open('f.txt', 'r')",
+            code: "target = 'f.txt'\nopen(target, 'r')",
             args: [],
             description: "always read",
           },
@@ -3044,7 +3672,7 @@ describe("python tool runtime", () => {
         )
 
         const ask = getAsk(context, "python")
-        expect(ask?.always).toContain(`read:${toSlash(worktree)}/*`)
+        expect(ask?.always).toContain("read:*")
       })
     })
 

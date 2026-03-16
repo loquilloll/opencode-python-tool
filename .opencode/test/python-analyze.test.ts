@@ -375,6 +375,67 @@ describe("python analyzer", () => {
       expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:p.exists" }]))
     })
 
+    it("tracks Path provenance through dynamic joins and receiver assignments", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "base = Path('docs')",
+          "joined = base / name",
+          "joined.read_bytes()",
+          "paths = {}",
+          "paths['cfg'] = joined",
+          "paths['cfg'].exists()",
+          "state.path = Path('notes.txt')",
+          "state.path.read_text()",
+          "self.path = base / name",
+          "self.path.write_text('x')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "read", call: "joined.read_bytes", dynamicPath: true, sourceCall: "pathlib.Path.read_bytes" },
+          { kind: "read", call: "paths.exists", dynamicPath: true, sourceCall: "pathlib.Path.exists" },
+          { kind: "read", call: "state.path.read_text", path: "notes.txt", sourceCall: "pathlib.Path.read_text" },
+          { kind: "write", call: "self.path.write_text", dynamicPath: true, sourceCall: "pathlib.Path.write_text" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:joined.read_bytes" },
+          { kind: "unknown", call: "callable:paths.exists" },
+          { kind: "unknown", call: "callable:state.path.read_text" },
+          { kind: "unknown", call: "callable:self.path.write_text" },
+        ]),
+      )
+    })
+
+    it("tracks parenthesized Path read_bytes receivers into bytes decode chains", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('docs')",
+          "blob = (root / name).read_bytes()",
+          "blob.decode('utf8').replace('a', 'b')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "read", call: "read_bytes", dynamicPath: true, sourceCall: "pathlib.Path.read_bytes" }),
+          { kind: "pure", call: "blob.decode" },
+          { kind: "pure", call: "blob.decode.replace" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:read_bytes" },
+          { kind: "unknown", call: "callable:blob.decode" },
+          { kind: "unknown", call: "callable:blob.decode.replace" },
+        ]),
+      )
+    })
+
     it("keeps arbitrary Path-like receivers conservative", async () => {
       const events = await analyze(
         "obj.exists()\nobj.read_text()\nobj.write_text('x')\nobj.joinpath('a')\nobj.resolve()\nobj.stat()\nobj.open()",
@@ -969,7 +1030,7 @@ describe("python analyzer", () => {
       )
     })
 
-    it("keeps unsupported built-in type method receivers and return-chain cases conservative", async () => {
+    it("keeps unsupported built-in type method receivers conservative while allowing tracked decode chains", async () => {
       const events = await analyze(
         [
           "obj.decode('utf8')",
@@ -992,7 +1053,7 @@ describe("python analyzer", () => {
           { kind: "unknown", call: "callable:open.read.decode" },
           { kind: "read", call: "Path.read_bytes", path: "f" },
           { kind: "pure", call: "data.decode" },
-          { kind: "unknown", call: "callable:data.decode.split" },
+          { kind: "pure", call: "data.decode.split" },
           { kind: "unknown", call: "callable:str.encode" },
         ]),
       )
@@ -1003,7 +1064,6 @@ describe("python analyzer", () => {
           { kind: "pure", call: "obj.bit_length" },
           { kind: "pure", call: "obj.tobytes" },
           { kind: "pure", call: "open.read.decode" },
-          { kind: "pure", call: "data.decode.split" },
           { kind: "pure", call: "str.encode" },
         ]),
       )
@@ -1349,6 +1409,118 @@ describe("python analyzer", () => {
           { kind: "pure", call: "re.escape" },
         ]),
       )
+    })
+
+    it("classifies explicit ast helpers as pure", async () => {
+      const events = await analyze(
+        [
+          "import ast",
+          "tree = ast.parse('x = 1')",
+          "ast.dump(tree)",
+          "ast.walk(tree)",
+          "ast.iter_fields(tree)",
+          "ast.iter_child_nodes(tree)",
+          "ast.literal_eval('[1, 2, 3]')",
+          "ast.get_source_segment('x = 1', tree)",
+          "ast.fix_missing_locations(tree)",
+          "ast.increment_lineno(tree)",
+          "ast.copy_location(tree, tree)",
+          "ast.unparse(tree)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "ast.parse" },
+          { kind: "pure", call: "ast.dump" },
+          { kind: "pure", call: "ast.walk" },
+          { kind: "pure", call: "ast.iter_fields" },
+          { kind: "pure", call: "ast.iter_child_nodes" },
+          { kind: "pure", call: "ast.literal_eval" },
+          { kind: "pure", call: "ast.get_source_segment" },
+          { kind: "pure", call: "ast.fix_missing_locations" },
+          { kind: "pure", call: "ast.increment_lineno" },
+          { kind: "pure", call: "ast.copy_location" },
+          { kind: "pure", call: "ast.unparse" },
+        ]),
+      )
+    })
+
+    it("classifies direct-imported ast helpers as pure and keeps shadowed names conservative", async () => {
+      const events = await analyze(
+        [
+          "from ast import parse, dump, literal_eval",
+          "tree = parse('x = 1')",
+          "dump(tree)",
+          "literal_eval('[1, 2, 3]')",
+          "parse = other",
+          "parse(source)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "ast.parse" },
+          { kind: "pure", call: "ast.dump" },
+          { kind: "pure", call: "ast.literal_eval" },
+          { kind: "unknown", call: "callable:other" },
+        ]),
+      )
+    })
+
+    it("classifies unittest.mock constructors, patch helpers, and tracked mock methods as pure", async () => {
+      const events = await analyze(
+        [
+          "from unittest.mock import AsyncMock, Mock, patch",
+          "mock = Mock(return_value='service')",
+          "mock.assert_not_called()",
+          "mock.reset_mock()",
+          "async_mock = AsyncMock()",
+          "async_mock.assert_not_awaited()",
+          "patch('__main__.VALUE', 1)",
+          "patch.object(mock, 'name', 'svc')",
+          "patch.dict(env, {'X': '1'})",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "unittest.mock.Mock" },
+          { kind: "pure", call: "mock.assert_not_called" },
+          { kind: "pure", call: "mock.reset_mock" },
+          { kind: "pure", call: "unittest.mock.AsyncMock" },
+          { kind: "pure", call: "async_mock.assert_not_awaited" },
+          { kind: "pure", call: "unittest.mock.patch" },
+          { kind: "pure", call: "unittest.mock.patch.object" },
+          { kind: "pure", call: "unittest.mock.patch.dict" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:mock.assert_not_called" },
+          { kind: "unknown", call: "callable:async_mock.assert_not_awaited" },
+          { kind: "unknown", call: "callable:patch" },
+        ]),
+      )
+    })
+
+    it("keeps shadowed mock constructors and arbitrary assert-like receivers conservative", async () => {
+      const events = await analyze(
+        [
+          "from unittest.mock import Mock",
+          "Mock = factory",
+          "Mock()",
+          "obj.assert_not_called()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:factory" },
+          { kind: "unknown", call: "callable:obj.assert_not_called" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "unittest.mock.Mock" }]))
     })
 
     it("classifies regex match-result methods as pure", async () => {
@@ -2946,6 +3118,38 @@ describe("python analyzer", () => {
         ]),
       )
       expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:Ctor" }]))
+    })
+
+    it("tracks zero-arg local factories that return Path values", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "def get_note():",
+          "    return Path('notes.txt')",
+          "note = get_note()",
+          "note.read_text()",
+          "def get_child():",
+          "    return Path('docs') / name",
+          "get_child().exists()",
+          "state.path = get_note()",
+          "state.path.read_text()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "read", call: "note.read_text", path: "notes.txt", sourceCall: "pathlib.Path.read_text" },
+          { kind: "read", call: "get_child.exists", dynamicPath: true, sourceCall: "pathlib.Path.exists" },
+          { kind: "read", call: "state.path.read_text", path: "notes.txt", sourceCall: "pathlib.Path.read_text" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:note.read_text" },
+          { kind: "unknown", call: "callable:get_child.exists" },
+          { kind: "unknown", call: "callable:state.path.read_text" },
+        ]),
+      )
     })
 
     it("keeps function-local aliases from leaking into module scope", async () => {

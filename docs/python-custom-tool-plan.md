@@ -95,7 +95,7 @@ before any behavioral code.
 
 | Pattern | Action | Rationale |
 |---------|--------|-----------|
-| `python:*` | `ask` | Default: every Python execution requires approval |
+| `python:*` | `ask` | Default deny/ask baseline for emitted Python permission patterns; literal reads that resolve inside the worktree are auto-allowed because no `python` read pattern is emitted |
 | `python:exec:eval` | `deny` | Arbitrary code execution — never auto-approve |
 | `python:exec:exec` | `deny` | Same as eval |
 | `python:exec:compile` | `deny` | Code object creation |
@@ -104,7 +104,7 @@ before any behavioral code.
 | `python:exec:os.popen` | `deny` | Shell injection |
 | `python:exec:os.exec*` | `deny` | Process replacement |
 | `python:unknown:*` | `ask` | Parse failures, unclassifiable calls — always ask |
-| `external_directory` | `ask` | Access outside project root — always ask |
+| `external_directory` | `ask` | Access whose resolved target leaves the active worktree — always ask |
 
 **Verification:**
 ```bash
@@ -225,22 +225,23 @@ abort/timeout handling.
 **Permission flow (two-phase, mirrors bash tool):**
 
 1. **Phase A — External directory check:**
-   - If `workdir` is outside `context.worktree` → ask `external_directory`
-   - If `scriptPath` resolves outside `context.worktree` → ask `external_directory`
-   - For each analyzed event with a literal path outside `context.worktree` → ask `external_directory`
-   - Patterns are directory globs: `<parent-dir>/*`
+   - If `workdir` realpath resolves outside `context.worktree` → ask `external_directory`
+   - If `scriptPath` realpath resolves outside `context.worktree` → ask `external_directory`
+   - If boundary resolution fails for any reason → ask `external_directory` conservatively
+   - For each analyzed event with a literal path whose resolved target leaves `context.worktree` → ask `external_directory`
+   - Patterns are directory globs: `<workdir>/*` for outside workdirs, otherwise `<parent-dir>/*` for file/script targets
 
 2. **Phase B — Python operation permission:**
-   - Each analyzer event produces a pattern string:
-      - `read:/abs/path/to/file` (literal path)
+    - Each analyzer event produces a pattern string:
+      - literal `read:/abs/path/to/file` operations are recorded in metadata but do not emit a `python` ask
       - `read:<dynamic>` (runtime path)
       - `write:/abs/path/to/file`
-      - `exec:subprocess.run`
+      - `exec:some.module_call`
       - `unknown:callable:mypkg.do_thing` (unrecognized callable fallback)
       - `unknown:parse-error`
     - `always` patterns are parent-directory globs, module wildcards, or callable-specific unknowns:
-      - `read:/parent/dir/*`
-      - `exec:subprocess.*`
+      - `read:*` (dynamic reads only)
+      - `exec:some_module.*`
       - `unknown:callable:mypkg.do_thing`
       - `unknown:*` (parser/meta unknowns like `parse-error`, `empty-source`, `large-script`)
     - Asked with `permission: "python"` so config rules under `python:` apply.
@@ -647,25 +648,25 @@ process execution, timeout, abort, output streaming.
    - Empty script file → error
 
 2. **Permission patterns — inline code**
-   - `open("f", "r")` → ask with pattern `read:<resolved-path>`
-   - `subprocess.run(...)` → ask with pattern `exec:subprocess.run`
+   - `open("f", "r")` → no `python` ask when the resolved path stays inside the active project root
+   - `subprocess.run(...)` → hard-fail before any permission ask
    - `open("f", "w"); os.remove("g")` → patterns include both write paths
    - `mypkg.do_thing()` → ask with pattern `unknown:callable:mypkg.do_thing`
    - Pure math (`1+1`) → ask with pattern `unknown:no-calls-detected`
 
 3. **Permission patterns — script file**
-   - Script inside project → no external_directory ask
-   - Script outside project → external_directory ask triggered
-   - Script with literal paths outside project → external_directory ask for those paths
+   - Script whose realpath stays inside the worktree → no external_directory ask
+   - Script whose realpath resolves outside the worktree → external_directory ask triggered before file load
+   - Script with literal paths outside the worktree → external_directory ask for those paths
 
 4. **External directory detection**
-   - `workdir` outside project → external_directory ask
-   - `workdir` inside project → no external_directory ask
+   - `workdir` whose realpath resolves outside the worktree → external_directory ask
+   - `workdir` whose realpath stays inside the worktree → no external_directory ask
    - Code referencing `/tmp/outside.txt` → external_directory for `/tmp/*`
 
 5. **Always patterns**
-   - `open("f", "r")` → always includes parent directory glob
-   - `subprocess.run(...)` → always includes `exec:subprocess.*`
+   - `open(target, "r")` → always includes `read:*`
+   - `subprocess.run(...)` → no permission pattern because the runtime rejects it before asking
    - `mypkg.do_thing()` → always includes `unknown:callable:mypkg.do_thing`
    - `unknown:parse-error` → always includes `unknown:*`
 
@@ -797,7 +798,7 @@ implementation state, and prepare for handoff.
    map to an `exec:*` family, but still fall back to `unknown:callable:<name>`.
 
 **Verification:**
-- All files under cwd are workspace-scoped.
+- Literal filesystem reads under the active worktree are auto-allowed; dynamic reads still ask.
 - `opencode/` remains ignored.
 - All tests pass.
 
@@ -1175,9 +1176,10 @@ Notes:
 
 #### 15b. Include code preview in permission asks
 
-Attach code preview metadata to both permission asks emitted by the tool:
-- `external_directory` ask metadata
+Attach code preview metadata to `python` asks and to `external_directory` asks once source is available:
 - `python` ask metadata
+- `external_directory` ask metadata after source is loaded
+- preflight `external_directory` approval for outside-worktree `scriptPath` may occur before source load and therefore omit preview fields
 
 Add fields such as:
 - execution mode (`inline` vs `script`)
@@ -1197,7 +1199,8 @@ permission classification, timeout, or output handling.
   - inline `code` mode
   - `scriptPath` mode
   - large source truncation behavior
-  - external-directory ask path (when triggered) includes the same preview
+  - external-directory ask path (when triggered after source load) includes the same preview
+  - preflight outside-worktree `scriptPath` approval omits preview because source is not loaded yet
 
 **Optional docs update (`.opencode/tool/python.txt`):**
 - Mention that permission prompts include code preview text before execution.
