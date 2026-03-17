@@ -356,10 +356,10 @@ runtime behavior or security posture.
 
 | Capability | Stock OpenCode | Forked OpenCode |
 |------------|----------------|-----------------|
-| **Permission prompt rendering** | Generic/fallback prompt — shows permission patterns (`read:*`, `exec:*`, etc.) and Allow/Reject actions. No Python-specific context. | Python-specific compact summary showing description, mode (`inline`/`script`), script path, args, workdir, and code preview with line/byte counts. |
-| **Code preview in prompt body** | Not rendered. Metadata is sent by the tool but the stock TUI does not display it. | Compact code preview displayed inline with truncation status. |
-| **`ctrl+f` fullscreen view** | Generic permission info. | Full Python source code with precedence: `codeExpanded` (≤50 KB) → inline `code` → `codePreview` fallback. |
-| **`external_directory` context** | Generic directory information. | Python-aware context showing mode, description, and path details; source preview is included after source is loaded, but preflight outside-script approval may omit it. |
+| **Permission prompt rendering** | Generic/fallback prompt — shows permission patterns (`read:*`, `exec:*`, etc.) and Allow/Reject actions. No Python-specific context. | Python-specific compact summary showing description, mode (`inline`/`script`), script path, args, workdir, bounded provenance rows, and code preview with line/byte counts. |
+| **Code preview in prompt body** | Not rendered. Metadata is sent by the tool but the stock TUI does not display it. | Compact code preview displayed inline after bounded provenance rows, with truncation status. |
+| **`ctrl+f` fullscreen view** | Generic permission info. | Full Python source code with bounded provenance rows above it, using precedence: `codeExpanded` (<= 50 KB) -> inline `code` -> `codePreview` fallback. |
+| **`external_directory` context** | Generic directory information. | Python-aware context showing approved patterns plus source preview/provenance after source is loaded; preflight outside-script approval may omit those fields. |
 | **Config schema for `python` key** | Works at runtime via `.catchall()` but `python` does not appear in config schema autocompletion. | `python` registered as a named permission key — editors provide autocompletion for `permission.python.*` rules. |
 
 ### Fork status
@@ -468,7 +468,13 @@ Before execution, the runtime analyzes source and asks permissions with metadata
 - Adds optional operation metadata such as `canonicalSource`, `receiverKind`,
   `ruleHit`, `guardFailure`, and dependency signatures when the analyzer has
   bounded evidence for them.
-- Includes bounded executable-source preview in `python` ask metadata and in `external_directory` asks once source is loaded; preflight outside-worktree `scriptPath` approval may not include source preview.
+- Fork-aware TUI builds render bounded `metadata.operations` rows ahead of the
+  source preview in bracketed `[kind] [source] [provenance]` form, with the
+  third bracket omitted when it would add only low-signal repetition.
+- Includes bounded executable-source preview in `python` ask metadata and in
+  Python-originated `external_directory` asks once source is loaded; preflight
+  outside-worktree `scriptPath` approval may not include source preview or
+  provenance.
 
 #### Preview limits
 

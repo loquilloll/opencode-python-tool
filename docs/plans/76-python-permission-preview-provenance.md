@@ -1,13 +1,13 @@
 ---
 title: Python Permission Preview Provenance
-status: active
+status: done
 plan_type: build
 plan: 76-python-permission-preview-provenance
 created: 2026-03-17
-updated: 2026-03-17T14:01
+updated: 2026-03-17T20:48
 tags:
   - type/plan
-  - status/active
+  - status/done
   - project/opencode-python-tool
   - topic/permissions
   - topic/tui
@@ -159,6 +159,16 @@ same bounded provenance context already available on `python` asks.
 
 - `feat: share python permission provenance with external directory asks`
 
+#### Notes
+
+- Status: Done (2026-03-17)
+- Summary: Analyzed `external_directory` asks now reuse the same bounded permission metadata bundle as `python` asks, so post-analysis external approvals carry `operations`, analyzer versions, and permission arrays without changing the early outside-worktree `scriptPath` preflight ask. Added regressions for analyzed inline/script external flows and explicit guardrails proving the preflight path still omits preview/provenance data.
+- Files: `src/python.ts`, `.opencode/test/python-external-directory.test.ts`, `docs/plans/76-python-permission-preview-provenance.md`
+- Tests: `cd .opencode && bun test test/python-external-directory.test.ts`; `cd .opencode && bun test`
+- Follow-ups: Phase 2 can now normalize the shared `metadata.operations` payload for both `python` and analyzed `external_directory` prompts.
+- Commit: Not committed
+- PR/Jira: None
+
 ### Phase 2 - TUI helper provenance view-model
 
 **Goal:** Normalize raw permission provenance into a small, defensive view-model
@@ -192,6 +202,16 @@ that the prompt can render without understanding analyzer internals.
 **Suggested commit message:**
 
 - `feat(tui): extract python permission provenance preview data`
+
+#### Notes
+
+- Status: Done (2026-03-17)
+- Summary: `buildPythonPermissionView()` now normalizes raw `metadata.operations` into bounded compact/fullscreen provenance rows with stable partitioning and remainder counts, while keeping malformed entries fail-soft and preserving existing code-preview precedence. Added helper coverage for canonical-source, guard, receiver, malformed, over-limit, and Python-shaped `external_directory` metadata cases.
+- Files: `opencode/packages/opencode/src/cli/cmd/tui/routes/session/permission-python.ts`, `opencode/packages/opencode/test/permission-python.test.ts`, `docs/plans/76-python-permission-preview-provenance.md`
+- Tests: `cd opencode/packages/opencode && bun test test/permission-python.test.ts`
+- Follow-ups: Phase 3 can render the new helper-owned rows and remainder counts without parsing analyzer metadata in JSX.
+- Commit: Not committed
+- PR/Jira: None
 
 ### Phase 3 - TUI renderer provenance block
 
@@ -231,6 +251,16 @@ permission prompts.
 
 - `feat(tui): show python permission provenance in preview`
 
+#### Notes
+
+- Status: Done (2026-03-17)
+- Summary: The TUI permission body now renders bounded provenance rows ahead of the existing Python source preview, reuses the same block for Python-shaped `external_directory` prompts, and keeps external pattern context visible without changing compact/fullscreen code-source precedence. Added renderer-support helpers plus focused tests for bracket formatting and compact/fullscreen body selection.
+- Files: `opencode/packages/opencode/src/cli/cmd/tui/routes/session/permission.tsx`, `opencode/packages/opencode/src/cli/cmd/tui/routes/session/permission-python.ts`, `opencode/packages/opencode/test/permission-python.test.ts`, `docs/plans/76-python-permission-preview-provenance.md`
+- Tests: `cd opencode/packages/opencode && bun test test/permission-python.test.ts`
+- Follow-ups: Complete interactive compact/fullscreen verification in Phase 4 and document the delivered preview behavior.
+- Commit: Not committed
+- PR/Jira: None
+
 ### Phase 4 - Docs and interactive validation
 
 **Goal:** Document the new preview behavior and verify it in the interactive TUI.
@@ -259,6 +289,16 @@ permission prompts.
 
 - `docs: document python permission provenance preview`
 
+#### Notes
+
+- Status: Done (2026-03-17)
+- Summary: Updated `README.md` to document the bounded provenance preview behavior, then completed interactive verification via `tmux-cli` in an isolated `opencode-fork` session. Verified compact and fullscreen behavior for both `python` and analyzed Python-shaped `external_directory` prompts, including provenance rows, pattern context, and unchanged code-source precedence.
+- Files: `README.md`, `docs/plans/76-python-permission-preview-provenance.md`
+- Tests: `cd opencode/packages/opencode && bun test test/permission-python.test.ts`; `cd .opencode && bun test test/python-external-directory.test.ts`; manual `tmux-cli` verification in isolated `opencode-fork` session for compact/fullscreen `python` and compact/fullscreen analyzed `external_directory` prompts
+- Follow-ups: Optional: refine the compact external-directory layout for narrow split panes; in tmux verification, zoomed full-width view showed the expected provenance rows cleanly, while narrow split panes could clip some compact content.
+- Commit: Not committed
+- PR/Jira: None
+
 ## Acceptance Criteria
 
 - Python permission prompts show a compact provenance summary derived from
@@ -282,7 +322,7 @@ permission prompts.
 
 ## Phase Status
 
-- Phase 1: TODO
-- Phase 2: TODO
-- Phase 3: TODO
-- Phase 4: TODO
+- Phase 1: DONE
+- Phase 2: DONE
+- Phase 3: DONE
+- Phase 4: DONE

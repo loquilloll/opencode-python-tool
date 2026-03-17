@@ -524,7 +524,10 @@ export default tool({
         permission: "external_directory",
         patterns: plan.external,
         always: plan.external,
-        metadata: askMetadata,
+        metadata: {
+          ...askMetadata,
+          ...permissionMetadata,
+        },
       })
     }
 

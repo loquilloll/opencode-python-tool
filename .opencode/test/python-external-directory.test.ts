@@ -101,6 +101,11 @@ describe("python tool runtime", () => {
         expect(metadata?.source).toBe(scriptPath)
         expect(metadata?.scriptPath).toBe(scriptPath)
         expect(metadata?.codePreview).toBeUndefined()
+        expect(metadata?.analyzerVersion).toBeUndefined()
+        expect(metadata?.engineVersion).toBeUndefined()
+        expect(metadata?.operations).toBeUndefined()
+        expect(metadata?.permissionPatterns).toBeUndefined()
+        expect(metadata?.permissionAlways).toBeUndefined()
       })
     })
 
@@ -145,6 +150,56 @@ describe("python tool runtime", () => {
         expect(ask?.patterns).toContain(`${toSlash(outsideDir)}/*`)
         expect(getAsk(context, "python")).toBeUndefined()
         expect(context.metadatas).toHaveLength(0)
+      })
+    })
+
+    it("keeps preflight external_directory metadata bare before analyzed provenance metadata is available", async () => {
+      await withWorkspace(async ({ root, worktree }) => {
+        const scriptPath = path.join(root, "outside-read.py")
+        const scriptSource = "open('/tmp/outside.txt', 'r')\n"
+        await writeFile(scriptPath, scriptSource, "utf8")
+
+        const context = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            scriptPath,
+            args: [],
+            description: "outside script with analyzed external read",
+          },
+          context,
+        )
+
+        const externalAsks = context.asks.filter((item) => item.permission === "external_directory")
+        expect(externalAsks).toHaveLength(2)
+        expect(getAsk(context, "python")).toBeUndefined()
+
+        const preflightMetadata = externalAsks[0]?.metadata as ReturnType<typeof getAskMetadata>
+        expect(externalAsks[0]?.patterns).toContain(`${toSlash(path.dirname(scriptPath))}/*`)
+        expect(preflightMetadata?.codePreview).toBeUndefined()
+        expect(preflightMetadata?.analyzerVersion).toBeUndefined()
+        expect(preflightMetadata?.operations).toBeUndefined()
+
+        const analyzedMetadata = externalAsks[1]?.metadata as ReturnType<typeof getAskMetadata>
+        expect(externalAsks[1]?.patterns).toContain("/tmp/*")
+        expect(analyzedMetadata?.mode).toBe("script")
+        expect(analyzedMetadata?.source).toBe(scriptPath)
+        expect(analyzedMetadata?.scriptPath).toBe(scriptPath)
+        expect(analyzedMetadata?.codePreview).toBe(scriptSource)
+        expect(analyzedMetadata?.analyzerVersion).toEqual(expect.any(String))
+        expect(analyzedMetadata?.engineVersion).toEqual(expect.any(String))
+        expect(analyzedMetadata?.permissionPatterns).toEqual([])
+        expect(analyzedMetadata?.permissionAlways).toEqual([])
+        expect(analyzedMetadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "read",
+              call: "open",
+              path: "/tmp/outside.txt",
+              pattern: "read:/tmp/outside.txt",
+              always: "read:/tmp/*",
+            }),
+          ]),
+        )
       })
     })
 
@@ -275,6 +330,44 @@ describe("python tool runtime", () => {
         expect(externalMetadata?.codePreviewLines).toEqual({ total: 2, preview: 2 })
         expect(externalMetadata?.codeExpanded).toBeUndefined()
         expect(externalMetadata?.codeExpandedAvailable).toBeUndefined()
+      })
+    })
+
+    it("reuses permission provenance metadata in analyzed external_directory ask", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const source = ["from pathlib import Path", "p = Path('/tmp/outside.txt')", "p.read_text()"].join("\n")
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: source,
+            args: [],
+            description: "external provenance metadata",
+          },
+          context,
+        )
+
+        const externalMetadata = getAskMetadata(context, "external_directory")
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        expect(externalMetadata?.analyzerVersion).toEqual(expect.any(String))
+        expect(externalMetadata?.engineVersion).toEqual(expect.any(String))
+        expect(externalMetadata?.permissionPatterns).toEqual([])
+        expect(externalMetadata?.permissionAlways).toEqual([])
+        expect(externalMetadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "read",
+              call: "p.read_text",
+              path: "/tmp/outside.txt",
+              pattern: "read:/tmp/outside.txt",
+              always: "read:/tmp/*",
+              canonicalSource: "pathlib.Path.read_text",
+              receiverKind: "path",
+              ruleHit: "guarded-method:read_text",
+            }),
+          ]),
+        )
       })
     })
 
@@ -425,6 +518,13 @@ describe("python tool runtime", () => {
         const externalAsk = getAsk(context, "external_directory")
         expect(externalAsk?.patterns).toContain(`${toSlash(outside)}/*`)
         expect(getAsk(context, "python")).toBeUndefined()
+
+        const askMetadata = getAskMetadata(context, "external_directory")
+        expect(askMetadata?.permissionPatterns).toEqual([])
+        expect(askMetadata?.permissionAlways).toEqual([])
+        expect(askMetadata?.operations).toEqual(
+          expect.arrayContaining([expect.objectContaining({ kind: "emit", call: "print", canonicalSource: "print" })]),
+        )
 
         const metadata = context.metadatas[0]?.metadata
         expect(metadata?.operations).toEqual(
