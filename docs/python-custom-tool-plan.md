@@ -38,10 +38,17 @@ src/
 │   └── python-analyze.ts      # analyzer wrapper
 └── test/
     ├── fixtures/              # shared test helpers, mock context, temp dirs
-    │   └── context.ts         # mock ToolContext factory
+    │   ├── context.ts         # mock ToolContext factory
+    │   └── python-runtime.ts  # shared runtime test helpers/constants
     ├── python-analyze.test.ts # unit tests for the analyzer
-    └── python.test.ts         # integration tests for the tool runtime
+    ├── python-validation.test.ts # runtime guard coverage
+    ├── python-runtime-execution.test.ts # execution/workdir runtime coverage
+    ├── python-external-directory.test.ts # external-directory/boundary runtime coverage
+    ├── python-inline-permissions-basic.test.ts # basic inline runtime coverage
+    └── python-inline-permissions-inference.test.ts # inference-heavy inline runtime coverage
 ```
+
+Note: historical pre-split references below may still mention the original `.opencode/test/python.test.ts` monolith. The current runtime coverage lives in the split files listed above.
 
 ---
 
@@ -1090,7 +1097,7 @@ false negatives in permission prompts.
 **Files changed:**
 - `.opencode/tool/python-analyze.ts`
 - `.opencode/test/python-analyze.test.ts`
-- `.opencode/test/python.test.ts` (only if runtime permission-plan assertions are added)
+- relevant split runtime tests under `.opencode/test/` (only if runtime permission-plan assertions are added; today this is usually `.opencode/test/python-inline-permissions-inference.test.ts`)
 
 **Changes to `.opencode/tool/python-analyze.ts`:**
 
@@ -1130,8 +1137,9 @@ Add regression guards for review findings:
   without Atlassian import provenance
 - constructor variant matrix for supported module-qualified forms
 
-**Optional runtime tests (`.opencode/test/python.test.ts`):**
-- Add assertions that normalized Atlassian calls produce expected
+**Optional runtime tests (current split equivalents):**
+- Add assertions in `.opencode/test/python-inline-permissions-inference.test.ts`
+  that normalized Atlassian calls produce expected
   `python:exec:atlassian.*` permission ask patterns.
 
 **Verification:**
@@ -1156,7 +1164,7 @@ executed so reviewers can approve with full execution context.
 
 **Files changed:**
 - `.opencode/tool/python.ts`
-- `.opencode/test/python.test.ts`
+- relevant split runtime tests under `.opencode/test/` (today `.opencode/test/python-inline-permissions-basic.test.ts` and `.opencode/test/python-external-directory.test.ts`)
 - `.opencode/tool/python.txt` (optional wording update)
 
 **Changes to `.opencode/tool/python.ts`:**
@@ -1194,8 +1202,8 @@ Keep existing permission pattern/always behavior unchanged.
 No changes to actual execution semantics (`python -c` vs `scriptPath`),
 permission classification, timeout, or output handling.
 
-**Changes to `.opencode/test/python.test.ts`:**
-- Add tests asserting permission asks include code preview metadata for:
+**Changes now covered by split runtime tests:**
+- Add tests in `.opencode/test/python-inline-permissions-basic.test.ts` and `.opencode/test/python-external-directory.test.ts` asserting permission asks include code preview metadata for:
   - inline `code` mode
   - `scriptPath` mode
   - large source truncation behavior
@@ -1207,7 +1215,8 @@ permission classification, timeout, or output handling.
 
 **Verification:**
 ```bash
-cd .opencode && bun test test/python.test.ts
+cd .opencode && bun test test/python-inline-permissions-basic.test.ts
+cd .opencode && bun test test/python-external-directory.test.ts
 cd .opencode && bun test
 ```
 
@@ -1229,7 +1238,7 @@ failing immediately when subprocess invocation is detected.
 **Files changed:**
 - `.opencode/tool/python.txt`
 - `.opencode/tool/python.ts`
-- `.opencode/test/python.test.ts`
+- `.opencode/test/python-validation.test.ts`
 
 **Changes to `.opencode/tool/python.txt`:**
 
@@ -1267,7 +1276,7 @@ Alias-based subprocess invocation (for example `import subprocess as sp; sp.run`
 remains dependent on existing alias-resolution limitations unless expanded in a
 future phase.
 
-**Changes to `.opencode/test/python.test.ts`:**
+**Changes now covered by `.opencode/test/python-validation.test.ts`:**
 - Add runtime tests asserting immediate failure for subprocess usage in:
   - inline `code` mode
   - `scriptPath` mode
@@ -1276,7 +1285,7 @@ future phase.
 
 **Verification:**
 ```bash
-cd .opencode && bun test test/python.test.ts
+cd .opencode && bun test test/python-validation.test.ts
 cd .opencode && bun test
 ```
 

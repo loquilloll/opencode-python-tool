@@ -120,9 +120,14 @@ Thin re-export wrappers so OpenCode discovers the tool:
 | `.opencode/opencode.jsonc` | Restrictive default permission policy. |
 | `.opencode/package.json` | Dependencies: `@opencode-ai/plugin`, `tree-sitter-python`, `web-tree-sitter`. |
 | `.opencode/test/python-analyze.test.ts` | Analyzer unit tests (13 describe blocks, comprehensive classification coverage). |
-| `.opencode/test/python.test.ts` | Runtime/integration tests (arg validation, permissions, external directory, streaming, timeout, abort). |
+| `.opencode/test/python-validation.test.ts` | Runtime guard tests (arg validation, subprocess hard-fail, ENOENT handling). |
+| `.opencode/test/python-runtime-execution.test.ts` | Runtime execution tests (workdir semantics, timeout, abort, streaming). |
+| `.opencode/test/python-external-directory.test.ts` | Boundary/runtime tests (scriptPath, external-directory, symlink fallback, always patterns). |
+| `.opencode/test/python-inline-permissions-basic.test.ts` | Basic inline permission tests (preview metadata, simple asks, pure/emit behavior, parity smoke). |
+| `.opencode/test/python-inline-permissions-inference.test.ts` | Inference-heavy inline permission tests (Path/string/container/HTTP classification). |
 | `.opencode/test/python-session-report.test.ts` | Saved-session report regression tests (scan, filtering, malformed-row handling, candidate updates). |
 | `.opencode/test/fixtures/context.ts` | Mock `ToolContext` fixture for tests. |
+| `.opencode/test/fixtures/python-runtime.ts` | Shared runtime test helpers/constants for the split runtime suites. |
 
 ## Requirements
 
@@ -223,13 +228,23 @@ In addition to Option 1, copy test files and run validation:
 ```bash
 mkdir -p "$DST/.opencode/test/fixtures"
 cp "$SRC/.opencode/test/python-analyze.test.ts" "$DST/.opencode/test/python-analyze.test.ts"
-cp "$SRC/.opencode/test/python.test.ts" "$DST/.opencode/test/python.test.ts"
+cp "$SRC/.opencode/test/python-validation.test.ts" "$DST/.opencode/test/python-validation.test.ts"
+cp "$SRC/.opencode/test/python-runtime-execution.test.ts" "$DST/.opencode/test/python-runtime-execution.test.ts"
+cp "$SRC/.opencode/test/python-external-directory.test.ts" "$DST/.opencode/test/python-external-directory.test.ts"
+cp "$SRC/.opencode/test/python-inline-permissions-basic.test.ts" "$DST/.opencode/test/python-inline-permissions-basic.test.ts"
+cp "$SRC/.opencode/test/python-inline-permissions-inference.test.ts" "$DST/.opencode/test/python-inline-permissions-inference.test.ts"
 cp "$SRC/.opencode/test/python-session-report.test.ts" "$DST/.opencode/test/python-session-report.test.ts"
 cp "$SRC/.opencode/test/fixtures/context.ts" "$DST/.opencode/test/fixtures/context.ts"
+cp "$SRC/.opencode/test/fixtures/python-runtime.ts" "$DST/.opencode/test/fixtures/python-runtime.ts"
 
 cd "$DST/.opencode"
 bun test test/python-analyze.test.ts
-bun test test/python.test.ts
+bun test \
+  test/python-validation.test.ts \
+  test/python-runtime-execution.test.ts \
+  test/python-external-directory.test.ts \
+  test/python-inline-permissions-basic.test.ts \
+  test/python-inline-permissions-inference.test.ts
 bun test
 ```
 
@@ -581,8 +596,13 @@ bun test test/python-analyze.test.ts
 # report utility tests
 bun test test/python-session-report.test.ts
 
-# runtime-focused tests
-bun test test/python.test.ts
+# runtime-focused tests (trim this list to the split file(s) you touched)
+bun test \
+  test/python-validation.test.ts \
+  test/python-runtime-execution.test.ts \
+  test/python-external-directory.test.ts \
+  test/python-inline-permissions-basic.test.ts \
+  test/python-inline-permissions-inference.test.ts
 
 # full suite
 bun test
@@ -733,9 +753,14 @@ opencode-python-tool/
     test/
       python-analyze.test.ts     # Analyzer tests
       python-session-report.test.ts # Report utility tests
-      python.test.ts             # Runtime tests
+      python-validation.test.ts  # Runtime guard tests
+      python-runtime-execution.test.ts # Runtime execution/workdir tests
+      python-external-directory.test.ts # Runtime boundary/external-directory tests
+      python-inline-permissions-basic.test.ts # Basic inline runtime permission tests
+      python-inline-permissions-inference.test.ts # Inference-heavy inline runtime permission tests
       fixtures/
         context.ts               # Mock ToolContext
+        python-runtime.ts        # Shared runtime test helpers
     opencode.jsonc               # Permission policy
     package.json                 # Dependencies
   docs/                          # Plans, continuity, design docs

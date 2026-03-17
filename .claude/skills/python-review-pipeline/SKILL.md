@@ -74,7 +74,7 @@ Use the narrowest durable fix that removes recurring review noise.
    - `src/python/python-classifier.ts`
 4. Tests and docs every time behavior changes:
    - `.opencode/test/python-analyze.test.ts`
-   - `.opencode/test/python.test.ts`
+   - relevant split runtime tests under `.opencode/test/` (`python-validation.test.ts`, `python-runtime-execution.test.ts`, `python-external-directory.test.ts`, `python-inline-permissions-basic.test.ts`, `python-inline-permissions-inference.test.ts`)
    - `docs/python-classification-reference.md`
 
 ## Evidence Standard
@@ -90,7 +90,12 @@ When code changes, run the smallest useful test set first, then full tests if th
 
 ```bash
 bun test test/python-analyze.test.ts
-bun test test/python.test.ts
+bun test \
+  test/python-validation.test.ts \
+  test/python-runtime-execution.test.ts \
+  test/python-external-directory.test.ts \
+  test/python-inline-permissions-basic.test.ts \
+  test/python-inline-permissions-inference.test.ts
 bun test
 ```
 
