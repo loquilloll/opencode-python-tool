@@ -1106,6 +1106,7 @@ export async function scan(opts: {
 
         if (event.kind === "unknown") {
           if (!event.call.startsWith("callable:")) continue
+          if (event.evidence?.localDefinition) continue
           kind = "unknown"
           call = event.call.slice("callable:".length)
           unknownEvents++
@@ -1666,14 +1667,16 @@ export function renderTui(item: ReviewItem, full: boolean, help = false) {
   return out.join("\n")
 }
 
-function settled(queue: ReviewQueue, fingerprint: string, decision: ReviewDecision, identity?: ReviewIdentity) {
+export function settled(queue: ReviewQueue, fingerprint: string, decision: ReviewDecision, identity?: ReviewIdentity) {
   const key = identity ? reviewKeyOf(identity) : undefined
   return {
     ...queue,
     snippets: queue.snippets.map((snippet) => ({
       ...snippet,
       candidates: snippet.candidates.map((candidate) =>
-        candidate.fingerprint === fingerprint || (key && reviewKeyOf(candidate) === key) ? { ...candidate, decision } : candidate,
+        candidate.fingerprint === fingerprint || (key && !candidate.decision && reviewKeyOf(candidate) === key)
+          ? { ...candidate, decision }
+          : candidate,
       ),
     })),
   }
@@ -2099,7 +2102,7 @@ export async function promotions(report: Report, opts: { ledger: string; rules: 
   const byIdentity = new Map<
     string,
     {
-      call: string
+      calls: Set<string>
       decisions: Map<string, ReviewDecision>
       pending: Set<string>
     }
@@ -2107,7 +2110,8 @@ export async function promotions(report: Report, opts: { ledger: string; rules: 
 
   for (const item of report.occurrences) {
     const key = reviewKeyOf(item)
-    const row = byIdentity.get(key) ?? { call: item.call, decisions: new Map<string, ReviewDecision>(), pending: new Set<string>() }
+    const row = byIdentity.get(key) ?? { calls: new Set<string>(), decisions: new Map<string, ReviewDecision>(), pending: new Set<string>() }
+    row.calls.add(item.call)
     const outcome = resolvedDecision(decided, item)
     if (outcome) row.decisions.set(item.fingerprint, outcome)
     else row.pending.add(item.fingerprint)
@@ -2117,14 +2121,17 @@ export async function promotions(report: Report, opts: { ledger: string; rules: 
   const byCall = new Map<
     string,
     Array<{
+      calls: Set<string>
       decisions: Map<string, ReviewDecision>
       pending: Set<string>
     }>
   >()
   for (const row of byIdentity.values()) {
-    const rows = byCall.get(row.call) ?? []
-    rows.push(row)
-    byCall.set(row.call, rows)
+    for (const call of row.calls) {
+      const rows = byCall.get(call) ?? []
+      rows.push(row)
+      byCall.set(call, rows)
+    }
   }
 
   const promotable: Record<PromotionBucket, string[]> = { read: [], write: [], emit: [], exec: [] }
@@ -2133,6 +2140,10 @@ export async function promotions(report: Report, opts: { ledger: string; rules: 
   for (const [call, identities] of [...byCall.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     const outcomes = [...new Set(identities.flatMap((row) => [...row.decisions.values()]))]
     const pendingContexts = identities.reduce((count, row) => count + row.pending.size, 0)
+    if (identities.some((row) => row.calls.size > 1)) {
+      blocked.push({ call, reason: "review identity maps to multiple outward call aliases", decisions: outcomes, pendingContexts })
+      continue
+    }
     if (identities.length !== 1) {
       blocked.push({ call, reason: "multiple review identities share this call", decisions: outcomes, pendingContexts })
       continue

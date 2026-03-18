@@ -3,6 +3,7 @@ Use this tool to run Python code.
 When to use this tool vs bash:
 - Use when the primary action is executing Python code
 - Use this tool if your thinking about running `python <<'EOF'` using Bash.
+- Prefer the edit, write, read, and patch tools for manipulating the filesystem.
 
 Choose one source mode:
 - Use `code` for small inline snippets, one-off checks, or generated Python.
