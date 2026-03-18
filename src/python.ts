@@ -1,5 +1,4 @@
 /// <reference path="./python/env.d.ts" />
-import { tool } from "../.opencode/node_modules/@opencode-ai/plugin/dist/index.js"
 import { spawn } from "child_process"
 import { access, lstat, readFile, readlink } from "fs/promises"
 import os from "os"
@@ -7,6 +6,23 @@ import path from "path"
 import DESCRIPTION from "./python/python.txt"
 import { analyzeDetailed, type PythonEvent } from "./python/python-analyze"
 import { analyzerMetadata } from "./python/python-ir"
+
+function isMissingPluginImport(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: string }).code : undefined
+  const message = error instanceof Error ? error.message : String(error)
+  return code === "ERR_MODULE_NOT_FOUND" && /@opencode-ai\/plugin/.test(message)
+}
+
+async function loadPlugin() {
+  try {
+    return await import("@opencode-ai/plugin")
+  } catch (error) {
+    if (!isMissingPluginImport(error)) throw error
+    return await import("../.opencode/node_modules/@opencode-ai/plugin/dist/index.js")
+  }
+}
+
+const { tool } = await loadPlugin()
 
 const DEFAULT_TIMEOUT = 2 * 60 * 1000
 const MAX_METADATA_LENGTH = 30_000

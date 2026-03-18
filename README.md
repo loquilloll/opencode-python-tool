@@ -281,14 +281,10 @@ cp "$SRC/src/python/python.txt" "$OPENCODE_HOME/tools/python/python.txt"
 cp "$SRC/src/python/env.d.ts" "$OPENCODE_HOME/tools/python/env.d.ts"
 ```
 
-Global installs use package-based imports. Ensure this line exists in
-`$OPENCODE_HOME/tools/python.ts`:
-
-```ts
-import { tool } from "@opencode-ai/plugin"
-```
-
-Then install dependencies and smoke-check:
+`src/python.ts` now resolves the package import for global installs and falls
+back to the project-local `.opencode` plugin path when needed, so no manual
+import rewrite is required after copying. Then install dependencies and
+smoke-check:
 
 ```bash
 cd "$OPENCODE_HOME"
@@ -716,11 +712,10 @@ When this repo changes, use one of these refresh paths.
    - `src/python/python-rules.json` -> `tools/python/python-rules.json`
    - `src/python/python.txt` -> `tools/python/python.txt`
    - `src/python/env.d.ts` -> `tools/python/env.d.ts`
-3. Ensure `tools/python.ts` imports the plugin from `@opencode-ai/plugin`.
-4. Run `bun install` in `~/.config/opencode`.
-5. Run module-load smoke check:
+3. Run `bun install` in `~/.config/opencode`.
+4. Run module-load smoke check:
     - `bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok'))"`
-6. If you use the session-report workflow with a global install, run the repo's `src/python-session-report.ts` against `tools/python/python-rules.json` rather than copying the utility into `tools/`.
+5. If you use the session-report workflow with a global install, run the repo's `src/python-session-report.ts` against `tools/python/python-rules.json` rather than copying the utility into `tools/`.
 
 For low-drift maintenance, keep this repository as the canonical source and
 avoid editing copied files independently in downstream projects.
