@@ -4,6 +4,8 @@ import type { AtlassianClientFamily, Rules, Scope } from "./python-analyze-types
 import { clearTrackedProvenanceForName, type ContainerKind, type ReceiverContainer, type ReceiverPath } from "./python-provenance"
 import type { PythonArgs as Args, PythonValue as Value } from "./python-values"
 
+const DATETIME_CANONICAL_MEMBERS = new Set(["UTC", "MAXYEAR", "MINYEAR", "date", "datetime", "time", "timedelta", "timezone", "tzinfo"])
+
 type ImportBinding = {
   name: string
   target?: string
@@ -64,6 +66,7 @@ export function resolveQualified(input: string, current: Scope) {
   const seen = new Set<string>()
   while (parts[0]) {
     const head = parts[0]
+    if (head === "datetime" && parts[1] && DATETIME_CANONICAL_MEMBERS.has(parts[1])) break
     if (!head || seen.has(head)) break
     const target = lookupBinding(current, head)
     if (!target || target === head) break
@@ -209,6 +212,11 @@ export function importBindings(node: Node) {
 export function shouldBindDirectImport(target: string, rules: Rules) {
   return (
     DIRECT_IMPORT_BINDINGS.has(target) ||
+    target.startsWith("calendar.") ||
+    target.startsWith("datetime.") ||
+    target.startsWith("os.path.") ||
+    target.startsWith("time.") ||
+    target.startsWith("zoneinfo.") ||
     (target.startsWith("ast.") && rules.calls.pure.has(target)) ||
     (target.startsWith("re.") && rules.calls.pure.has(target)) ||
     (target.startsWith("unittest.mock.") && rules.calls.pure.has(target)) ||

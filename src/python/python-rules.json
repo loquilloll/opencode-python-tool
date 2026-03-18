@@ -49,9 +49,52 @@
   },
   "calls": {
     "read": [
+      "calendar.firstweekday",
       "json.load",
+      "os.path.exists",
+      "os.path.getatime",
+      "os.path.getctime",
+      "os.path.getmtime",
+      "os.path.getsize",
+      "os.path.isdir",
+      "os.path.isdevdrive",
+      "os.path.isfile",
+      "os.path.isjunction",
+      "os.path.islink",
+      "os.path.ismount",
+      "os.path.lexists",
+      "os.path.realpath",
+      "os.path.samefile",
+      "time.asctime",
+      "time.clock_getres",
+      "time.clock_gettime",
+      "time.clock_gettime_ns",
+      "time.ctime",
+      "time.get_clock_info",
+      "time.gmtime",
+      "time.localtime",
+      "time.monotonic",
+      "time.monotonic_ns",
+      "time.perf_counter",
+      "time.perf_counter_ns",
+      "time.process_time",
+      "time.process_time_ns",
+      "time.pthread_getcpuclockid",
+      "time.strftime",
+      "time.thread_time",
+      "time.thread_time_ns",
+      "time.time",
+      "time.time_ns",
       "yaml.load",
       "yaml.safe_load",
+      "datetime.date.today",
+      "datetime.datetime.now",
+      "datetime.datetime.today",
+      "datetime.datetime.utcnow",
+      "zoneinfo.ZoneInfo",
+      "zoneinfo.ZoneInfo.from_file",
+      "zoneinfo.ZoneInfo.no_cache",
+      "zoneinfo.available_timezones",
       "inspect.currentframe",
       "inspect.findsource",
       "inspect.getabsfile",
@@ -71,11 +114,20 @@
       "inspect.trace"
     ],
     "write": [
+      "calendar.setfirstweekday",
       "json.dump",
+      "time.clock_settime",
+      "time.clock_settime_ns",
+      "time.tzset",
       "yaml.dump",
-      "yaml.safe_dump"
+      "yaml.safe_dump",
+      "zoneinfo.ZoneInfo.clear_cache",
+      "zoneinfo.reset_tzpath"
     ],
     "emit": [
+      "calendar.prcal",
+      "calendar.prmonth",
+      "calendar.prweek",
       "print",
       "logging.debug",
       "logging.info",
@@ -95,6 +147,36 @@
       "os.system"
     ],
     "pure": [
+      "calendar.Calendar",
+      "calendar.HTMLCalendar",
+      "calendar.TextCalendar",
+      "calendar.calendar",
+      "calendar.isleap",
+      "calendar.leapdays",
+      "calendar.month",
+      "calendar.monthcalendar",
+      "calendar.monthrange",
+      "calendar.timegm",
+      "calendar.weekday",
+      "calendar.weekheader",
+      "os.path.abspath",
+      "os.path.basename",
+      "os.path.commonpath",
+      "os.path.commonprefix",
+      "os.path.dirname",
+      "os.path.expanduser",
+      "os.path.expandvars",
+      "os.path.isabs",
+      "os.path.join",
+      "os.path.normcase",
+      "os.path.normpath",
+      "os.path.relpath",
+      "os.path.sameopenfile",
+      "os.path.samestat",
+      "os.path.split",
+      "os.path.splitdrive",
+      "os.path.splitext",
+      "os.path.splitroot",
       "re.compile",
       "re.search",
       "re.match",
@@ -164,6 +246,30 @@
       "ast.parse",
       "ast.unparse",
       "ast.walk",
+      "time.mktime",
+      "time.sleep",
+      "time.strptime",
+      "time.struct_time",
+      "datetime.date",
+      "datetime.date.fromisocalendar",
+      "datetime.date.fromisoformat",
+      "datetime.date.fromordinal",
+      "datetime.date.fromtimestamp",
+      "datetime.date.strptime",
+      "datetime.datetime",
+      "datetime.datetime.combine",
+      "datetime.datetime.fromisocalendar",
+      "datetime.datetime.fromisoformat",
+      "datetime.datetime.fromordinal",
+      "datetime.datetime.fromtimestamp",
+      "datetime.datetime.strptime",
+      "datetime.datetime.utcfromtimestamp",
+      "datetime.time",
+      "datetime.time.fromisoformat",
+      "datetime.time.strptime",
+      "datetime.timedelta",
+      "datetime.timezone",
+      "datetime.tzinfo",
       "unittest.mock.AsyncMock",
       "unittest.mock.MagicMock",
       "unittest.mock.Mock",
@@ -255,10 +361,94 @@
   },
   "pathCalls": {
     "read": {
+      "os.path.exists": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.getatime": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.getctime": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.getmtime": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.getsize": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.isdir": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.isdevdrive": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.isfile": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.isjunction": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.islink": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.ismount": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.lexists": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
       "oci.config.from_file": {
         "index": 0,
         "names": [
           "file_location"
+        ]
+      },
+      "os.path.realpath": {
+        "index": 0,
+        "names": [
+          "path"
+        ]
+      },
+      "os.path.samefile": {
+        "index": 0,
+        "names": [
+          "path1"
         ]
       }
     },

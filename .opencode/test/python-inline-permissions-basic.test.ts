@@ -340,6 +340,156 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("skips python ask for pure-only datetime helpers and keeps tracked pure metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import UTC, datetime, timedelta, timezone",
+              "when = datetime.fromisoformat('2024-01-02T03:04:05+00:00')",
+              "when.astimezone(UTC)",
+              "delay = timedelta(seconds=30)",
+              "seconds = delay.total_seconds()",
+              "seconds.is_integer()",
+              "label = timezone(timedelta(hours=2)).tzname(None)",
+              "label.lower()",
+              "UTC.tzname(None)",
+            ].join("\n"),
+            args: [],
+            description: "pure datetime helpers",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "datetime.datetime.fromisoformat", pattern: "pure:datetime.datetime.fromisoformat" }),
+            expect.objectContaining({ kind: "pure", call: "when.astimezone", pattern: "pure:when.astimezone" }),
+            expect.objectContaining({ kind: "pure", call: "datetime.timedelta", pattern: "pure:datetime.timedelta" }),
+            expect.objectContaining({ kind: "pure", call: "delay.total_seconds", pattern: "pure:delay.total_seconds" }),
+            expect.objectContaining({ kind: "pure", call: "seconds.is_integer", pattern: "pure:seconds.is_integer" }),
+            expect.objectContaining({ kind: "pure", call: "datetime.timezone", pattern: "pure:datetime.timezone" }),
+            expect.objectContaining({ kind: "pure", call: "datetime.timezone.tzname", pattern: "pure:datetime.timezone.tzname" }),
+            expect.objectContaining({ kind: "pure", call: "label.lower", pattern: "pure:label.lower" }),
+            expect.objectContaining({ kind: "pure", call: "datetime.UTC.tzname", pattern: "pure:datetime.UTC.tzname" }),
+          ]),
+        )
+      })
+    })
+
+    it("projects time and zoneinfo operations without unknown noise", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from time import strptime, time as now",
+              "from zoneinfo import ZoneInfo",
+              "stamp = now()",
+              "stamp.is_integer()",
+              "parts = strptime('30 Nov 00', '%d %b %y')",
+              "parts.count(0)",
+              "zone = ZoneInfo('UTC')",
+              "zone.tzname(None)",
+              "offset = zone.utcoffset(None)",
+              "offset.total_seconds()",
+            ].join("\n"),
+            args: [],
+            description: "time and zoneinfo projection",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["read:time.time", "read:zoneinfo.ZoneInfo"]))
+        expect(ask?.patterns).not.toEqual(
+          expect.arrayContaining([
+            "unknown:callable:stamp.is_integer",
+            "unknown:callable:parts.count",
+            "unknown:callable:zone.tzname",
+            "unknown:callable:offset.total_seconds",
+          ]),
+        )
+
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "time.time", pattern: "read:time.time" }),
+            expect.objectContaining({ kind: "pure", call: "stamp.is_integer", pattern: "pure:stamp.is_integer" }),
+            expect.objectContaining({ kind: "pure", call: "time.strptime", pattern: "pure:time.strptime" }),
+            expect.objectContaining({ kind: "pure", call: "parts.count", pattern: "pure:parts.count" }),
+            expect.objectContaining({ kind: "read", call: "zoneinfo.ZoneInfo", pattern: "read:zoneinfo.ZoneInfo" }),
+            expect.objectContaining({ kind: "pure", call: "zone.tzname", pattern: "pure:zone.tzname" }),
+            expect.objectContaining({ kind: "pure", call: "zone.utcoffset", pattern: "pure:zone.utcoffset" }),
+            expect.objectContaining({ kind: "pure", call: "offset.total_seconds", pattern: "pure:offset.total_seconds" }),
+          ]),
+        )
+      })
+    })
+
+    it("projects calendar and os.path operations without unknown noise", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from calendar import SUNDAY, firstweekday, month, monthcalendar, setfirstweekday",
+              "from os.path import basename, exists, splitext",
+              "exists('notes.txt')",
+              "firstweekday()",
+              "setfirstweekday(SUNDAY)",
+              "text = month(2024, 1)",
+              "text.splitlines()",
+              "weeks = monthcalendar(2024, 1)",
+              "weeks.count([])",
+              "name = basename('docs/readme.md')",
+              "name.lower()",
+              "parts = splitext('docs/readme.md')",
+              "parts.count('')",
+            ].join("\n"),
+            args: [],
+            description: "calendar and os.path projection",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["write:calendar.setfirstweekday"]))
+        expect(ask?.patterns).not.toEqual(
+          expect.arrayContaining([
+            "unknown:callable:text.splitlines",
+            "unknown:callable:weeks.count",
+            "unknown:callable:name.lower",
+            "unknown:callable:parts.count",
+          ]),
+        )
+
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "os.path.exists", path: toSlash(path.join(worktree, "notes.txt")) }),
+            expect.objectContaining({ kind: "read", call: "calendar.firstweekday", pattern: "read:calendar.firstweekday" }),
+            expect.objectContaining({ kind: "write", call: "calendar.setfirstweekday", pattern: "write:calendar.setfirstweekday" }),
+            expect.objectContaining({ kind: "pure", call: "calendar.month", pattern: "pure:calendar.month" }),
+            expect.objectContaining({ kind: "pure", call: "text.splitlines", pattern: "pure:text.splitlines" }),
+            expect.objectContaining({ kind: "pure", call: "calendar.monthcalendar", pattern: "pure:calendar.monthcalendar" }),
+            expect.objectContaining({ kind: "pure", call: "weeks.count", pattern: "pure:weeks.count" }),
+            expect.objectContaining({ kind: "pure", call: "os.path.basename", pattern: "pure:os.path.basename" }),
+            expect.objectContaining({ kind: "pure", call: "name.lower", pattern: "pure:name.lower" }),
+            expect.objectContaining({ kind: "pure", call: "os.path.splitext", pattern: "pure:os.path.splitext" }),
+            expect.objectContaining({ kind: "pure", call: "parts.count", pattern: "pure:parts.count" }),
+          ]),
+        )
+      })
+    })
+
     describe("phase 1 runtime parity smoke fixtures", () => {
       it("preserves tracked path and guarded metadata projection", async () => {
         const result = await collectInlinePermissionParity(

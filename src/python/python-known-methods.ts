@@ -31,6 +31,83 @@ export const RANGE_PURE_METHODS = new Set(["count", "index"])
 export const INSPECT_SIGNATURE_PURE_METHODS = new Set(["bind", "bind_partial", "format", "replace"])
 export const INSPECT_PARAMETER_PURE_METHODS = new Set(["replace"])
 export const INSPECT_BOUND_ARGUMENTS_PURE_METHODS = new Set(["apply_defaults"])
+export const DATETIME_DATE_PURE_METHODS = new Set([
+  "ctime",
+  "isocalendar",
+  "isoformat",
+  "isoweekday",
+  "replace",
+  "strftime",
+  "timetuple",
+  "toordinal",
+  "weekday",
+])
+export const DATETIME_DATETIME_PURE_METHODS = new Set([
+  "astimezone",
+  "ctime",
+  "date",
+  "dst",
+  "isocalendar",
+  "isoformat",
+  "isoweekday",
+  "replace",
+  "strftime",
+  "time",
+  "timestamp",
+  "timetuple",
+  "timetz",
+  "tzname",
+  "utcoffset",
+  "utctimetuple",
+  "weekday",
+])
+export const DATETIME_TIME_PURE_METHODS = new Set(["dst", "isoformat", "replace", "strftime", "tzname", "utcoffset"])
+export const DATETIME_TIMEDELTA_PURE_METHODS = new Set(["total_seconds"])
+export const DATETIME_TIMEZONE_PURE_METHODS = new Set(["dst", "fromutc", "tzname", "utcoffset"])
+export const TIME_FLOAT_CALLS = new Set([
+  "time.clock_getres",
+  "time.clock_gettime",
+  "time.mktime",
+  "time.monotonic",
+  "time.perf_counter",
+  "time.process_time",
+  "time.thread_time",
+  "time.time",
+])
+export const TIME_INT_CALLS = new Set([
+  "time.clock_gettime_ns",
+  "time.monotonic_ns",
+  "time.perf_counter_ns",
+  "time.pthread_getcpuclockid",
+  "time.process_time_ns",
+  "time.thread_time_ns",
+  "time.time_ns",
+])
+export const TIME_STRING_CALLS = new Set(["time.asctime", "time.ctime", "time.strftime"])
+export const TIME_TUPLE_CALLS = new Set(["time.gmtime", "time.localtime", "time.strptime", "time.struct_time"])
+export const CALENDAR_INT_CALLS = new Set(["calendar.firstweekday", "calendar.leapdays", "calendar.timegm", "calendar.weekday"])
+export const CALENDAR_STRING_CALLS = new Set(["calendar.calendar", "calendar.month", "calendar.weekheader"])
+export const CALENDAR_TUPLE_CALLS = new Set(["calendar.monthrange"])
+export const CALENDAR_LIST_CALLS = new Set(["calendar.monthcalendar"])
+export const OSPATH_STRING_CALLS = new Set([
+  "os.path.abspath",
+  "os.path.basename",
+  "os.path.commonpath",
+  "os.path.commonprefix",
+  "os.path.dirname",
+  "os.path.expanduser",
+  "os.path.expandvars",
+  "os.path.join",
+  "os.path.normcase",
+  "os.path.normpath",
+  "os.path.realpath",
+  "os.path.relpath",
+])
+export const OSPATH_TUPLE_CALLS = new Set(["os.path.split", "os.path.splitdrive", "os.path.splitext", "os.path.splitroot"])
+export const OSPATH_INT_CALLS = new Set(["os.path.getsize"])
+export const OSPATH_FLOAT_CALLS = new Set(["os.path.getatime", "os.path.getctime", "os.path.getmtime"])
+export const ZONEINFO_ZONE_CALLS = new Set(["zoneinfo.ZoneInfo", "zoneinfo.ZoneInfo.from_file", "zoneinfo.ZoneInfo.no_cache"])
+export const ZONEINFO_SET_CALLS = new Set(["zoneinfo.available_timezones"])
 export const MOCK_PURE_METHODS = new Set([
   "assert_any_call",
   "assert_called",
@@ -193,6 +270,48 @@ export const EXACT_PURE_CALLS = new Set([
   "pathlib.Path.home",
   "pathlib.Path.from_uri",
   "os.path.join",
+])
+export const DATETIME_DATE_CALLS = new Set([
+  "datetime.date",
+  "datetime.date.fromisocalendar",
+  "datetime.date.fromisoformat",
+  "datetime.date.fromordinal",
+  "datetime.date.fromtimestamp",
+  "datetime.date.strptime",
+  "datetime.date.today",
+])
+export const DATETIME_DATETIME_CALLS = new Set([
+  "datetime.datetime",
+  "datetime.datetime.combine",
+  "datetime.datetime.fromisocalendar",
+  "datetime.datetime.fromisoformat",
+  "datetime.datetime.fromordinal",
+  "datetime.datetime.fromtimestamp",
+  "datetime.datetime.now",
+  "datetime.datetime.strptime",
+  "datetime.datetime.today",
+  "datetime.datetime.utcnow",
+  "datetime.datetime.utcfromtimestamp",
+])
+export const DATETIME_TIME_CALLS = new Set(["datetime.time", "datetime.time.fromisoformat", "datetime.time.strptime"])
+export const DATETIME_TIMEDELTA_CALLS = new Set(["datetime.timedelta"])
+export const DATETIME_TIMEZONE_CALLS = new Set(["datetime.timezone"])
+export const DATETIME_DATE_CONSTANTS = new Set(["datetime.date.max", "datetime.date.min"])
+export const DATETIME_DATETIME_CONSTANTS = new Set(["datetime.datetime.max", "datetime.datetime.min"])
+export const DATETIME_TIME_CONSTANTS = new Set(["datetime.time.max", "datetime.time.min"])
+export const DATETIME_TIMEDELTA_CONSTANTS = new Set([
+  "datetime.date.resolution",
+  "datetime.datetime.resolution",
+  "datetime.time.resolution",
+  "datetime.timedelta.max",
+  "datetime.timedelta.min",
+  "datetime.timedelta.resolution",
+])
+export const DATETIME_TIMEZONE_CONSTANTS = new Set([
+  "datetime.UTC",
+  "datetime.timezone.max",
+  "datetime.timezone.min",
+  "datetime.timezone.utc",
 ])
 export const PATH_PURE_METHODS = new Set([
   "absolute",

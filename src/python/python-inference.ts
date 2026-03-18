@@ -5,8 +5,27 @@ import {
   ASSIGNMENT_CONTAINER_TYPES,
   BYTEARRAY_PURE_METHODS,
   BYTES_PURE_METHODS,
+  CALENDAR_INT_CALLS,
+  CALENDAR_LIST_CALLS,
+  CALENDAR_STRING_CALLS,
+  CALENDAR_TUPLE_CALLS,
   CALLABLE_UNKNOWN_PREFIX,
   COMPLEX_PURE_METHODS,
+  DATETIME_DATE_CALLS,
+  DATETIME_DATE_CONSTANTS,
+  DATETIME_DATE_PURE_METHODS,
+  DATETIME_DATETIME_CALLS,
+  DATETIME_DATETIME_CONSTANTS,
+  DATETIME_DATETIME_PURE_METHODS,
+  DATETIME_TIME_CALLS,
+  DATETIME_TIME_CONSTANTS,
+  DATETIME_TIME_PURE_METHODS,
+  DATETIME_TIMEDELTA_CALLS,
+  DATETIME_TIMEDELTA_CONSTANTS,
+  DATETIME_TIMEDELTA_PURE_METHODS,
+  DATETIME_TIMEZONE_CALLS,
+  DATETIME_TIMEZONE_CONSTANTS,
+  DATETIME_TIMEZONE_PURE_METHODS,
   DICT_PURE_METHODS,
   EXACT_PURE_CALLS,
   FLOAT_PURE_METHODS,
@@ -34,7 +53,17 @@ import {
   STRING_ITERABLE_METHODS,
   STRING_PURE_METHODS,
   STRING_RETURNING_METHODS,
+  OSPATH_FLOAT_CALLS,
+  OSPATH_INT_CALLS,
+  OSPATH_STRING_CALLS,
+  OSPATH_TUPLE_CALLS,
+  TIME_FLOAT_CALLS,
+  TIME_INT_CALLS,
+  TIME_STRING_CALLS,
+  TIME_TUPLE_CALLS,
   TUPLE_PURE_METHODS,
+  ZONEINFO_SET_CALLS,
+  ZONEINFO_ZONE_CALLS,
 } from "./python-known-methods"
 import type { Rules, Scope } from "./python-analyze-types"
 import {
@@ -232,6 +261,48 @@ function stringKind(node: Node | null, current: Scope): "string" | undefined {
   if (method === "read_text" && trackedPathValue(receiver, current)) return "string"
 }
 
+function datetimeConstantKind(call: string): ContainerKind | undefined {
+  if (DATETIME_DATE_CONSTANTS.has(call)) return "datetime-date"
+  if (DATETIME_DATETIME_CONSTANTS.has(call)) return "datetime-datetime"
+  if (DATETIME_TIME_CONSTANTS.has(call)) return "datetime-time"
+  if (DATETIME_TIMEDELTA_CONSTANTS.has(call)) return "datetime-timedelta"
+  if (DATETIME_TIMEZONE_CONSTANTS.has(call)) return "datetime-timezone"
+}
+
+function datetimeCallKind(call: string): ContainerKind | undefined {
+  if (DATETIME_DATE_CALLS.has(call)) return "datetime-date"
+  if (DATETIME_DATETIME_CALLS.has(call)) return "datetime-datetime"
+  if (DATETIME_TIME_CALLS.has(call)) return "datetime-time"
+  if (DATETIME_TIMEDELTA_CALLS.has(call)) return "datetime-timedelta"
+  if (DATETIME_TIMEZONE_CALLS.has(call)) return "datetime-timezone"
+}
+
+function timeCallKind(call: string): ContainerKind | undefined {
+  if (TIME_FLOAT_CALLS.has(call)) return "float"
+  if (TIME_INT_CALLS.has(call)) return "int"
+  if (TIME_STRING_CALLS.has(call)) return "string"
+  if (TIME_TUPLE_CALLS.has(call)) return "tuple"
+}
+
+function calendarCallKind(call: string): ContainerKind | undefined {
+  if (CALENDAR_INT_CALLS.has(call)) return "int"
+  if (CALENDAR_STRING_CALLS.has(call)) return "string"
+  if (CALENDAR_TUPLE_CALLS.has(call)) return "tuple"
+  if (CALENDAR_LIST_CALLS.has(call)) return "list"
+}
+
+function osPathCallKind(call: string): ContainerKind | undefined {
+  if (OSPATH_FLOAT_CALLS.has(call)) return "float"
+  if (OSPATH_INT_CALLS.has(call)) return "int"
+  if (OSPATH_STRING_CALLS.has(call)) return "string"
+  if (OSPATH_TUPLE_CALLS.has(call)) return "tuple"
+}
+
+function zoneinfoCallKind(call: string): ContainerKind | undefined {
+  if (ZONEINFO_ZONE_CALLS.has(call)) return "datetime-timezone"
+  if (ZONEINFO_SET_CALLS.has(call)) return "set"
+}
+
 function callableFactoryPathValue(node: Node, current: Scope, seenFactories: Set<string>): Value | undefined {
   const input = args(node)
   const call = resolvedName(node.childForFieldName("function"), current)
@@ -311,6 +382,11 @@ export function pureContainerMethod(kind: ContainerKind, method: string) {
   if (kind === "range") return RANGE_PURE_METHODS.has(method)
   if (kind === "dict") return DICT_PURE_METHODS.has(method)
   if (kind === "json") return JSON_PURE_METHODS.has(method)
+  if (kind === "datetime-date") return DATETIME_DATE_PURE_METHODS.has(method)
+  if (kind === "datetime-datetime") return DATETIME_DATETIME_PURE_METHODS.has(method)
+  if (kind === "datetime-time") return DATETIME_TIME_PURE_METHODS.has(method)
+  if (kind === "datetime-timedelta") return DATETIME_TIMEDELTA_PURE_METHODS.has(method)
+  if (kind === "datetime-timezone") return DATETIME_TIMEZONE_PURE_METHODS.has(method)
   if (kind === "string") return STRING_PURE_METHODS.has(method)
   if (kind === "bytes") return BYTES_PURE_METHODS.has(method)
   if (kind === "bytearray") return BYTEARRAY_PURE_METHODS.has(method)
@@ -381,6 +457,12 @@ export function classifyBuiltinPureFallbackCall(call: string, node: Node, input:
 export function directTemporaryContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
   if (!node) return
 
+  const directCall = resolvedName(node, current)
+  if (directCall) {
+    const directDatetime = datetimeConstantKind(directCall)
+    if (directDatetime) return directDatetime
+  }
+
   const directMatch = matchKind(node, current)
   if (directMatch) return directMatch
   const directBytes = bytesKind(node, current)
@@ -393,6 +475,17 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope):
   const call = resolvedName(node.childForFieldName("function"), current)
   if (!call) return
   const input = args(node)
+
+  const datetimeKind = datetimeCallKind(call)
+  if (datetimeKind) return datetimeKind
+  const timeKind = timeCallKind(call)
+  if (timeKind) return timeKind
+  const calendarKind = calendarCallKind(call)
+  if (calendarKind) return calendarKind
+  const osPathKind = osPathCallKind(call)
+  if (osPathKind) return osPathKind
+  const zoneinfoKind = zoneinfoCallKind(call)
+  if (zoneinfoKind) return zoneinfoKind
 
   if (call.endsWith("Path.read_text")) return "string"
   if (call.endsWith("Path.read_bytes")) return "bytes"
@@ -485,7 +578,7 @@ export function trackedContainerKind(node: Node | null, current: Scope): Contain
 export function trackedReceiverContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
   if (!node) return
 
-  const temporary = directTemporaryContainerKind(node, current)
+  const temporary = directTemporaryContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)
   if (temporary) return temporary
   return lookupTrackedReceiverContainerKind(current, node)
 }
@@ -499,6 +592,31 @@ export function returnedTrackedContainerKind(node: Node | null, current: Scope):
   const method = tail(call)
   const receiver = fn.childForFieldName("object")
   const receiverKind = trackedReceiverContainerKind(receiver, current)
+  if (receiverKind === "datetime-date") {
+    if (method === "ctime" || method === "isoformat" || method === "strftime") return "string"
+    if (method === "replace") return "datetime-date"
+  }
+  if (receiverKind === "datetime-datetime") {
+    if (method === "astimezone" || method === "replace") return "datetime-datetime"
+    if (method === "ctime" || method === "isoformat" || method === "strftime") return "string"
+    if (method === "date") return "datetime-date"
+    if (method === "dst" || method === "utcoffset") return "datetime-timedelta"
+    if (method === "time" || method === "timetz") return "datetime-time"
+    if (method === "tzname") return "string"
+    if (method === "timestamp") return "float"
+  }
+  if (receiverKind === "datetime-time") {
+    if (method === "dst" || method === "utcoffset") return "datetime-timedelta"
+    if (method === "isoformat" || method === "strftime") return "string"
+    if (method === "replace") return "datetime-time"
+    if (method === "tzname") return "string"
+  }
+  if (receiverKind === "datetime-timedelta" && method === "total_seconds") return "float"
+  if (receiverKind === "datetime-timezone") {
+    if (method === "dst" || method === "utcoffset") return "datetime-timedelta"
+    if (method === "fromutc") return "datetime-datetime"
+    if (method === "tzname") return "string"
+  }
   if (receiverKind === "string" && STRING_RETURNING_METHODS.has(method)) return "string"
   if (receiverKind === "inspect-signature") {
     if (method === "bind" || method === "bind_partial") return "inspect-bound-arguments"

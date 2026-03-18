@@ -1675,6 +1675,274 @@ describe("python analyzer", () => {
     })
   })
 
+  describe("datetime classification", () => {
+    it("classifies datetime constructors, parsers, and clock helpers", async () => {
+      const events = await analyze(
+        [
+          "import datetime as dt",
+          "dt.date(2024, 1, 2)",
+          "dt.date.today()",
+          "dt.date.fromtimestamp(123)",
+          "dt.date.fromisoformat('2024-01-02')",
+          "dt.datetime(2024, 1, 2, 3, 4, 5)",
+          "dt.datetime.now(dt.UTC)",
+          "dt.datetime.today()",
+          "dt.datetime.utcnow()",
+          "dt.datetime.fromtimestamp(123, dt.UTC)",
+          "dt.datetime.utcfromtimestamp(123)",
+          "dt.datetime.fromisoformat('2024-01-02T03:04:05+00:00')",
+          "dt.datetime.combine(dt.date(2024, 1, 2), dt.time(3, 4, 5))",
+          "dt.time(3, 4, 5)",
+          "dt.time.fromisoformat('03:04:05')",
+          "dt.timedelta(days=1)",
+          "dt.timezone(dt.timedelta(hours=1))",
+          "dt.tzinfo()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "datetime.date" },
+          { kind: "read", call: "datetime.date.today" },
+          { kind: "pure", call: "datetime.date.fromtimestamp" },
+          { kind: "pure", call: "datetime.date.fromisoformat" },
+          { kind: "pure", call: "datetime.datetime" },
+          { kind: "read", call: "datetime.datetime.now" },
+          { kind: "read", call: "datetime.datetime.today" },
+          { kind: "read", call: "datetime.datetime.utcnow" },
+          { kind: "pure", call: "datetime.datetime.fromtimestamp" },
+          { kind: "pure", call: "datetime.datetime.utcfromtimestamp" },
+          { kind: "pure", call: "datetime.datetime.fromisoformat" },
+          { kind: "pure", call: "datetime.datetime.combine" },
+          { kind: "pure", call: "datetime.time" },
+          { kind: "pure", call: "datetime.time.fromisoformat" },
+          { kind: "pure", call: "datetime.timedelta" },
+          { kind: "pure", call: "datetime.timezone" },
+          { kind: "pure", call: "datetime.tzinfo" },
+        ]),
+      )
+    })
+
+    it("classifies direct-imported datetime methods and tracked return chains", async () => {
+      const events = await analyze(
+        [
+          "from datetime import UTC, date, datetime, timedelta, timezone",
+          "today = date.today()",
+          "today.isoformat()",
+          "shifted = today.replace(day=3)",
+          "shifted.isoformat()",
+          "when = datetime.fromisoformat('2024-01-02T03:04:05+00:00')",
+          "when.astimezone(UTC)",
+          "day = when.date()",
+          "day.isoformat()",
+          "clock = when.time()",
+          "clock.replace(hour=4)",
+          "delay = timedelta(seconds=30)",
+          "seconds = delay.total_seconds()",
+          "seconds.is_integer()",
+          "label = timezone(timedelta(hours=2)).tzname(None)",
+          "label.lower()",
+          "UTC.tzname(None)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "read", call: "datetime.date.today" },
+          { kind: "pure", call: "today.isoformat" },
+          { kind: "pure", call: "today.replace" },
+          { kind: "pure", call: "shifted.isoformat" },
+          { kind: "pure", call: "datetime.datetime.fromisoformat" },
+          { kind: "pure", call: "when.astimezone" },
+          { kind: "pure", call: "when.date" },
+          { kind: "pure", call: "day.isoformat" },
+          { kind: "pure", call: "when.time" },
+          { kind: "pure", call: "clock.replace" },
+          { kind: "pure", call: "datetime.timedelta" },
+          { kind: "pure", call: "delay.total_seconds" },
+          { kind: "pure", call: "seconds.is_integer" },
+          { kind: "pure", call: "datetime.timezone" },
+          { kind: "pure", call: "datetime.timezone.tzname" },
+          { kind: "pure", call: "label.lower" },
+          { kind: "pure", call: "datetime.UTC.tzname" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:today.isoformat" },
+          { kind: "unknown", call: "callable:when.astimezone" },
+          { kind: "unknown", call: "callable:day.isoformat" },
+          { kind: "unknown", call: "callable:clock.replace" },
+          { kind: "unknown", call: "callable:delay.total_seconds" },
+          { kind: "unknown", call: "callable:label.lower" },
+          { kind: "unknown", call: "callable:datetime.UTC.tzname" },
+        ]),
+      )
+    })
+  })
+
+  describe("time and zoneinfo classification", () => {
+    it("classifies time and zoneinfo module calls", async () => {
+      const events = await analyze(
+        [
+          "import time",
+          "import zoneinfo",
+          "time.time()",
+          "time.clock_gettime(time.CLOCK_REALTIME)",
+          "time.gmtime(0)",
+          "time.strftime('%Y', time.gmtime(0))",
+          "time.strptime('30 Nov 00', '%d %b %y')",
+          "time.sleep(0)",
+          "time.clock_settime(time.CLOCK_REALTIME, 0.0)",
+          "time.tzset()",
+          "zoneinfo.available_timezones()",
+          "zoneinfo.ZoneInfo('UTC')",
+          "zoneinfo.ZoneInfo.no_cache('UTC')",
+          "zoneinfo.reset_tzpath(['/usr/share/zoneinfo'])",
+          "zoneinfo.ZoneInfo.clear_cache()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "read", call: "time.time" },
+          { kind: "read", call: "time.clock_gettime" },
+          { kind: "read", call: "time.gmtime" },
+          { kind: "read", call: "time.strftime" },
+          { kind: "pure", call: "time.strptime" },
+          { kind: "pure", call: "time.sleep" },
+          { kind: "write", call: "time.clock_settime" },
+          { kind: "write", call: "time.tzset" },
+          { kind: "read", call: "zoneinfo.available_timezones" },
+          { kind: "read", call: "zoneinfo.ZoneInfo" },
+          { kind: "read", call: "zoneinfo.ZoneInfo.no_cache" },
+          { kind: "write", call: "zoneinfo.reset_tzpath" },
+          { kind: "write", call: "zoneinfo.ZoneInfo.clear_cache" },
+        ]),
+      )
+    })
+
+    it("classifies direct-imported time and ZoneInfo chains", async () => {
+      const events = await analyze(
+        [
+          "from time import strptime, time as now",
+          "from zoneinfo import ZoneInfo",
+          "stamp = now()",
+          "stamp.is_integer()",
+          "parts = strptime('30 Nov 00', '%d %b %y')",
+          "parts.count(0)",
+          "zone = ZoneInfo('UTC')",
+          "zone.tzname(None)",
+          "offset = zone.utcoffset(None)",
+          "offset.total_seconds()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "read", call: "time.time" },
+          { kind: "pure", call: "stamp.is_integer" },
+          { kind: "pure", call: "time.strptime" },
+          { kind: "pure", call: "parts.count" },
+          { kind: "read", call: "zoneinfo.ZoneInfo" },
+          { kind: "pure", call: "zone.tzname" },
+          { kind: "pure", call: "zone.utcoffset" },
+          { kind: "pure", call: "offset.total_seconds" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:stamp.is_integer" },
+          { kind: "unknown", call: "callable:parts.count" },
+          { kind: "unknown", call: "callable:zone.tzname" },
+          { kind: "unknown", call: "callable:zone.utcoffset" },
+          { kind: "unknown", call: "callable:offset.total_seconds" },
+        ]),
+      )
+    })
+  })
+
+  describe("calendar and os.path classification", () => {
+    it("classifies calendar module helpers and broader os.path calls", async () => {
+      const events = await analyze(
+        [
+          "import calendar",
+          "import os.path as osp",
+          "calendar.isleap(2024)",
+          "calendar.monthrange(2024, 1)",
+          "calendar.month(2024, 1)",
+          "calendar.prmonth(2024, 1)",
+          "calendar.firstweekday()",
+          "calendar.setfirstweekday(calendar.SUNDAY)",
+          "osp.exists('notes.txt')",
+          "osp.getsize('notes.txt')",
+          "osp.realpath('notes.txt')",
+          "osp.basename('docs/readme.md')",
+          "osp.splitext('docs/readme.md')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "calendar.isleap" },
+          { kind: "pure", call: "calendar.monthrange" },
+          { kind: "pure", call: "calendar.month" },
+          { kind: "emit", call: "calendar.prmonth" },
+          { kind: "read", call: "calendar.firstweekday" },
+          { kind: "write", call: "calendar.setfirstweekday" },
+          { kind: "read", call: "os.path.exists", path: "notes.txt" },
+          { kind: "read", call: "os.path.getsize", path: "notes.txt" },
+          { kind: "read", call: "os.path.realpath", path: "notes.txt" },
+          { kind: "pure", call: "os.path.basename" },
+          { kind: "pure", call: "os.path.splitext" },
+        ]),
+      )
+    })
+
+    it("classifies direct-imported calendar and os.path chains", async () => {
+      const events = await analyze(
+        [
+          "from calendar import month, monthcalendar, timegm",
+          "from os.path import basename, splitext",
+          "text = month(2024, 1)",
+          "text.splitlines()",
+          "weeks = monthcalendar(2024, 1)",
+          "weeks.count([])",
+          "stamp = timegm((2024, 1, 2, 0, 0, 0, 0, 0, 0))",
+          "stamp.bit_length()",
+          "name = basename('docs/readme.md')",
+          "name.lower()",
+          "parts = splitext('docs/readme.md')",
+          "parts.count('')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "calendar.month" },
+          { kind: "pure", call: "text.splitlines" },
+          { kind: "pure", call: "calendar.monthcalendar" },
+          { kind: "pure", call: "weeks.count" },
+          { kind: "pure", call: "calendar.timegm" },
+          { kind: "pure", call: "stamp.bit_length" },
+          { kind: "pure", call: "os.path.basename" },
+          { kind: "pure", call: "name.lower" },
+          { kind: "pure", call: "os.path.splitext" },
+          { kind: "pure", call: "parts.count" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:text.splitlines" },
+          { kind: "unknown", call: "callable:weeks.count" },
+          { kind: "unknown", call: "callable:stamp.bit_length" },
+          { kind: "unknown", call: "callable:name.lower" },
+          { kind: "unknown", call: "callable:parts.count" },
+        ]),
+      )
+    })
+  })
+
   describe("exec classification", () => {
     it("classifies subprocess, os, and dynamic execution builtins", async () => {
       const events = await analyze(
