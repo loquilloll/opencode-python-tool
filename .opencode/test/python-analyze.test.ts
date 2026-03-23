@@ -1411,6 +1411,534 @@ describe("python analyzer", () => {
       )
     })
 
+    it("tracks compiled regex patterns and downstream match/list helpers", async () => {
+      const events = await analyze(
+        [
+          "import re",
+          "pat = re.compile('a+')",
+          "pat.search(text)",
+          "pat.search(text).group(0)",
+          "pat.match(text)",
+          "pat.fullmatch(text)",
+          "pat.findall(text)",
+          "pat.findall(text).count('a')",
+          "pat.split(text)",
+          "pat.split(text).count('')",
+          "pat.finditer(text)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "re.compile" },
+          { kind: "pure", call: "pat.search" },
+          { kind: "pure", call: "pat.search.group" },
+          { kind: "pure", call: "pat.match" },
+          { kind: "pure", call: "pat.fullmatch" },
+          { kind: "pure", call: "pat.findall" },
+          { kind: "pure", call: "pat.findall.count" },
+          { kind: "pure", call: "pat.split" },
+          { kind: "pure", call: "pat.split.count" },
+          { kind: "pure", call: "pat.finditer" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:pat.search" },
+          { kind: "unknown", call: "callable:pat.match" },
+          { kind: "unknown", call: "callable:pat.findall" },
+        ]),
+      )
+    })
+
+    it("tracks string split results through subscripted receivers and assigned locals", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "text = Path('f').read_text()",
+          "line = text.splitlines()[0]",
+          "line.split(' ', 1)",
+          "line.split(' ', 1)[0].strip()",
+          "parts = line.split(':')",
+          "parts[0].strip()",
+          "name = parts[0]",
+          "name.lower()",
+        ].join("\n"),
+      )
+
+      expect(events).toContainEqual({ kind: "read", call: "pathlib.Path.read_text", path: "f" })
+      expect(events).toContainEqual({ kind: "pure", call: "text.splitlines" })
+      expect(events).toContainEqual({ kind: "pure", call: "line.split" })
+      expect(events).toContainEqual({ kind: "pure", call: "line.split.strip" })
+      expect(events).toContainEqual({ kind: "pure", call: "parts.strip" })
+      expect(events).toContainEqual({ kind: "pure", call: "name.lower" })
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:line.split" },
+          { kind: "unknown", call: "callable:line.split.strip" },
+          { kind: "unknown", call: "callable:parts.strip" },
+          { kind: "unknown", call: "callable:name.lower" },
+        ]),
+      )
+    })
+
+    it("seeds same-scope helper params from trusted string iterables", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(entries)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "e.split" },
+          { kind: "pure", call: "e.startswith" },
+          { kind: "unknown", call: "callable:leaf" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:e.split" },
+          { kind: "unknown", call: "callable:e.startswith" },
+        ]),
+      )
+    })
+
+    it("seeds same-scope helper params even when the helper is defined before the trusted producer", async () => {
+      const events = await analyze(
+        [
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "leaf(entries)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }]))
+    })
+
+    it("keeps same-scope helper params conservative when callsites disagree", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "other = values",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(entries)",
+          "leaf(other)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:e.split" },
+          { kind: "unknown", call: "callable:e.startswith" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "e.split" },
+          { kind: "pure", call: "e.startswith" },
+        ]),
+      )
+    })
+
+    it("clears helper-param string iterable seeds after indexed mutation", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "entries[0] = other",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(entries)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:e.split" },
+          { kind: "unknown", call: "callable:e.startswith" },
+        ]),
+      )
+    })
+
+    it("clears helper-param string iterable seeds after alias-based indexed mutation", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "alias = entries",
+          "alias[0] = other",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(entries)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps mutation-built exact receiver-path string lists conservative", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append('x:1')",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(inv[current])",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps mutation-built receiver-path string lists conservative when appended values are unknown", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append(other)",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(inv[current])",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps mutation-built receiver-path string lists conservative when aliased subscript receivers mutate", async () => {
+      const appendEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append('x:1')",
+          "bucket = inv[current]",
+          "bucket.append(other)",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(inv[current])",
+        ].join("\n"),
+      )
+
+      const indexEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append('x:1')",
+          "bucket = inv[current]",
+          "bucket[0] = other",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(inv[current])",
+        ].join("\n"),
+      )
+
+      expect(appendEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(indexEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("clears helper-param string iterable seeds after mutating list methods", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "entries.append(other)",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(entries)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:e.split" },
+          { kind: "unknown", call: "callable:e.startswith" },
+        ]),
+      )
+    })
+
+    it("clears helper-param string iterable seeds through aliases and comprehension mutations", async () => {
+      const aliasEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "alias = entries",
+          "entries.append(other)",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(alias)",
+        ].join("\n"),
+      )
+
+      const comprehensionEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "[entries.append(other) for _ in xs]",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(entries)",
+        ].join("\n"),
+      )
+
+      expect(aliasEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(comprehensionEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("tracks dir and sorted(dir()) names as string origins when builtins are trusted", async () => {
+      const events = await analyze(
+        [
+          "name = dir(obj)[0]",
+          "name.lower()",
+          "for attr in sorted(dir(obj)):",
+          "    attr.startswith('_')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "dir" },
+          { kind: "pure", call: "name.lower" },
+          { kind: "pure", call: "sorted" },
+          { kind: "pure", call: "attr.startswith" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:name.lower" },
+          { kind: "unknown", call: "callable:attr.startswith" },
+        ]),
+      )
+    })
+
+    it("keeps dir and sorted(dir()) string origins conservative when builtins are shadowed", async () => {
+      const events = await analyze(
+        [
+          "dir = fake",
+          "name = dir(obj)[0]",
+          "name.lower()",
+          "sorted = fake_sorted",
+          "for attr in sorted(dir(obj)):",
+          "    attr.startswith('_')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:name.lower" },
+          { kind: "unknown", call: "callable:attr.startswith" },
+        ]),
+      )
+    })
+
+    it("clears dir-derived string origins after indexed mutation", async () => {
+      const events = await analyze(
+        [
+          "names = dir(obj)",
+          "names[0] = other",
+          "name = names[0]",
+          "name.lower()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:name.lower" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "name.lower" }]))
+    })
+
+    it("clears dir-derived string origins after alias-based indexed mutation", async () => {
+      const events = await analyze(
+        [
+          "names = dir(obj)",
+          "alias = names",
+          "alias[0] = other",
+          "name = names[0]",
+          "name.lower()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:name.lower" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "name.lower" }]))
+    })
+
+    it("classifies exact __dict__.items introspection as pure without broadening generic items methods", async () => {
+      const events = await analyze(
+        [
+          "import calendar",
+          "for name, value in calendar.__dict__.items():",
+          "    name.lower()",
+          "class Bucket:",
+          "    def items(self):",
+          "        return []",
+          "bucket = Bucket()",
+          "bucket.items()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "calendar.__dict__.items" }]))
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:name.lower" }]))
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:bucket.items" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "bucket.items" }]))
+    })
+
+    it("clears dir-derived string origins after mutating list methods", async () => {
+      const events = await analyze(
+        [
+          "names = dir(obj)",
+          "names.extend(other)",
+          "name = names[0]",
+          "name.lower()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:name.lower" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "name.lower" }]))
+    })
+
+    it("clears dir-derived string origins through aliases and comprehension mutations", async () => {
+      const aliasEvents = await analyze(
+        [
+          "names = dir(obj)",
+          "alias = names",
+          "alias.extend(other)",
+          "name = names[0]",
+          "name.lower()",
+        ].join("\n"),
+      )
+
+      const comprehensionEvents = await analyze(
+        [
+          "names = dir(obj)",
+          "[names.append(other) for _ in xs]",
+          "name = names[0]",
+          "name.lower()",
+        ].join("\n"),
+      )
+
+      expect(aliasEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:name.lower" }]))
+      expect(comprehensionEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:name.lower" }]))
+    })
+
+    it("keeps tracked string locals conservative after reassignment", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "text = Path('f').read_text()",
+          "line = text.splitlines()[0]",
+          "line = other",
+          "line.split(' ', 1)",
+          "line.strip()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:other.split" },
+          { kind: "unknown", call: "callable:other.strip" },
+        ]),
+      )
+    })
+
+    it("tracks homogeneous dict values and defaultdict factories for subscript container methods", async () => {
+      const events = await analyze(
+        [
+          "from collections import defaultdict",
+          "family_aliases = defaultdict(set)",
+          "family_aliases[fam].add(cand.get('call'))",
+          "inv = {'runtime': [], 'inline': []}",
+          "inv[current].append(item)",
+          "inv[current].pop()",
+          "family_aliases[fam] = other",
+          "family_aliases[fam].add(value)",
+          "inv[current] = other",
+          "inv[current].append(item)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "collections.defaultdict" },
+          { kind: "pure", call: "family_aliases.add" },
+          { kind: "pure", call: "inv.append" },
+          { kind: "pure", call: "inv.pop" },
+          { kind: "unknown", call: "callable:family_aliases.add" },
+          { kind: "unknown", call: "callable:inv.append" },
+        ]),
+      )
+    })
+
+    it("keeps dict-value container provenance conservative when dictionary literals use splats", async () => {
+      const events = await analyze(
+        [
+          "values = {'runtime': [], **other}",
+          "values[current].append(item)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:values.append" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "values.append" }]))
+    })
+
+    it("keeps compiled-regex methods conservative on unrelated receivers and shadowed compile names", async () => {
+      const shadowedCompileEvents = await analyze(
+        [
+          "from re import compile",
+          "def compile(pattern):",
+          "    return pattern",
+          "compile('a+').search(text)",
+        ].join("\n"),
+      )
+
+      const unrelatedReceiverEvents = await analyze(
+        [
+          "class Bucket:",
+          "    def search(self, text):",
+          "        return text",
+          "bucket = Bucket()",
+          "bucket.search(text)",
+        ].join("\n"),
+      )
+
+      const trackedPatternEvents = await analyze(
+        [
+          "import re",
+          "pat = re.compile('a+')",
+          "re = object()",
+          "pat.search(text)",
+        ].join("\n"),
+      )
+
+      const shadowedModuleEvents = await analyze(
+        [
+          "import re",
+          "re = object()",
+          "re.compile('a+').search(text)",
+        ].join("\n"),
+      )
+
+      expect(shadowedCompileEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:compile.search" }]))
+      expect(unrelatedReceiverEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:bucket.search" }]))
+      expect(trackedPatternEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "pat.search" }]))
+      expect(shadowedModuleEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:re.compile" },
+          { kind: "unknown", call: "callable:re.compile.search" },
+        ]),
+      )
+    })
+
     it("classifies explicit ast helpers as pure", async () => {
       const events = await analyze(
         [
@@ -1943,7 +2471,397 @@ describe("python analyzer", () => {
     })
   })
 
+  describe("collections.Counter classification", () => {
+    it("classifies Counter constructors and tracked Counter methods as pure", async () => {
+      const events = await analyze(
+        [
+          "import collections",
+          "counts = collections.Counter('abracadabra')",
+          "counts.most_common(3)",
+          "counts.most_common().count(('a', 5))",
+          "counts.total()",
+          "counts.total().bit_length()",
+          "counts.update('bbb')",
+          "counts.subtract('a')",
+          "counts.keys()",
+          "counts.copy().most_common()",
+          "counts.elements()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "collections.Counter" },
+          { kind: "pure", call: "counts.most_common" },
+          { kind: "pure", call: "counts.most_common.count" },
+          { kind: "pure", call: "counts.total" },
+          { kind: "pure", call: "counts.total.bit_length" },
+          { kind: "pure", call: "counts.update" },
+          { kind: "pure", call: "counts.subtract" },
+          { kind: "pure", call: "counts.keys" },
+          { kind: "pure", call: "counts.copy" },
+          { kind: "pure", call: "counts.copy.most_common" },
+          { kind: "pure", call: "counts.elements" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:counts.most_common" },
+          { kind: "unknown", call: "callable:counts.total" },
+          { kind: "unknown", call: "callable:counts.copy.most_common" },
+        ]),
+      )
+    })
+
+    it("classifies direct-imported Counter and keeps shadowed names conservative", async () => {
+      const directImportEvents = await analyze(
+        [
+          "from collections import Counter",
+          "Counter('aba').most_common()",
+          "from collections import Counter as Tally",
+          "Tally('aba').total()",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "from collections import Counter",
+          "def Counter(value):",
+          "    return value",
+          "Counter('aba')",
+        ].join("\n"),
+      )
+
+      const unrelatedReceiverEvents = await analyze(
+        [
+          "class Bucket:",
+          "    def most_common(self):",
+          "        return []",
+          "bucket = Bucket()",
+          "bucket.most_common()",
+        ].join("\n"),
+      )
+
+      expect(directImportEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "collections.Counter" },
+          { kind: "pure", call: "collections.Counter.most_common" },
+          { kind: "pure", call: "collections.Counter.total" },
+        ]),
+      )
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:Counter" }]))
+      expect(shadowedEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "collections.Counter" }]))
+      expect(unrelatedReceiverEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:bucket.most_common" }]))
+    })
+
+    it("keeps module-root and aliased Counter calls conservative after rebinding", async () => {
+      const reboundEvents = await analyze(
+        [
+          "import collections",
+          "collections = object()",
+          "collections.Counter('aba')",
+          "collections.Counter('aba').most_common()",
+        ].join("\n"),
+      )
+
+      const aliasEvents = await analyze(
+        [
+          "import collections",
+          "collections = object()",
+          "alias = collections",
+          "alias.Counter('aba').most_common()",
+        ].join("\n"),
+      )
+
+      const trackedCounterEvents = await analyze(
+        [
+          "import collections",
+          "counts = collections.Counter('aba')",
+          "collections = object()",
+          "counts.most_common()",
+        ].join("\n"),
+      )
+
+      expect(reboundEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:collections.Counter" },
+          { kind: "unknown", call: "callable:collections.Counter.most_common" },
+        ]),
+      )
+      expect(aliasEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:collections.Counter" },
+          { kind: "unknown", call: "callable:collections.Counter.most_common" },
+        ]),
+      )
+      expect(trackedCounterEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "counts.most_common" }]))
+    })
+  })
+
+  describe("hashlib classification", () => {
+    it("classifies hashlib.sha256 constructors and tracked digest helpers as pure", async () => {
+      const events = await analyze(
+        [
+          "import hashlib",
+          "hashlib.sha256(b'x')",
+          "hashlib.sha256(b'x').hexdigest()",
+          "digest = hashlib.sha256(b'y')",
+          "digest.digest()",
+          "digest.digest().hex()",
+          "digest.copy().hexdigest()",
+          "digest.hexdigest().lower()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "hashlib.sha256" },
+          { kind: "pure", call: "hashlib.sha256.hexdigest" },
+          { kind: "pure", call: "digest.digest" },
+          { kind: "pure", call: "digest.digest.hex" },
+          { kind: "pure", call: "digest.copy" },
+          { kind: "pure", call: "digest.copy.hexdigest" },
+          { kind: "pure", call: "digest.hexdigest.lower" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:digest.digest" },
+          { kind: "unknown", call: "callable:digest.copy" },
+          { kind: "unknown", call: "callable:digest.copy.hexdigest" },
+        ]),
+      )
+    })
+
+    it("classifies direct-imported hashlib.sha256 and keeps shadowed names conservative", async () => {
+      const directImportEvents = await analyze(
+        [
+          "from hashlib import sha256",
+          "sha256(b'x')",
+          "sha256(b'x').hexdigest()",
+          "from hashlib import sha256 as make_digest",
+          "make_digest(b'y').digest()",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "from hashlib import sha256",
+          "def sha256(value):",
+          "    return value",
+          "sha256(b'x')",
+        ].join("\n"),
+      )
+
+      const unrelatedReceiverEvents = await analyze(
+        [
+          "class Token:",
+          "    def hexdigest(self):",
+          "        return 'x'",
+          "token = Token()",
+          "token.hexdigest()",
+        ].join("\n"),
+      )
+
+      expect(directImportEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "hashlib.sha256" },
+          { kind: "pure", call: "hashlib.sha256.hexdigest" },
+          { kind: "pure", call: "hashlib.sha256.digest" },
+        ]),
+      )
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:sha256" }]))
+      expect(shadowedEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "hashlib.sha256" }]))
+      expect(unrelatedReceiverEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:token.hexdigest" }]))
+
+      const otherHashEvents = await analyze(["from hashlib import md5", "md5(b'x')"].join("\n"))
+      expect(otherHashEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:md5" }]))
+    })
+
+    it("keeps module-root hashlib calls conservative when hashlib is rebound but preserves existing tracked digests", async () => {
+      const reboundEvents = await analyze(
+        [
+          "import hashlib",
+          "hashlib = object()",
+          "hashlib.sha256(b'x')",
+          "hashlib.sha256(b'x').hexdigest()",
+        ].join("\n"),
+      )
+
+      const trackedDigestEvents = await analyze(
+        [
+          "import hashlib",
+          "digest = hashlib.sha256(b'x')",
+          "hashlib = object()",
+          "digest.hexdigest()",
+        ].join("\n"),
+      )
+
+      expect(reboundEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:hashlib.sha256" },
+          { kind: "unknown", call: "callable:hashlib.sha256.hexdigest" },
+        ]),
+      )
+      expect(reboundEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "hashlib.sha256" }]))
+      expect(trackedDigestEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "digest.hexdigest" }]))
+    })
+
+    it("keeps aliased hashlib module calls conservative after root rebinding", async () => {
+      const events = await analyze(
+        [
+          "import hashlib",
+          "hashlib = object()",
+          "alias = hashlib",
+          "alias.sha256(b'x').hexdigest()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:hashlib.sha256" },
+          { kind: "unknown", call: "callable:hashlib.sha256.hexdigest" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "hashlib.sha256" }]))
+    })
+  })
+
   describe("exec classification", () => {
+    it("classifies importlib.import_module as exec and importlib.metadata.version as read", async () => {
+      const moduleExecEvents = await analyze(["import importlib", "importlib.import_module('json')"].join("\n"))
+      const directImportExecEvents = await analyze(["from importlib import import_module", "import_module('json')"].join("\n"))
+
+      const moduleReadEvents = await analyze(["import importlib.metadata", "importlib.metadata.version('PyGithub')"].join("\n"))
+      const directImportReadEvents = await analyze(["from importlib.metadata import version", "version('PyGithub')"].join("\n"))
+      const namespaceReadEvents = await analyze(["from importlib import metadata", "metadata.version('PyGithub')"].join("\n"))
+      const aliasModuleReadEvents = await analyze(["import importlib.metadata as md", "md.version('PyGithub')"].join("\n"))
+
+      expect(moduleExecEvents).toEqual(expect.arrayContaining([{ kind: "exec", call: "importlib.import_module" }]))
+      expect(directImportExecEvents).toEqual(expect.arrayContaining([{ kind: "exec", call: "importlib.import_module" }]))
+      expect(moduleReadEvents).toEqual(expect.arrayContaining([{ kind: "read", call: "importlib.metadata.version" }]))
+      expect(directImportReadEvents).toEqual(expect.arrayContaining([{ kind: "read", call: "importlib.metadata.version" }]))
+      expect(namespaceReadEvents).toEqual(expect.arrayContaining([{ kind: "read", call: "importlib.metadata.version" }]))
+      expect(aliasModuleReadEvents).toEqual(expect.arrayContaining([{ kind: "read", call: "importlib.metadata.version" }]))
+    })
+
+    it("keeps importlib family conservative under shadowing and unsupported namespace imports", async () => {
+      const shadowedImportModuleEvents = await analyze(
+        [
+          "from importlib import import_module",
+          "def import_module(name):",
+          "    return name",
+          "import_module('json')",
+        ].join("\n"),
+      )
+
+      const reboundImportlibEvents = await analyze(
+        [
+          "import importlib",
+          "importlib = object()",
+          "importlib.import_module('json')",
+        ].join("\n"),
+      )
+
+      const aliasedImportModuleEvents = await analyze(
+        [
+          "from importlib import import_module as imod",
+          "imod('json')",
+        ].join("\n"),
+      )
+
+      const aliasedVersionEvents = await analyze(
+        [
+          "from importlib.metadata import version as pkg_version",
+          "pkg_version('PyGithub')",
+        ].join("\n"),
+      )
+
+      const launderedImportModuleEvents = await analyze(
+        [
+          "from importlib import import_module",
+          "fn = import_module",
+          "fn('json')",
+        ].join("\n"),
+      )
+
+      const reassignedLeafImportModuleEvents = await analyze(
+        [
+          "import importlib",
+          "import_module = importlib.import_module",
+          "import_module('json')",
+        ].join("\n"),
+      )
+
+      const reassignedLeafVersionEvents = await analyze(
+        [
+          "import importlib.metadata",
+          "version = importlib.metadata.version",
+          "version('PyGithub')",
+        ].join("\n"),
+      )
+
+      expect(shadowedImportModuleEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:import_module" }]))
+      expect(reboundImportlibEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:importlib.import_module" }]))
+      expect(aliasedImportModuleEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:importlib.import_module" }]))
+      expect(aliasedVersionEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:importlib.metadata.version" }]))
+      expect(launderedImportModuleEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:importlib.import_module" }]))
+      expect(reassignedLeafImportModuleEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:importlib.import_module" }]))
+      expect(reassignedLeafVersionEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:importlib.metadata.version" }]))
+    })
+
+    it("classifies pytest.main as exec and keeps other pytest helpers conservative", async () => {
+      const moduleEvents = await analyze(["import pytest", "pytest.main(['-q'])", "pytest.approx(1.0)"].join("\n"))
+      const directImportEvents = await analyze(["from pytest import main", "main(['-q'])"].join("\n"))
+      const aliasedImportEvents = await analyze(["from pytest import main as run_tests", "run_tests(['-q'])"].join("\n"))
+
+      expect(moduleEvents).toEqual(expect.arrayContaining([{ kind: "exec", call: "pytest.main" }]))
+      expect(moduleEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:pytest.approx" }]))
+      expect(directImportEvents).toEqual(expect.arrayContaining([{ kind: "exec", call: "pytest.main" }]))
+      expect(aliasedImportEvents).toEqual(expect.arrayContaining([{ kind: "exec", call: "pytest.main" }]))
+    })
+
+    it("keeps direct-imported pytest.main conservative when shadowed locally", async () => {
+      const events = await analyze(
+        [
+          "from pytest import main",
+          "def main(args):",
+          "    return args",
+          "main(['-q'])",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:main" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "pytest.main" }]))
+    })
+
+    it("keeps module-root pytest.main conservative when pytest is rebound", async () => {
+      const events = await analyze(
+        [
+          "import pytest",
+          "pytest = object()",
+          "pytest.main(['-q'])",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:pytest.main" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "pytest.main" }]))
+    })
+
+    it("keeps aliased pytest module calls conservative after root rebinding", async () => {
+      const events = await analyze(
+        [
+          "import pytest",
+          "pytest = object()",
+          "runner = pytest",
+          "runner.main(['-q'])",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:pytest.main" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "pytest.main" }]))
+    })
+
     it("classifies subprocess, os, and dynamic execution builtins", async () => {
       const events = await analyze(
         [

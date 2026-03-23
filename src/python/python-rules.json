@@ -50,6 +50,7 @@
   "calls": {
     "read": [
       "calendar.firstweekday",
+      "importlib.metadata.version",
       "json.load",
       "os.path.exists",
       "os.path.getatime",
@@ -143,8 +144,10 @@
       "compile",
       "eval",
       "exec",
+      "importlib.import_module",
       "os.popen",
-      "os.system"
+      "os.system",
+      "pytest.main"
     ],
     "pure": [
       "calendar.Calendar",
@@ -159,6 +162,9 @@
       "calendar.timegm",
       "calendar.weekday",
       "calendar.weekheader",
+      "collections.Counter",
+      "collections.defaultdict",
+      "hashlib.sha256",
       "os.path.abspath",
       "os.path.basename",
       "os.path.commonpath",

@@ -9,6 +9,8 @@ import {
   CALENDAR_LIST_CALLS,
   CALENDAR_STRING_CALLS,
   CALENDAR_TUPLE_CALLS,
+  COUNTER_CALLS,
+  COUNTER_PURE_METHODS,
   CALLABLE_UNKNOWN_PREFIX,
   COMPLEX_PURE_METHODS,
   DATETIME_DATE_CALLS,
@@ -29,6 +31,8 @@ import {
   DICT_PURE_METHODS,
   EXACT_PURE_CALLS,
   FLOAT_PURE_METHODS,
+  HASHLIB_HASH_CALLS,
+  HASHLIB_HASH_PURE_METHODS,
   INSPECT_BOUND_ARGUMENTS_CALLS,
   INSPECT_BOUND_ARGUMENTS_PURE_METHODS,
   INSPECT_PARAMETER_CALLS,
@@ -57,6 +61,7 @@ import {
   OSPATH_INT_CALLS,
   OSPATH_STRING_CALLS,
   OSPATH_TUPLE_CALLS,
+  REGEX_PATTERN_PURE_METHODS,
   TIME_FLOAT_CALLS,
   TIME_INT_CALLS,
   TIME_STRING_CALLS,
@@ -76,8 +81,9 @@ import {
   iteratedPathInstance,
   pathInstanceValue,
   resolvedName,
+  trustedResolvedModuleCall,
 } from "./python-scope"
-import { lookupTrackedReceiverContainerKind, lookupTrackedReceiverPathValue, type ContainerKind } from "./python-provenance"
+import { lookupTrackedReceiverContainerKind, lookupTrackedReceiverElementKind, lookupTrackedReceiverPathValue, type ContainerKind } from "./python-provenance"
 import { assignedNames } from "./python-timeline"
 import type { ResolvedEffect } from "./python-ir"
 import type { PythonArgs as Args, PythonValue as Value } from "./python-values"
@@ -164,16 +170,23 @@ function containerKind(node: Node | null, current: Scope): ContainerKind | undef
   if (!node) return
   if (node.type === "list") return "list"
   if (node.type === "tuple") return "tuple"
-  if (node.type === "dictionary") return "dict"
+  if (node.type === "dictionary") {
+    const valueKind = homogeneousMappingValueKind(node.namedChildren, current)
+    if (valueKind === "list") return "dict-list-values"
+    if (valueKind === "set") return "dict-set-values"
+    return "dict"
+  }
   if (node.type === "set") return "set"
   if (node.type === "list_comprehension") return "list"
   if (node.type === "dictionary_comprehension") return "dict"
   if (node.type === "set_comprehension") return "set"
   if (node.type === "subscript") {
     const value = node.childForFieldName("value")
-    const base = trackedContainerKind(value, current) ?? containerKind(value, current)
+    const base = trackedContainerKind(value, current) ?? returnedTrackedContainerKind(value, current) ?? lookupTrackedReceiverContainerKind(current, value) ?? containerKind(value, current)
     const subscript = value ? node.namedChildren.find((child) => child.startIndex > value.endIndex) : undefined
     if (base === "json") return "json"
+    if (base === "dict-list-values") return "list"
+    if (base === "dict-set-values") return "set"
     if (base === "string" && (subscript?.type === "slice" || subscript?.text.includes(":"))) return "string"
     if (!subscript || (!subscript.text.includes(":") && subscript.type !== "slice")) {
       return value ? iteratedContainerKind(value, current) : undefined
@@ -193,6 +206,11 @@ function containerKind(node: Node | null, current: Scope): ContainerKind | undef
   if (call === "list") return "list"
   if (call === "dict") return "dict"
   if (call === "set") return "set"
+  if (call === "dir" || call === "sorted") {
+    const effect = classifyBuiltinPureCall(call, node, args(node), current)
+    if (effect?.atom === "pure.compute") return "list"
+    return
+  }
   if (call === "next") {
     const input = node.childForFieldName("arguments")
     const first = input?.namedChildren[0] ?? null
@@ -215,6 +233,20 @@ function containerKind(node: Node | null, current: Scope): ContainerKind | undef
   const input = args(node)
   if (hasJsonCustomizers(node, input)) return
   return "json"
+}
+
+function homogeneousMappingValueKind(nodes: readonly Node[], current: Scope): ContainerKind | undefined {
+  if (nodes.some((node) => node.type !== "pair")) return
+  const values = nodes
+    .filter((node) => node.type === "pair")
+    .map((node) => node.childForFieldName("value"))
+    .filter((node): node is Node => Boolean(node))
+  if (values.length === 0) return
+  const first = trackedContainerKind(values[0] ?? null, current) ?? returnedTrackedContainerKind(values[0] ?? null, current)
+  if (first !== "list" && first !== "set") return
+  if (values.slice(1).every((node) => (trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)) === first)) {
+    return first
+  }
 }
 
 function isBytesLiteralText(text: string) {
@@ -298,9 +330,25 @@ function osPathCallKind(call: string): ContainerKind | undefined {
   if (OSPATH_TUPLE_CALLS.has(call)) return "tuple"
 }
 
+function counterCallKind(call: string): ContainerKind | undefined {
+  if (COUNTER_CALLS.has(call)) return "counter"
+}
+
+function defaultdictCallKind(node: Node, call: string, current: Scope): ContainerKind | undefined {
+  if (call !== "collections.defaultdict") return
+  const first = node.childForFieldName("arguments")?.namedChildren[0] ?? null
+  const target = resolvedName(first, current)
+  if (target === "set" && !hasBoundName(current, "set")) return "dict-set-values"
+  if (target === "list" && !hasBoundName(current, "list")) return "dict-list-values"
+}
+
 function zoneinfoCallKind(call: string): ContainerKind | undefined {
   if (ZONEINFO_ZONE_CALLS.has(call)) return "datetime-timezone"
   if (ZONEINFO_SET_CALLS.has(call)) return "set"
+}
+
+function hashlibCallKind(call: string): ContainerKind | undefined {
+  if (HASHLIB_HASH_CALLS.has(call)) return "hashlib-hash"
 }
 
 function callableFactoryPathValue(node: Node, current: Scope, seenFactories: Set<string>): Value | undefined {
@@ -381,13 +429,17 @@ export function pureContainerMethod(kind: ContainerKind, method: string) {
   if (kind === "tuple") return TUPLE_PURE_METHODS.has(method)
   if (kind === "range") return RANGE_PURE_METHODS.has(method)
   if (kind === "dict") return DICT_PURE_METHODS.has(method)
+  if (kind === "dict-list-values" || kind === "dict-set-values") return DICT_PURE_METHODS.has(method)
+  if (kind === "counter") return COUNTER_PURE_METHODS.has(method)
   if (kind === "json") return JSON_PURE_METHODS.has(method)
   if (kind === "datetime-date") return DATETIME_DATE_PURE_METHODS.has(method)
   if (kind === "datetime-datetime") return DATETIME_DATETIME_PURE_METHODS.has(method)
   if (kind === "datetime-time") return DATETIME_TIME_PURE_METHODS.has(method)
   if (kind === "datetime-timedelta") return DATETIME_TIMEDELTA_PURE_METHODS.has(method)
   if (kind === "datetime-timezone") return DATETIME_TIMEZONE_PURE_METHODS.has(method)
-  if (kind === "string") return STRING_PURE_METHODS.has(method)
+  if (kind === "hashlib-hash") return HASHLIB_HASH_PURE_METHODS.has(method)
+  if (kind === "regex-pattern") return REGEX_PATTERN_PURE_METHODS.has(method)
+  if (kind === "string") return STRING_PURE_METHODS.has(method) || STRING_ITERABLE_METHODS.has(method)
   if (kind === "bytes") return BYTES_PURE_METHODS.has(method)
   if (kind === "bytearray") return BYTEARRAY_PURE_METHODS.has(method)
   if (kind === "memoryview") return MEMORYVIEW_PURE_METHODS.has(method)
@@ -475,6 +527,13 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope):
   const call = resolvedName(node.childForFieldName("function"), current)
   if (!call) return
   const input = args(node)
+  if ((call === "collections.Counter" || call === "collections.defaultdict" || call === "hashlib.sha256" || call === "re.compile") && !trustedResolvedModuleCall(node.childForFieldName("function"), call, current)) return
+  if (call === "re.compile") return "regex-pattern"
+  if (call === "dir" || call === "sorted") {
+    const effect = classifyBuiltinPureCall(call, node, input, current)
+    if (effect?.atom === "pure.compute") return "list"
+    return
+  }
 
   const datetimeKind = datetimeCallKind(call)
   if (datetimeKind) return datetimeKind
@@ -482,8 +541,14 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope):
   if (timeKind) return timeKind
   const calendarKind = calendarCallKind(call)
   if (calendarKind) return calendarKind
+  const counterKind = counterCallKind(call)
+  if (counterKind) return counterKind
+  const defaultdictKind = defaultdictCallKind(node, call, current)
+  if (defaultdictKind) return defaultdictKind
   const osPathKind = osPathCallKind(call)
   if (osPathKind) return osPathKind
+  const hashlibKind = hashlibCallKind(call)
+  if (hashlibKind) return hashlibKind
   const zoneinfoKind = zoneinfoCallKind(call)
   if (zoneinfoKind) return zoneinfoKind
 
@@ -580,6 +645,10 @@ export function trackedReceiverContainerKind(node: Node | null, current: Scope):
 
   const temporary = directTemporaryContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)
   if (temporary) return temporary
+  if (node.type === "subscript") {
+    const computed = trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)
+    if (computed) return computed
+  }
   return lookupTrackedReceiverContainerKind(current, node)
 }
 
@@ -616,6 +685,21 @@ export function returnedTrackedContainerKind(node: Node | null, current: Scope):
     if (method === "dst" || method === "utcoffset") return "datetime-timedelta"
     if (method === "fromutc") return "datetime-datetime"
     if (method === "tzname") return "string"
+  }
+  if (receiverKind === "counter") {
+    if (method === "copy") return "counter"
+    if (method === "most_common") return "list"
+    if (method === "total") return "int"
+  }
+  if (receiverKind === "string" && STRING_ITERABLE_METHODS.has(method)) return "list"
+  if (receiverKind === "hashlib-hash") {
+    if (method === "copy") return "hashlib-hash"
+    if (method === "digest") return "bytes"
+    if (method === "hexdigest") return "string"
+  }
+  if (receiverKind === "regex-pattern") {
+    if (method === "search" || method === "match" || method === "fullmatch") return "match"
+    if (method === "findall" || method === "split") return "list"
   }
   if (receiverKind === "string" && STRING_RETURNING_METHODS.has(method)) return "string"
   if (receiverKind === "inspect-signature") {
@@ -714,6 +798,9 @@ export function iteratedPathValue(node: Node | null, current: Scope): Value | un
 }
 
 export function iteratedContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+  const trackedReceiverElement = lookupTrackedReceiverElementKind(current, node)
+  if (trackedReceiverElement) return trackedReceiverElement
+
   if (node?.type === "identifier") {
     const iterated = iteratedElementInstance(current, node.text)
     if (iterated) return iterated
@@ -733,7 +820,18 @@ export function iteratedContainerKind(node: Node | null, current: Scope): Contai
     const fn = node.childForFieldName("function")
     const method = call ? tail(call) : undefined
     const receiver = fn?.type === "attribute" ? fn.childForFieldName("object") : null
-    if (method && STRING_ITERABLE_METHODS.has(method) && trackedContainerKind(receiver, current) === "string") {
+    if (call === "dir") {
+      const effect = classifyBuiltinPureCall(call, node, args(node), current)
+      if (effect?.atom === "pure.compute") return "string"
+    }
+    if (call === "sorted") {
+      const effect = classifyBuiltinPureCall(call, node, args(node), current)
+      if (effect?.atom === "pure.compute") {
+        const source = node.childForFieldName("arguments")?.namedChildren[0] ?? null
+        return iteratedContainerKind(source, current)
+      }
+    }
+    if (method && STRING_ITERABLE_METHODS.has(method) && trackedReceiverContainerKind(receiver, current) === "string") {
       return "string"
     }
   }

@@ -30,12 +30,18 @@ export type AtlassianCtor = {
 export type Scope = {
   parent?: Scope
   bindings: Map<string, string>
+  trustedDirectBindings: Set<string>
+  trustedBindings: Set<string>
+  trustedModuleBindings: Set<string>
+  trustedModuleRoots: Set<string>
   localDefinitions: Set<string>
   callableFactories: Map<string, Node>
   containerInstances: Map<string, ContainerKind>
   iteratedElementInstances: Map<string, ContainerKind>
   iteratedPathInstances: Map<string, Value>
   receiverContainers: Map<string, ReceiverContainer>
+  receiverElementKinds: Map<string, ReceiverContainer>
+  receiverSeedableStringLists: Map<string, string[]>
   receiverPaths: Map<string, ReceiverPath>
   pathInstances: Map<string, Value>
   httpClientInstances: Map<string, string>
@@ -48,6 +54,7 @@ export type TimelineEntry = {
   kind: "assignment" | "call" | "definition" | "import" | "raise" | "rebind"
   node: Node
   scope: Scope
+  bodyScope?: Scope
   startIndex: number
   endIndex: number
 }

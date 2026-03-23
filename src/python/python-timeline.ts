@@ -8,7 +8,7 @@ type TimelineDeps = {
   invalidateTrackedName(current: Scope, name: string): void
 }
 
-function parameterNames(node: Node | null): string[] {
+export function parameterNames(node: Node | null): string[] {
   if (!node) return []
   const name = node.childForFieldName("name")
   if (name?.type === "identifier") return [name.text]
@@ -104,6 +104,10 @@ function collectTimeline(node: Node, current: Scope, entries: TimelineEntry[], d
   if (BODY_SCOPE_TYPES.has(node.type)) {
     const body = node.childForFieldName("body")
     const inner = deps.scope(current)
+    if ((node.type === "function_definition" || node.type === "class_definition") && !decorated) {
+      const last = entries[entries.length - 1]
+      if (last?.kind === "definition" && last.node === node) last.bodyScope = inner
+    }
     if (node.type === "function_definition" || node.type === "lambda") {
       for (const name of parameterNames(node.childForFieldName("parameters"))) deps.invalidateTrackedName(inner, name)
     }

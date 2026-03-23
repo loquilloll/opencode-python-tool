@@ -103,6 +103,17 @@ Runtime ask policy:
 | `inspect.getsource`, `inspect.getsourcelines`, `inspect.getcomments`, `inspect.getfile`, `inspect.getsourcefile`, `inspect.currentframe`, `inspect.stack`, and similar source/frame walkers | read |
 | tracked inspect receiver methods such as `sig.bind()`, `sig.bind_partial()`, `sig.replace()`, `sig.format()`, `param.replace()`, and `bound.apply_defaults()` | pure |
 | tracked `Mock` / `AsyncMock` assertion and reset/configuration helpers such as `.assert_called_once_with()`, `.assert_not_called()`, `.reset_mock()`, `.configure_mock()`, `.mock_add_spec()`, and async assert helpers like `.assert_not_awaited()` | pure |
+| tracked string split helpers such as `text.split()`, `text.rsplit()`, and `text.splitlines()`, including subscripted derived locals like `line.split(...)[0].strip()`, bounded same-scope helper params, and trusted `dir()` / `sorted(dir(...))` name flows when the receiver stays on trusted string provenance | pure |
+| exact `__dict__.items()` introspection such as `calendar.__dict__.items()` or `cls.__dict__.items()` | pure |
+| tracked compiled regex pattern helpers such as `pat.search()`, `pat.match()`, `pat.fullmatch()`, `pat.findall()`, `pat.finditer()`, and `pat.split()` on trusted compiled-regex receivers | pure |
+| `collections.Counter()` and tracked Counter helpers such as `.most_common()`, `.elements()`, `.total()`, `.update()`, `.subtract()`, `.copy()`, `.keys()`, and `.items()` | pure |
+| trusted `collections.defaultdict(set)` / `collections.defaultdict(list)` constructors, plus explicit homogeneous dict-of-list/set subscript receiver methods like `inv[current].append(...)` or `family_aliases[fam].add(...)` | pure |
+
+Incrementally mutated exact receiver-path list values such as `inv[current]` remain conservative unless their string-element provenance is proven by a narrower dedicated rule.
+| `hashlib.sha256()` and tracked hash-object helpers such as `.digest()`, `.hexdigest()`, and `.copy()` | pure |
+| `importlib.metadata.version()` on plain module-qualified calls, trusted module imports such as `from importlib import metadata`, trusted module aliases such as `import importlib.metadata as md`, and exact unaliased direct imports | read |
+| `importlib.import_module()` on plain module-qualified calls and exact unaliased direct imports | exec |
+| trusted `pytest.main()` module-qualified calls and trusted direct imports | exec |
 | `datetime.date()`, `datetime.datetime()`, `datetime.time()`, `datetime.timedelta()`, `datetime.timezone()`, `datetime.tzinfo()`, and parser/conversion helpers such as `.fromtimestamp()`, `.fromordinal()`, `.fromisoformat()`, `.fromisocalendar()`, `.combine()`, and `.strptime()` | pure |
 | `datetime.date.today()`, `datetime.datetime.now()`, `datetime.datetime.today()`, `datetime.datetime.utcnow()` | read |
 | tracked datetime receiver methods such as `date.isoformat()`, `date.replace()`, `datetime.astimezone()`, `datetime.date()`, `datetime.time()`, `time.isoformat()`, `timedelta.total_seconds()`, and `timezone.tzname()` | pure |

@@ -89,6 +89,8 @@ export const CALENDAR_INT_CALLS = new Set(["calendar.firstweekday", "calendar.le
 export const CALENDAR_STRING_CALLS = new Set(["calendar.calendar", "calendar.month", "calendar.weekheader"])
 export const CALENDAR_TUPLE_CALLS = new Set(["calendar.monthrange"])
 export const CALENDAR_LIST_CALLS = new Set(["calendar.monthcalendar"])
+export const COUNTER_CALLS = new Set(["collections.Counter"])
+export const COUNTER_PURE_METHODS = new Set([...DICT_PURE_METHODS, "elements", "most_common", "subtract", "total"])
 export const OSPATH_STRING_CALLS = new Set([
   "os.path.abspath",
   "os.path.basename",
@@ -106,6 +108,8 @@ export const OSPATH_STRING_CALLS = new Set([
 export const OSPATH_TUPLE_CALLS = new Set(["os.path.split", "os.path.splitdrive", "os.path.splitext", "os.path.splitroot"])
 export const OSPATH_INT_CALLS = new Set(["os.path.getsize"])
 export const OSPATH_FLOAT_CALLS = new Set(["os.path.getatime", "os.path.getctime", "os.path.getmtime"])
+export const HASHLIB_HASH_CALLS = new Set(["hashlib.sha256"])
+export const HASHLIB_HASH_PURE_METHODS = new Set(["copy", "digest", "hexdigest"])
 export const ZONEINFO_ZONE_CALLS = new Set(["zoneinfo.ZoneInfo", "zoneinfo.ZoneInfo.from_file", "zoneinfo.ZoneInfo.no_cache"])
 export const ZONEINFO_SET_CALLS = new Set(["zoneinfo.available_timezones"])
 export const MOCK_PURE_METHODS = new Set([
@@ -352,6 +356,7 @@ export const INSPECT_SIGNATURE_CALLS = new Set(["inspect.signature", "inspect.Si
 export const INSPECT_PARAMETER_CALLS = new Set(["inspect.Parameter"])
 export const INSPECT_BOUND_ARGUMENTS_CALLS = new Set(["inspect.BoundArguments"])
 export const MATCH_RESULT_CALLS = new Set(["re.fullmatch", "re.match", "re.search"])
+export const REGEX_PATTERN_PURE_METHODS = new Set(["findall", "finditer", "fullmatch", "match", "search", "split"])
 export const DIRECT_IMPORT_BINDINGS = new Set(["os.path.join", "pathlib.Path"])
 export const JSON_CONTAINER_CALLS = new Set(["json.load", "json.loads"])
 export const JSON_CONTAINER_CUSTOMIZER_KEYWORDS = new Set([

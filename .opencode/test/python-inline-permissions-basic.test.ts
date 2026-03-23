@@ -152,6 +152,166 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("asks for pytest.main exec calls, including direct imports", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import pytest\npytest.main(['-q'])\nfrom pytest import main\nmain(['-q'])",
+            args: [],
+            description: "pytest main exec ask",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toContain("exec:pytest.main")
+      })
+    })
+
+    it("keeps conservative pytest helpers on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import pytest\npytest.approx(1.0)\nfrom pytest import approx\napprox(1.0)",
+            args: [],
+            description: "conservative pytest helpers",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:pytest.approx", "unknown:callable:approx"]))
+      })
+    })
+
+    it("keeps shadowed pytest.main forms on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytest import main",
+              "def main(args):",
+              "    return args",
+              "main(['-q'])",
+              "import pytest",
+              "pytest = object()",
+              "pytest.main(['-q'])",
+            ].join("\n"),
+            args: [],
+            description: "shadowed pytest main",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:main", "unknown:callable:pytest.main"]))
+      })
+    })
+
+    it("keeps aliased pytest.main module calls conservative after root rebinding", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import pytest\npytest = object()\nrunner = pytest\nrunner.main(['-q'])",
+            args: [],
+            description: "aliased shadowed pytest main",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:pytest.main"]))
+      })
+    })
+
+    it("asks for importlib.import_module exec calls and importlib.metadata.version reads", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from importlib import import_module",
+              "import_module('json')",
+              "from importlib.metadata import version",
+              "version('PyGithub')",
+              "from importlib import metadata",
+              "metadata.version('PyGithub')",
+              "import importlib.metadata as md",
+              "md.version('PyGithub')",
+            ].join("\n"),
+            args: [],
+            description: "importlib family asks",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["exec:importlib.import_module", "read:importlib.metadata.version"]))
+      })
+    })
+
+    it("keeps reassigned importlib leaf names on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import importlib",
+              "import_module = importlib.import_module",
+              "import_module('json')",
+              "import importlib.metadata",
+              "version = importlib.metadata.version",
+              "version('PyGithub')",
+            ].join("\n"),
+            args: [],
+            description: "reassigned importlib leaf names",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:importlib.import_module", "unknown:callable:importlib.metadata.version"]))
+      })
+    })
+
+    it("keeps aliased importlib forms on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from importlib import import_module as imod",
+              "imod('json')",
+              "from importlib.metadata import version as pkg_version",
+              "pkg_version('PyGithub')",
+            ].join("\n"),
+            args: [],
+            description: "aliased importlib forms",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(
+          expect.arrayContaining([
+            "unknown:callable:importlib.import_module",
+            "unknown:callable:importlib.metadata.version",
+          ]),
+        )
+      })
+    })
+
     it("includes multiple write patterns", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -276,6 +436,640 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("skips python ask for tracked compiled-regex helpers and keeps pure metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "pat = re.compile('a+')",
+              "pat.search(text)",
+              "pat.search(text).group(0)",
+              "pat.findall(text).count('a')",
+              "pat.split(text).count('')",
+            ].join("\n"),
+            args: [],
+            description: "tracked compiled regex helpers",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "re.compile", pattern: "pure:re.compile" }),
+            expect.objectContaining({ kind: "pure", call: "pat.search", pattern: "pure:pat.search" }),
+            expect.objectContaining({ kind: "pure", call: "pat.search.group", pattern: "pure:pat.search.group" }),
+            expect.objectContaining({ kind: "pure", call: "pat.findall.count", pattern: "pure:pat.findall.count" }),
+            expect.objectContaining({ kind: "pure", call: "pat.split.count", pattern: "pure:pat.split.count" }),
+          ]),
+        )
+      })
+    })
+
+    it("skips python ask for tracked string split locals and keeps pure metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "text = Path('f').read_text()",
+              "line = text.splitlines()[0]",
+              "line.split(' ', 1)[0].strip()",
+              "parts = line.split(':')",
+              "parts[0].strip()",
+              "name = parts[0]",
+              "name.lower()",
+            ].join("\n"),
+            args: [],
+            description: "tracked string split locals",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "pathlib.Path.read_text" }),
+            expect.objectContaining({ kind: "pure", call: "text.splitlines", pattern: "pure:text.splitlines" }),
+            expect.objectContaining({ kind: "pure", call: "line.split", pattern: "pure:line.split" }),
+            expect.objectContaining({ kind: "pure", call: "line.split.strip", pattern: "pure:line.split.strip" }),
+            expect.objectContaining({ kind: "pure", call: "parts.strip", pattern: "pure:parts.strip" }),
+            expect.objectContaining({ kind: "pure", call: "name.lower", pattern: "pure:name.lower" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps tracked string split locals conservative after reassignment", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "text = Path('f').read_text()",
+              "line = text.splitlines()[0]",
+              "line = other",
+              "line.split(' ', 1)",
+              "line.strip()",
+            ].join("\n"),
+            args: [],
+            description: "reassigned string split locals",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:other.split", "unknown:callable:other.strip"]))
+      })
+    })
+
+    it("skips python ask for same-scope helper params seeded from trusted string iterables", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "entries = ['x:1', 'x:2']",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(entries)",
+            ].join("\n"),
+            args: [],
+            description: "helper param string provenance",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(["unknown:callable:leaf"])
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual(["unknown:callable:leaf"])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "e.split", pattern: "pure:e.split" }),
+            expect.objectContaining({ kind: "pure", call: "e.startswith", pattern: "pure:e.startswith" }),
+          ]),
+        )
+      })
+    })
+
+    it("seeds same-scope helper params even when the helper is defined before the trusted producer", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "from pathlib import Path",
+              "entries = Path('f').read_text().splitlines()",
+              "leaf(entries)",
+            ].join("\n"),
+            args: [],
+            description: "helper before producer string provenance",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(["unknown:callable:leaf"])
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "e.split", pattern: "pure:e.split" }),
+            expect.objectContaining({ kind: "pure", call: "e.startswith", pattern: "pure:e.startswith" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps same-scope helper params conservative when callsites disagree", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "entries = ['x:1']",
+              "other = values",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(entries)",
+              "leaf(other)",
+            ].join("\n"),
+            args: [],
+            description: "mixed helper param provenance",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
+    it("keeps helper-param string iterable seeds conservative after indexed mutation", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "entries = Path('f').read_text().splitlines()",
+              "entries[0] = other",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(entries)",
+            ].join("\n"),
+            args: [],
+            description: "mutated helper param provenance",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
+    it("keeps helper-param string iterable seeds conservative after alias-based indexed mutation", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "entries = Path('f').read_text().splitlines()",
+              "alias = entries",
+              "alias[0] = other",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(entries)",
+            ].join("\n"),
+            args: [],
+            description: "aliased helper indexed mutation",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
+    it("keeps mutation-built receiver-path string lists conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append('x:1')",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(inv[current])",
+            ].join("\n"),
+            args: [],
+            description: "receiver path helper string provenance",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+      })
+    })
+
+    it("keeps mutation-built receiver-path string lists conservative when appended values are unknown", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append(other)",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(inv[current])",
+            ].join("\n"),
+            args: [],
+            description: "unknown receiver path helper string provenance",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+      })
+    })
+
+    it("keeps mutation-built receiver-path string lists conservative when aliased subscript receivers mutate", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const aliasAppendContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append('x:1')",
+              "bucket = inv[current]",
+              "bucket.append(other)",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(inv[current])",
+            ].join("\n"),
+            args: [],
+            description: "aliased receiver path append mutation",
+          },
+          aliasAppendContext,
+        )
+        expect(getAsk(aliasAppendContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+
+        const aliasIndexContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append('x:1')",
+              "bucket = inv[current]",
+              "bucket[0] = other",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(inv[current])",
+            ].join("\n"),
+            args: [],
+            description: "aliased receiver path indexed mutation",
+          },
+          aliasIndexContext,
+        )
+        expect(getAsk(aliasIndexContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+      })
+    })
+
+    it("keeps helper-param string iterable seeds conservative after mutating list methods", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "entries = Path('f').read_text().splitlines()",
+              "entries.append(other)",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(entries)",
+            ].join("\n"),
+            args: [],
+            description: "mutated helper param provenance by append",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
+    it("keeps helper-param string iterable seeds conservative through aliases and comprehension mutations", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const aliasContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "entries = Path('f').read_text().splitlines()",
+              "alias = entries",
+              "entries.append(other)",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(alias)",
+            ].join("\n"),
+            args: [],
+            description: "aliased helper param mutation",
+          },
+          aliasContext,
+        )
+        expect(getAsk(aliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+
+        const compContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "entries = Path('f').read_text().splitlines()",
+              "[entries.append(other) for _ in xs]",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(entries)",
+            ].join("\n"),
+            args: [],
+            description: "comprehension helper param mutation",
+          },
+          compContext,
+        )
+        expect(getAsk(compContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
+    it("skips python ask for dir and sorted(dir()) string origins when builtins are trusted", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "name = dir(obj)[0]",
+              "name.lower()",
+              "for attr in sorted(dir(obj)):",
+              "    attr.startswith('_')",
+            ].join("\n"),
+            args: [],
+            description: "dir string origins",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "dir", pattern: "pure:dir" }),
+            expect.objectContaining({ kind: "pure", call: "name.lower", pattern: "pure:name.lower" }),
+            expect.objectContaining({ kind: "pure", call: "sorted", pattern: "pure:sorted" }),
+            expect.objectContaining({ kind: "pure", call: "attr.startswith", pattern: "pure:attr.startswith" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps dir and sorted(dir()) string origins conservative when builtins are shadowed", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "dir = fake",
+              "name = dir(obj)[0]",
+              "name.lower()",
+              "sorted = fake_sorted",
+              "for attr in sorted(dir(obj)):",
+              "    attr.startswith('_')",
+            ].join("\n"),
+            args: [],
+            description: "shadowed dir string origins",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:name.lower", "unknown:callable:attr.startswith"]))
+      })
+    })
+
+    it("keeps dir-derived string origins conservative after indexed mutation", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "names = dir(obj)\nnames[0] = other\nname = names[0]\nname.lower()",
+            args: [],
+            description: "mutated dir string origins",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:name.lower"]))
+      })
+    })
+
+    it("keeps dir-derived string origins conservative after alias-based indexed mutation", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "names = dir(obj)\nalias = names\nalias[0] = other\nname = names[0]\nname.lower()",
+            args: [],
+            description: "aliased dir indexed mutation",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:name.lower"]))
+      })
+    })
+
+    it("skips python ask for exact __dict__.items introspection", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import calendar",
+              "calendar.__dict__.items()",
+            ].join("\n"),
+            args: [],
+            description: "__dict__ items introspection",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "calendar.__dict__.items", pattern: "pure:calendar.__dict__.items" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps dir-derived string origins conservative after mutating list methods", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "names = dir(obj)\nnames.extend(other)\nname = names[0]\nname.lower()",
+            args: [],
+            description: "mutated dir string origins by extend",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:name.lower"]))
+      })
+    })
+
+    it("keeps dir-derived string origins conservative through aliases and comprehension mutations", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const aliasContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "names = dir(obj)\nalias = names\nalias.extend(other)\nname = names[0]\nname.lower()",
+            args: [],
+            description: "aliased dir mutation",
+          },
+          aliasContext,
+        )
+        expect(getAsk(aliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:name.lower"]))
+
+        const compContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "names = dir(obj)\n[names.append(other) for _ in xs]\nname = names[0]\nname.lower()",
+            args: [],
+            description: "comprehension dir mutation",
+          },
+          compContext,
+        )
+        expect(getAsk(compContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:name.lower"]))
+      })
+    })
+
+    it("skips python ask for defaultdict and homogeneous dict-value container locals", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from collections import defaultdict",
+              "family_aliases = defaultdict(set)",
+              "family_aliases[fam].add(call)",
+              "inv = {'runtime': [], 'inline': []}",
+              "inv[current].append(item)",
+              "inv[current].pop()",
+            ].join("\n"),
+            args: [],
+            description: "tracked container locals",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "collections.defaultdict", pattern: "pure:collections.defaultdict" }),
+            expect.objectContaining({ kind: "pure", call: "family_aliases.add", pattern: "pure:family_aliases.add" }),
+            expect.objectContaining({ kind: "pure", call: "inv.append", pattern: "pure:inv.append" }),
+            expect.objectContaining({ kind: "pure", call: "inv.pop", pattern: "pure:inv.pop" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps homogeneous dict-value container locals conservative when dict literals use splats", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "values = {'runtime': [], **other}\nvalues[current].append(item)",
+            args: [],
+            description: "dict value splat container locals",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:values.append"]))
+      })
+    })
+
+    it("keeps shadowed re.compile helpers on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import re\nre = object()\nre.compile('a+').search(text)",
+            args: [],
+            description: "shadowed re compile",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:re.compile", "unknown:callable:re.compile.search"]))
+      })
+    })
+
     it("skips python ask for pure-only ast helpers and keeps canonical pure metadata", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -379,6 +1173,146 @@ describe("python tool runtime", () => {
             expect.objectContaining({ kind: "pure", call: "datetime.UTC.tzname", pattern: "pure:datetime.UTC.tzname" }),
           ]),
         )
+      })
+    })
+
+    it("skips python ask for pure-only hashlib helpers and keeps tracked pure metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import hashlib",
+              "hashlib.sha256(b'x')",
+              "digest = hashlib.sha256(b'y')",
+              "digest.hexdigest()",
+              "from hashlib import sha256",
+              "sha256(b'z').digest()",
+            ].join("\n"),
+            args: [],
+            description: "pure hashlib helpers",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "hashlib.sha256", pattern: "pure:hashlib.sha256" }),
+            expect.objectContaining({ kind: "pure", call: "digest.hexdigest", pattern: "pure:digest.hexdigest" }),
+            expect.objectContaining({ kind: "pure", call: "hashlib.sha256.digest", pattern: "pure:hashlib.sha256.digest" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps shadowed module-root hashlib helpers on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import hashlib\nhashlib = object()\nhashlib.sha256(b'x').hexdigest()",
+            args: [],
+            description: "shadowed hashlib root",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:hashlib.sha256", "unknown:callable:hashlib.sha256.hexdigest"]))
+      })
+    })
+
+    it("keeps aliased shadowed hashlib helpers on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import hashlib\nhashlib = object()\nalias = hashlib\nalias.sha256(b'x').hexdigest()",
+            args: [],
+            description: "shadowed hashlib alias",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:hashlib.sha256", "unknown:callable:hashlib.sha256.hexdigest"]))
+      })
+    })
+
+    it("skips python ask for pure-only Counter helpers and keeps tracked pure metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import collections",
+              "counts = collections.Counter('aba')",
+              "counts.most_common()",
+              "counts.total()",
+              "from collections import Counter",
+              "Counter('abb').copy().most_common()",
+            ].join("\n"),
+            args: [],
+            description: "pure counter helpers",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "collections.Counter", pattern: "pure:collections.Counter" }),
+            expect.objectContaining({ kind: "pure", call: "counts.most_common", pattern: "pure:counts.most_common" }),
+            expect.objectContaining({ kind: "pure", call: "counts.total", pattern: "pure:counts.total" }),
+            expect.objectContaining({ kind: "pure", call: "collections.Counter.copy", pattern: "pure:collections.Counter.copy" }),
+            expect.objectContaining({ kind: "pure", call: "collections.Counter.copy.most_common", pattern: "pure:collections.Counter.copy.most_common" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps shadowed Counter module helpers on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import collections\ncollections = object()\ncollections.Counter('aba').most_common()",
+            args: [],
+            description: "shadowed counter root",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:collections.Counter", "unknown:callable:collections.Counter.most_common"]))
+      })
+    })
+
+    it("keeps captured Counter constructor names conservative after root rebinding", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import collections\ncollections = object()\nctor = collections.Counter\nctor('aba').most_common()",
+            args: [],
+            description: "captured counter constructor",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:collections.Counter", "unknown:callable:collections.Counter.most_common"]))
       })
     })
 

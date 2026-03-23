@@ -10,9 +10,10 @@ type ImportBinding = {
   name: string
   target?: string
   direct?: boolean
+  moduleRoot?: boolean
 }
 
-function name(node: Node | null): string | undefined {
+export function name(node: Node | null): string | undefined {
   if (!node) return
   if (node.type === "identifier") return node.text
 
@@ -32,12 +33,18 @@ export function scope(parent?: Scope): Scope {
   return {
     parent,
     bindings: new Map<string, string>(),
+    trustedDirectBindings: new Set<string>(),
+    trustedBindings: new Set<string>(),
+    trustedModuleBindings: new Set<string>(),
+    trustedModuleRoots: new Set<string>(),
     localDefinitions: new Set<string>(),
     callableFactories: new Map<string, Node>(),
     containerInstances: new Map<string, ContainerKind>(),
     iteratedElementInstances: new Map<string, ContainerKind>(),
     iteratedPathInstances: new Map<string, Value>(),
     receiverContainers: new Map<string, ReceiverContainer>(),
+    receiverElementKinds: new Map<string, ReceiverContainer>(),
+    receiverSeedableStringLists: new Map<string, string[]>(),
     receiverPaths: new Map<string, ReceiverPath>(),
     pathInstances: new Map<string, Value>(),
     httpClientInstances: new Map<string, string>(),
@@ -57,6 +64,38 @@ export function lookupBinding(input: Scope, key: string) {
 export function hasBoundName(input: Scope, key: string) {
   for (let current: Scope | undefined = input; current; current = current.parent) {
     if (current.bindings.has(key)) return true
+  }
+  return false
+}
+
+export function hasTrustedModuleRoot(input: Scope, key: string) {
+  for (let current: Scope | undefined = input; current; current = current.parent) {
+    if (current.trustedModuleRoots.has(key)) return true
+    if (current.bindings.has(key)) return false
+  }
+  return false
+}
+
+export function hasTrustedBinding(input: Scope, key: string) {
+  for (let current: Scope | undefined = input; current; current = current.parent) {
+    if (current.trustedBindings.has(key)) return true
+    if (current.bindings.has(key)) return false
+  }
+  return false
+}
+
+export function hasTrustedDirectBinding(input: Scope, key: string) {
+  for (let current: Scope | undefined = input; current; current = current.parent) {
+    if (current.trustedDirectBindings.has(key)) return true
+    if (current.bindings.has(key)) return false
+  }
+  return false
+}
+
+export function hasTrustedModuleBinding(input: Scope, key: string) {
+  for (let current: Scope | undefined = input; current; current = current.parent) {
+    if (current.trustedModuleBindings.has(key)) return true
+    if (current.bindings.has(key)) return false
   }
   return false
 }
@@ -82,8 +121,43 @@ export function resolvedName(node: Node | null, current: Scope) {
   return resolveQualified(raw, current)
 }
 
+export function trustedResolvedModuleCall(node: Node | null, resolvedCall: string, current: Scope) {
+  const raw = name(node)
+  if (!raw) return false
+  const rawRoot = raw.split(".")[0]
+  const resolvedRoot = resolvedCall.split(".")[0]
+  if (!rawRoot || !resolvedRoot) return false
+  if (rawRoot !== resolvedRoot) return hasTrustedBinding(current, rawRoot)
+  return hasTrustedModuleRoot(current, rawRoot)
+}
+
+export function trustedExactDirectImportCall(node: Node | null, resolvedCall: string, current: Scope) {
+  const raw = name(node)
+  if (!raw) return false
+  if (raw === resolvedCall) return trustedResolvedModuleCall(node, resolvedCall, current)
+  const parts = resolvedCall.split(".")
+  const leaf = parts[parts.length - 1]
+  return Boolean(leaf && raw === leaf && hasTrustedDirectBinding(current, raw))
+}
+
+export function trustedAliasSource(node: Node | null, current: Scope) {
+  const raw = name(node)
+  if (!raw) return false
+  const resolved = resolvedName(node, current)
+  if (!resolved) return false
+  const rawRoot = raw.split(".")[0]
+  const resolvedRoot = resolved.split(".")[0]
+  if (!rawRoot || !resolvedRoot) return false
+  if (rawRoot !== resolvedRoot) return hasTrustedBinding(current, rawRoot)
+  return hasTrustedModuleRoot(current, rawRoot)
+}
+
 export function clearTrackedName(current: Scope, name: string) {
   current.bindings.delete(name)
+  current.trustedDirectBindings.delete(name)
+  current.trustedBindings.delete(name)
+  current.trustedModuleBindings.delete(name)
+  current.trustedModuleRoots.delete(name)
   current.localDefinitions.delete(name)
   current.callableFactories.delete(name)
   current.containerInstances.delete(name)
@@ -95,6 +169,19 @@ export function clearTrackedName(current: Scope, name: string) {
   current.httpResponseInstances.delete(name)
   current.ghapiInstances.delete(name)
   current.atlassianInstances.delete(name)
+}
+
+export function clearIteratedElementProvenance(current: Scope, name: string) {
+  const target = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.iteratedElementInstances.delete(name)
+    if (!target) continue
+    const toDelete = new Set<string>([target])
+    for (const key of scope.iteratedElementInstances.keys()) {
+      if (resolveQualified(key, current) === target) toDelete.add(key)
+    }
+    for (const key of toDelete) scope.iteratedElementInstances.delete(key)
+  }
 }
 
 export function invalidateTrackedName(current: Scope, name: string) {
@@ -169,7 +256,7 @@ export function pathInstanceValue(current: Scope, name: string) {
 
 export function aliasTarget(node: Node | null, current: Scope) {
   if (!node) return
-  if (node.type !== "identifier" && node.type !== "attribute" && node.type !== "subscript") return
+  if (node.type !== "identifier" && node.type !== "attribute") return
   return resolvedName(node, current)
 }
 
@@ -185,7 +272,7 @@ export function importBindings(node: Node) {
       .map((part) => {
         const [moduleName, alias] = part.split(/\s+as\s+/i).map((item) => item.trim())
         const name = alias || moduleName.split(".")[0] || moduleName
-        return { name, target: alias ? moduleName : undefined, direct: false }
+        return { name, target: alias ? moduleName : undefined, direct: false, moduleRoot: !alias }
       })
   }
 
@@ -202,7 +289,7 @@ export function importBindings(node: Node) {
       .map((part) => {
         const [importedName, alias] = part.split(/\s+as\s+/i).map((item) => item.trim())
         const name = alias || importedName
-        return { name, target: `${moduleName}.${importedName}`, direct: !alias }
+        return { name, target: `${moduleName}.${importedName}`, direct: !alias, moduleRoot: false }
       })
   }
 
@@ -213,8 +300,15 @@ export function shouldBindDirectImport(target: string, rules: Rules) {
   return (
     DIRECT_IMPORT_BINDINGS.has(target) ||
     target.startsWith("calendar.") ||
+    target === "collections.Counter" ||
+    target === "collections.defaultdict" ||
     target.startsWith("datetime.") ||
+    target === "hashlib.sha256" ||
+    target === "importlib.import_module" ||
+    target === "importlib.metadata" ||
+    target === "importlib.metadata.version" ||
     target.startsWith("os.path.") ||
+    target === "pytest.main" ||
     target.startsWith("time.") ||
     target.startsWith("zoneinfo.") ||
     (target.startsWith("ast.") && rules.calls.pure.has(target)) ||

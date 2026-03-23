@@ -28,7 +28,7 @@ import {
 import type { AtlassianClientFamily, Rules, Scope } from "./python-analyze-types"
 import type { PythonEventEvidence, ReceiverKind, ResolvedEffect } from "./python-ir"
 import { type ContainerKind, trackableReceiverInfo, trackableSelfAttributePath } from "./python-provenance"
-import { atlassianInstance, containerInstance, hasBoundName, hasGhapiInstance, hasHttpResponseInstance, httpClientInstance, resolvedName } from "./python-scope"
+import { atlassianInstance, containerInstance, hasBoundName, hasGhapiInstance, hasHttpResponseInstance, hasTrustedModuleBinding, httpClientInstance, name, resolvedName, trustedExactDirectImportCall, trustedResolvedModuleCall } from "./python-scope"
 import { canonicalPathMethodCall, pathFromPathMethod } from "./python-timeline"
 import type { GuardedCallRule, GuardedMethodRule } from "./python-rule-schema"
 import type { PythonArgs as Args, PythonValue as Value } from "./python-values"
@@ -71,6 +71,14 @@ function classifyBuiltinEffectCall(call: string, node: Node, input: Args, curren
 
 function raiseValue(node: Node) {
   return node.childForFieldName("value") ?? node.childForFieldName("exception") ?? node.namedChildren[0] ?? null
+}
+
+function trustedImportlibMetadataVersionCall(node: Node | null, current: Scope) {
+  const raw = name(node)
+  if (!raw) return false
+  if (raw === "importlib.metadata.version") return trustedResolvedModuleCall(node, "importlib.metadata.version", current)
+  const parts = raw.split(".")
+  return parts.length === 2 && parts[1] === "version" && hasTrustedModuleBinding(current, parts[0] ?? "")
 }
 
 export function classifyRaise(node: Node, current: Scope): ResolvedEffect | undefined {
@@ -299,6 +307,15 @@ export function classify(
   const fn = node.childForFieldName("function")
   const call = resolvedName(fn, current)
   if (!call) return effect("unknown", { outwardCall: "dynamic-call" })
+  if (call === "importlib.import_module" && !trustedExactDirectImportCall(fn, call, current)) {
+    return effect("unknown", { resolvedCall: call, outwardCall: `${CALLABLE_UNKNOWN_PREFIX}${call}` })
+  }
+  if (call === "importlib.metadata.version" && !(trustedExactDirectImportCall(fn, call, current) || trustedImportlibMetadataVersionCall(fn, current))) {
+    return effect("unknown", { resolvedCall: call, outwardCall: `${CALLABLE_UNKNOWN_PREFIX}${call}` })
+  }
+  if ((call === "collections.Counter" || call === "collections.defaultdict" || call === "hashlib.sha256" || call === "pytest.main" || call === "re.compile") && !trustedResolvedModuleCall(fn, call, current)) {
+    return effect("unknown", { resolvedCall: call, outwardCall: `${CALLABLE_UNKNOWN_PREFIX}${call}` })
+  }
 
   const input = args(node)
   let guardFailureEvidence: PythonEventEvidence | undefined
@@ -329,6 +346,16 @@ export function classify(
   }
   if (pathMethod && PATH_PURE_METHODS.has(method)) {
     return effect("pure.compute", { resolvedCall: call, outwardCall: call, canonicalCall: pathSourceCall })
+  }
+  if (
+    method === "items" &&
+    temporaryReceiver?.type === "attribute" &&
+    temporaryReceiver.childForFieldName("attribute")?.text === "__dict__" &&
+    input.positional.length === 0 &&
+    Object.keys(input.keyword).length === 0 &&
+    !hasDictionarySplat(node)
+  ) {
+    return effect("pure.compute", { resolvedCall: call })
   }
   const temporaryContainer = directTemporaryContainerKind(temporaryReceiver, current)
   if (temporaryContainer && pureContainerMethod(temporaryContainer, method)) {
