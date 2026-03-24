@@ -1,4 +1,5 @@
 import type { PythonValue as Value } from "./python-values"
+import { equivalentSubscriptValuePath } from "./python-key-equivalence"
 
 type NodeLike = {
   type: string
@@ -63,6 +64,9 @@ export type ReceiverInfo = {
 export type ProvenanceScope = {
   parent?: ProvenanceScope
   bindings: Map<string, string>
+  valueInstances: Map<string, Value>
+  exactStringSets: Map<string, string[]>
+  exactIteratedStringSets: Map<string, string[]>
   containerInstances: Map<string, ContainerKind>
   receiverContainers: Map<string, ReceiverContainer>
   receiverElementKinds: Map<string, ReceiverContainer>
@@ -191,6 +195,25 @@ export function receiverElementKindInstance(current: Pick<ProvenanceScope, "rece
   return current.receiverElementKinds.get(path)?.kind
 }
 
+function rootFromPath(path: string) {
+  const match = path.match(/^[^.\[]+/)
+  return match?.[0]
+}
+
+function lookupTrackedReceiverElementKindAtPath(current: ProvenanceScope, path: string) {
+  const root = rootFromPath(path)
+  for (let scope: ProvenanceScope | undefined = current; scope; scope = scope.parent) {
+    const tracked = scope.receiverElementKinds.get(path)
+    if (tracked) {
+      for (let cursor: ProvenanceScope | undefined = current; cursor && cursor !== scope; cursor = cursor.parent) {
+        if (tracked.deps.some((dep) => cursor.bindings.has(dep))) return
+      }
+      return tracked.kind
+    }
+    if (root && scope.bindings.has(root)) return
+  }
+}
+
 export function receiverPathInstance(current: Pick<ProvenanceScope, "receiverPaths">, path: string) {
   return current.receiverPaths.get(path)?.path
 }
@@ -221,8 +244,22 @@ export function lookupTrackedReceiverElementKind(current: ProvenanceScope, node:
   if (!node) return
 
   const trackedReceiver = trackableReceiverInfo(node)
-  const trackedElementKind = trackedReceiver ? receiverElementKindInstance(current, trackedReceiver.path) : undefined
-  if (trackedElementKind) return trackedElementKind
+  if (trackedReceiver) {
+    const trackedElementKind = lookupTrackedReceiverElementKindAtPath(current, trackedReceiver.path)
+    if (trackedElementKind) return trackedElementKind
+  }
+
+  const equivalentPath = equivalentSubscriptValuePath(current, node as any)
+  if (equivalentPath) {
+    const equivalentKind = lookupTrackedReceiverElementKindAtPath(current, equivalentPath)
+    if (equivalentKind) return equivalentKind
+  }
+
+  if (trackedReceiver) {
+    for (let scope: ProvenanceScope | undefined = current; scope; scope = scope.parent) {
+      if (trackedReceiver.deps.some((dep) => scope.bindings.has(dep))) return
+    }
+  }
 
   const localContainerName = trackableSelfAttributePath(node) ?? (node.type === "identifier" ? node.text : undefined)
   if (!localContainerName) return

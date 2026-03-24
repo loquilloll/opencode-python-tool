@@ -4,7 +4,7 @@ import { access, mkdtemp, readFile, rm, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
 import { PassThrough, Writable } from "stream"
-import { action, applyDecisions, compareRules, item, nextReview, parse, promote, promotions, recordDecision, render, renderPromotions, renderReview, renderRulesCompare, renderSuggestions, renderTui, rescore, review, scan, suggestRules, tui, update } from "../../src/python-session-report"
+import { action, applyDecisions, compareRules, filterReviewQueue, item, nextReview, parse, promote, promotions, recordDecision, render, renderPromotions, renderReview, renderReviewFamilies, renderReviewModule, renderRulesCompare, renderSuggestions, renderTui, rescore, review, reviewFamilies, reviewFamilySummary, scan, selectReviewFamilies, settled, suggestRules, tui, update } from "../../src/python-session-report"
 
 function plain(text: string) {
   return text.replace(/\x1b\[[0-9;]*m/g, "")
@@ -187,6 +187,39 @@ describe("python session report", () => {
       expect(report.engineVersion).toBe("python-ir-v2")
       expect(queue.analyzerVersion).toBe(report.analyzerVersion)
       expect(queue.engineVersion).toBe(report.engineVersion)
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("skips inline definition call names while keeping underlying unknown calls reviewable", async () => {
+    const tmp = await db()
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data(
+          "python",
+          {
+            code: ["def helper():", "    writer.save('x')", "helper()", "reader.fetch('y')"].join("\n"),
+          },
+        ),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      expect(report.totals.unknownEvents).toBe(2)
+      expect(report.unknown.map((item) => item.call).sort()).toEqual(["reader.fetch", "writer.save"])
+      expect(report.occurrences.map((item) => item.call).sort()).toEqual(["reader.fetch", "writer.save"])
+
+      const queue = await review(report, { ledger: path.join(tmp.dir, "review-ledger.json") })
+      expect(queue.snippets).toHaveLength(1)
+      expect(queue.snippets[0]?.candidates.map((item) => item.call).sort()).toEqual(["reader.fetch", "writer.save"])
     } finally {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })
@@ -431,7 +464,7 @@ describe("python session report", () => {
 
       const queue = await review(report, { ledger })
       const candidates = queue.snippets[0]?.candidates.map((candidate) => `${candidate.kind}:${candidate.fingerprint}`) ?? []
-      expect(candidates).toEqual(expect.arrayContaining(["unknown:fp-unknown", "emit:fp-emit"]))
+      expect(candidates).toEqual(expect.arrayContaining([expect.stringMatching(/^unknown:/), expect.stringMatching(/^emit:/)]))
       expect(candidates).toHaveLength(2)
     } finally {
       tmp.db.close()
@@ -879,8 +912,8 @@ describe("python session report", () => {
       const queue = await review(report, { ledger })
       const decided = queue.snippets.find((item) => item.snippetFingerprint === "snippet-match")
       const pending = queue.snippets.find((item) => item.snippetFingerprint === "snippet-other")
-      expect(decided?.candidates.find((item) => item.fingerprint === "fp-match")?.decision).toBe("pure")
-      expect(decided?.candidates.find((item) => item.fingerprint === "fp-write")?.decision).toBeUndefined()
+      expect(decided?.candidates.find((item) => item.call === "item.group")?.decision).toBe("pure")
+      expect(decided?.candidates.find((item) => item.call === "writer.save")?.decision).toBeUndefined()
       expect(pending?.candidates[0]?.decision).toBeUndefined()
     } finally {
       tmp.db.close()
@@ -1299,6 +1332,81 @@ describe("python session report", () => {
     }
   })
 
+  it("keeps same-snippet candidates distinct when sourceCall differs", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      const time = new Date(2000).toISOString()
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        analyzerVersion: "python-analyzer/v2",
+        engineVersion: "python-ir-v2",
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 1,
+          unknownEvents: 2,
+          uniqueUnknownCalls: 1,
+          skippedRows: 0,
+        },
+        unknown: [],
+        occurrences: [
+          {
+            kind: "unknown" as const,
+            call: "item.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-shared",
+            snippetFingerprint: "snippet-shared",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "item.group(1)",
+            code: "item.group(1)\nitem.group(2)",
+            confidence: { read: 0.45, write: 0.12, emit: 0.03, exec: 0.05, pure: 0.06, unknown: 0.29 },
+            readConfidence: 0.45,
+            writeConfidence: 0.12,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "unknown" as const,
+            call: "item.group",
+            sourceCall: "collections.Group.group",
+            canonicalSource: "collections.Group.group",
+            fingerprint: "fp-shared",
+            snippetFingerprint: "snippet-shared",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "item.group(2)",
+            code: "item.group(1)\nitem.group(2)",
+            confidence: { read: 0.44, write: 0.13, emit: 0.03, exec: 0.05, pure: 0.07, unknown: 0.28 },
+            readConfidence: 0.44,
+            writeConfidence: 0.13,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      const queue = await review(report, { ledger })
+      expect(queue.snippets).toHaveLength(1)
+      expect(queue.snippets[0]?.candidates).toHaveLength(2)
+      expect(reviewFamilies(queue).map((item) => item.canonicalSource)).toEqual(["collections.Group.group", "re.Match.group"])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
   it("does not reuse decisions when the display call matches but kind differs", async () => {
     const tmp = await db()
     const ledger = path.join(tmp.dir, "review-ledger.json")
@@ -1371,6 +1479,658 @@ describe("python session report", () => {
       tmp.db.close()
       await rm(tmp.dir, { recursive: true, force: true })
     }
+  })
+
+  it("normalizes direct unknown canonical sources when building family clusters", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000), ('s2', 'Beta', 3000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "hashlib.sha256(blob).hexdigest()" }),
+      })
+      put(tmp.db, {
+        id: "p2",
+        messageID: "m2",
+        sessionID: "s2",
+        created: 2000,
+        updated: 3000,
+        data: data("python", { code: "hashlib.sha256(other).hexdigest()" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const queue = await review(report, { ledger })
+      const families = reviewFamilies(queue)
+      const family = families.find((item) => item.canonicalSource === "hashlib.sha256")
+      expect(family).toEqual(
+        expect.objectContaining({
+          canonicalSource: "hashlib.sha256",
+          aliases: ["hashlib.sha256"],
+          occurrenceCount: 2,
+          snippetCount: 2,
+          trustedCanonicalSource: false,
+          moduleRootHint: undefined,
+          recommendation: "blocked",
+          reasons: expect.arrayContaining(["canonical source is not provenance-backed"]),
+        }),
+      )
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("marks alias-sharing families as manual-split and keeps source-based splits separate", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      const time = new Date(2000).toISOString()
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        analyzerVersion: "python-analyzer/v2",
+        engineVersion: "python-ir-v2",
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 4,
+          unknownEvents: 4,
+          uniqueUnknownCalls: 3,
+          skippedRows: 0,
+        },
+        unknown: [],
+        occurrences: [
+          {
+            kind: "unknown" as const,
+            call: "first.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-first",
+            snippetFingerprint: "snippet-first",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "first.group(1)",
+            code: "first = re.search('a+', text)\nfirst.group(1)",
+            confidence: { read: 0.45, write: 0.12, emit: 0.03, exec: 0.05, pure: 0.06, unknown: 0.29 },
+            readConfidence: 0.45,
+            writeConfidence: 0.12,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "unknown" as const,
+            call: "second.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-second",
+            snippetFingerprint: "snippet-second",
+            sessionID: "s2",
+            messageID: "m2",
+            partID: "p2",
+            title: "Beta",
+            time,
+            preview: "second.group(1)",
+            code: "second = re.search('b+', text)\nsecond.group(1)",
+            confidence: { read: 0.44, write: 0.13, emit: 0.03, exec: 0.05, pure: 0.07, unknown: 0.28 },
+            readConfidence: 0.44,
+            writeConfidence: 0.13,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "unknown" as const,
+            call: "item.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-match",
+            snippetFingerprint: "snippet-match",
+            sessionID: "s3",
+            messageID: "m3",
+            partID: "p3",
+            title: "Gamma",
+            time,
+            preview: "item.group(1)",
+            code: "item = re.search('a+', text)\nitem.group(1)",
+            confidence: { read: 0.45, write: 0.12, emit: 0.03, exec: 0.05, pure: 0.06, unknown: 0.29 },
+            readConfidence: 0.45,
+            writeConfidence: 0.12,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "unknown" as const,
+            call: "item.group",
+            sourceCall: "collections.Group.group",
+            canonicalSource: "collections.Group.group",
+            fingerprint: "fp-other",
+            snippetFingerprint: "snippet-other",
+            sessionID: "s4",
+            messageID: "m4",
+            partID: "p4",
+            title: "Delta",
+            time,
+            preview: "item.group(1)",
+            code: "item = custom_group()\nitem.group(1)",
+            confidence: { read: 0.44, write: 0.13, emit: 0.03, exec: 0.05, pure: 0.07, unknown: 0.28 },
+            readConfidence: 0.44,
+            writeConfidence: 0.13,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      const queue = await review(report, { ledger })
+      const families = reviewFamilies(queue)
+      expect(families).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            canonicalSource: "re.Match.group",
+            aliases: ["first.group", "item.group", "second.group"],
+            recommendation: "manual-split",
+            reasons: expect.arrayContaining(["multiple outward aliases"]),
+          }),
+          expect.objectContaining({
+            canonicalSource: "collections.Group.group",
+            aliases: ["item.group"],
+            recommendation: "provenance",
+          }),
+        ]),
+      )
+      const family = families.find((item) => item.canonicalSource === "re.Match.group")
+      expect(family?.representatives.map((item) => item.call)).toEqual(["first.group", "item.group", "second.group"])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("counts merged snippet occurrences separately from snippet count in family clusters", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000), ('s2', 'Beta', 3000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "import hashlib\nhashlib.sha256(blob)" }),
+      })
+      put(tmp.db, {
+        id: "p2",
+        messageID: "m2",
+        sessionID: "s2",
+        created: 2000,
+        updated: 3000,
+        data: data("python", { code: "import hashlib\nhashlib.sha256(blob)" }),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3 })
+      const queue = await review(report, { ledger })
+      const family = reviewFamilies(queue).find((item) => item.canonicalSource === "hashlib.sha256")
+      expect(family).toEqual(
+        expect.objectContaining({
+          occurrenceCount: 2,
+          snippetCount: 1,
+        }),
+      )
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("marks mixed-evidence families as manual-split and keeps unsafe module hints blank", () => {
+    const time = new Date(2000).toISOString()
+    const queue = {
+      generatedAt: new Date(0).toISOString(),
+      db: "test.db",
+      ledger: "review-ledger.json",
+      analyzerVersion: "python-analyzer/v2",
+      engineVersion: "python-ir-v2",
+      filters: { samples: 3 },
+      totals: { snippets: 2, pendingCandidates: 2, decidedCandidates: 0 },
+      snippets: [
+        {
+          snippetFingerprint: "snippet-a",
+          code: "item = re.search('a+', text)\nitem.group(1)",
+          preview: "item.group(1)",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s1", messageID: "m1", partID: "p1", title: "Alpha", time, preview: "item.group(1)" }],
+          candidates: [
+            {
+              kind: "pure" as const,
+              call: "item.group",
+              sourceCall: "re.Match.group",
+              canonicalSource: "re.Match.group",
+              fingerprint: "fp-a",
+              confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+              readConfidence: 0.05,
+              writeConfidence: 0.05,
+              reasons: [],
+              scoreSource: "heuristic",
+              evidence: { explain: ["guarded-method:group"], receiverKind: "match" as any },
+            },
+          ],
+        },
+        {
+          snippetFingerprint: "snippet-b",
+          code: "item.group(1)",
+          preview: "item.group(1)",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s2", messageID: "m2", partID: "p2", title: "Beta", time, preview: "item.group(1)" }],
+          candidates: [
+            {
+              kind: "pure" as const,
+              call: "item.group",
+              sourceCall: "re.Match.group",
+              canonicalSource: "re.Match.group",
+              fingerprint: "fp-b",
+              confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+              readConfidence: 0.05,
+              writeConfidence: 0.05,
+              reasons: [],
+              scoreSource: "heuristic",
+              evidence: { guardFailure: { type: "receiverKindIn" } as any },
+            },
+          ],
+        },
+      ],
+    }
+
+    const [family] = reviewFamilies(queue as any)
+    expect(family).toEqual(
+      expect.objectContaining({
+        canonicalSource: "re.Match.group",
+        aliases: ["item.group"],
+        trustedCanonicalSource: true,
+        moduleRootHint: undefined,
+        recommendation: "manual-split",
+        reasons: expect.arrayContaining(["multiple evidence signatures"]),
+      }),
+    )
+    expect(family?.representatives).toHaveLength(2)
+  })
+
+  it("flags truncated representative coverage when a family has more than three variants", () => {
+    const time = new Date(2000).toISOString()
+    const queue = {
+      generatedAt: new Date(0).toISOString(),
+      db: "test.db",
+      ledger: "review-ledger.json",
+      analyzerVersion: "python-analyzer/v2",
+      engineVersion: "python-ir-v2",
+      filters: { samples: 3 },
+      totals: { snippets: 4, pendingCandidates: 4, decidedCandidates: 0 },
+      snippets: ["first", "second", "third", "fourth"].map((name, i) => ({
+        snippetFingerprint: `snippet-${i}`,
+        code: `${name}.group(1)`,
+        preview: `${name}.group(1)`,
+        lastSeen: time,
+        occurrences: [{ sessionID: `s${i}`, messageID: `m${i}`, partID: `p${i}`, title: name, time, preview: `${name}.group(1)` }],
+        candidates: [
+          {
+            kind: "unknown" as const,
+            call: `${name}.group`,
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: `fp-${i}`,
+            confidence: { read: 0.45, write: 0.12, emit: 0.03, exec: 0.05, pure: 0.06, unknown: 0.29 },
+            readConfidence: 0.45,
+            writeConfidence: 0.12,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      })),
+    }
+
+    const [family] = reviewFamilies(queue as any)
+    expect(family).toEqual(
+      expect.objectContaining({
+        variantCount: 4,
+        representativeCoverageIncomplete: true,
+        recommendation: "manual-split",
+      }),
+    )
+    expect(family?.representatives).toHaveLength(3)
+  })
+
+  it("summarizes family clusters into read-only family and module reports", () => {
+    const time = new Date(2000).toISOString()
+    const queue = {
+      generatedAt: new Date(0).toISOString(),
+      db: "test.db",
+      ledger: "review-ledger.json",
+      analyzerVersion: "python-analyzer/v2",
+      engineVersion: "python-ir-v2",
+      filters: { samples: 3 },
+      totals: { snippets: 2, pendingCandidates: 2, decidedCandidates: 0 },
+      snippets: [
+        {
+          snippetFingerprint: "snippet-1",
+          code: "pytest.main(['-q'])",
+          preview: "pytest.main(['-q'])",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s1", messageID: "m1", partID: "p1", title: "Alpha", time, preview: "pytest.main(['-q'])" }],
+          candidates: [
+            {
+              kind: "unknown" as const,
+              call: "pytest.main",
+              sourceCall: "pytest.main",
+              canonicalSource: "pytest.main",
+              fingerprint: "fp-pytest",
+              confidence: { read: 0.2, write: 0.1, emit: 0.05, exec: 0.5, pure: 0.05, unknown: 0.1 },
+              readConfidence: 0.2,
+              writeConfidence: 0.1,
+              reasons: [],
+              scoreSource: "heuristic",
+            },
+          ],
+        },
+        {
+          snippetFingerprint: "snippet-2",
+          code: "item = re.search('a+', text)\nitem.group(1)",
+          preview: "item.group(1)",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s2", messageID: "m2", partID: "p2", title: "Beta", time, preview: "item.group(1)" }],
+          candidates: [
+            {
+              kind: "pure" as const,
+              call: "item.group",
+              sourceCall: "re.Match.group",
+              canonicalSource: "re.Match.group",
+              fingerprint: "fp-group",
+              confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+              readConfidence: 0.05,
+              writeConfidence: 0.05,
+              reasons: [],
+              scoreSource: "heuristic",
+              evidence: { explain: ["guarded-method:group"], receiverKind: "match" as any },
+            },
+          ],
+        },
+      ],
+    }
+
+    const summary = reviewFamilySummary(queue as any)
+    expect(summary.totals.families).toBe(2)
+    expect(summary.totals.modules).toBe(1)
+    expect(summary.modules).toEqual([
+      expect.objectContaining({
+        moduleRoot: "pytest",
+        occurrenceCount: 1,
+        familyCount: 1,
+        families: [{ canonicalSource: "pytest.main", kind: "unknown" }],
+        recommendationCounts: { rule: 1, provenance: 0, "manual-split": 0, blocked: 0 },
+      }),
+    ])
+    expect(summary.families[0]?.representatives[0]).not.toHaveProperty("evidenceKey")
+    const text = renderReviewFamilies(summary)
+    expect(text).toContain("Modules:")
+    expect(text).toContain("pytest")
+    expect(text).toContain("pytest.main (unknown)")
+    expect(text).toContain("pytest.main kind=unknown [rule]")
+    expect(text).toContain("re.Match.group kind=pure [provenance]")
+  })
+
+  it("filters family summaries by exact canonical source and module root", () => {
+    const time = new Date(2000).toISOString()
+    const queue = {
+      generatedAt: new Date(0).toISOString(),
+      db: "test.db",
+      ledger: "review-ledger.json",
+      analyzerVersion: "python-analyzer/v2",
+      engineVersion: "python-ir-v2",
+      filters: { samples: 3 },
+      totals: { snippets: 2, pendingCandidates: 2, decidedCandidates: 0 },
+      snippets: [
+        {
+          snippetFingerprint: "snippet-1",
+          code: "pytest.main(['-q'])",
+          preview: "pytest.main(['-q'])",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s1", messageID: "m1", partID: "p1", title: "Alpha", time, preview: "pytest.main(['-q'])" }],
+          candidates: [
+            {
+              kind: "unknown" as const,
+              call: "pytest.main",
+              sourceCall: "pytest.main",
+              canonicalSource: "pytest.main",
+              fingerprint: "fp-pytest",
+              confidence: { read: 0.2, write: 0.1, emit: 0.05, exec: 0.5, pure: 0.05, unknown: 0.1 },
+              readConfidence: 0.2,
+              writeConfidence: 0.1,
+              reasons: [],
+              scoreSource: "heuristic",
+            },
+          ],
+        },
+        {
+          snippetFingerprint: "snippet-2",
+          code: "item = re.search('a+', text)\nitem.group(1)",
+          preview: "item.group(1)",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s2", messageID: "m2", partID: "p2", title: "Beta", time, preview: "item.group(1)" }],
+          candidates: [
+            {
+              kind: "pure" as const,
+              call: "item.group",
+              sourceCall: "re.Match.group",
+              canonicalSource: "re.Match.group",
+              fingerprint: "fp-group",
+              confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+              readConfidence: 0.05,
+              writeConfidence: 0.05,
+              reasons: [],
+              scoreSource: "heuristic",
+              evidence: { explain: ["guarded-method:group"], receiverKind: "match" as any },
+            },
+          ],
+        },
+      ],
+    }
+
+    expect(selectReviewFamilies(queue as any, { family: "re.Match.group" }).map((item) => item.canonicalSource)).toEqual(["re.Match.group"])
+    const familySummary = reviewFamilySummary(queue as any, { family: "re.Match.group" })
+    expect(familySummary.selectors).toEqual({ family: "re.Match.group" })
+    expect(familySummary.totals.families).toBe(1)
+    expect(familySummary.totals.modules).toBe(0)
+    expect(familySummary.families[0]?.canonicalSource).toBe("re.Match.group")
+
+    const moduleSummary = reviewFamilySummary(queue as any, { module: "pytest" })
+    expect(moduleSummary.selectors).toEqual({ module: "pytest" })
+    expect(moduleSummary.totals.families).toBe(1)
+    expect(moduleSummary.modules[0]?.moduleRoot).toBe("pytest")
+    expect(moduleSummary.families[0]?.canonicalSource).toBe("pytest.main")
+    expect(renderReviewFamilies(moduleSummary)).toContain("Module filter: pytest")
+  })
+
+  it("filters review-next queues by family and carries family context into renderReview", () => {
+    const time = new Date(2000).toISOString()
+    const queue = {
+      generatedAt: new Date(0).toISOString(),
+      db: "test.db",
+      ledger: "review-ledger.json",
+      analyzerVersion: "python-analyzer/v2",
+      engineVersion: "python-ir-v2",
+      filters: { samples: 3 },
+      totals: { snippets: 1, pendingCandidates: 2, decidedCandidates: 0 },
+      snippets: [
+        {
+          snippetFingerprint: "snippet-1",
+          code: "pytest.main(['-q'])\nitem.group(1)",
+          preview: "pytest.main(['-q'])",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s1", messageID: "m1", partID: "p1", title: "Alpha", time, preview: "pytest.main(['-q'])" }],
+          candidates: [
+            {
+              kind: "unknown" as const,
+              call: "pytest.main",
+              sourceCall: "pytest.main",
+              canonicalSource: "pytest.main",
+              fingerprint: "fp-pytest",
+              confidence: { read: 0.2, write: 0.1, emit: 0.05, exec: 0.5, pure: 0.05, unknown: 0.1 },
+              readConfidence: 0.2,
+              writeConfidence: 0.1,
+              reasons: [],
+              scoreSource: "heuristic",
+            },
+            {
+              kind: "pure" as const,
+              call: "item.group",
+              sourceCall: "re.Match.group",
+              canonicalSource: "re.Match.group",
+              fingerprint: "fp-group",
+              confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+              readConfidence: 0.05,
+              writeConfidence: 0.05,
+              reasons: [],
+              scoreSource: "heuristic",
+              evidence: { explain: ["guarded-method:group"], receiverKind: "match" as any },
+            },
+          ],
+        },
+      ],
+    }
+
+    const filtered = filterReviewQueue(queue as any, { family: "re.Match.group" })
+    expect(filtered.snippets[0]?.candidates.map((item) => item.canonicalSource)).toEqual(["re.Match.group"])
+    const cluster = reviewFamilies(filtered)[0]
+    const text = renderReview(nextReview(filtered)!, cluster)
+    expect(text).toContain("Family: re.Match.group kind=pure [provenance]")
+    expect(text).toContain("Family reasons:")
+    expect(text).not.toContain("1. pytest.main")
+  })
+
+  it("renders module drilldown context without collapsing to one family header", () => {
+    const time = new Date(2000).toISOString()
+    const queue = {
+      generatedAt: new Date(0).toISOString(),
+      db: "test.db",
+      ledger: "review-ledger.json",
+      analyzerVersion: "python-analyzer/v2",
+      engineVersion: "python-ir-v2",
+      filters: { samples: 3 },
+      totals: { snippets: 1, pendingCandidates: 2, decidedCandidates: 0 },
+      snippets: [
+        {
+          snippetFingerprint: "snippet-1",
+          code: "pytest.main(['-q'])\npytest.skip('nope')",
+          preview: "pytest.main(['-q'])",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s1", messageID: "m1", partID: "p1", title: "Alpha", time, preview: "pytest.main(['-q'])" }],
+          candidates: [
+            {
+              kind: "unknown" as const,
+              call: "pytest.main",
+              sourceCall: "pytest.main",
+              canonicalSource: "pytest.main",
+              fingerprint: "fp-pytest-main",
+              confidence: { read: 0.2, write: 0.1, emit: 0.05, exec: 0.5, pure: 0.05, unknown: 0.1 },
+              readConfidence: 0.2,
+              writeConfidence: 0.1,
+              reasons: [],
+              scoreSource: "heuristic",
+            },
+            {
+              kind: "emit" as const,
+              call: "pytest.skip",
+              sourceCall: "pytest.skip",
+              canonicalSource: "pytest.skip",
+              fingerprint: "fp-pytest-skip",
+              confidence: { read: 0.05, write: 0.02, emit: 0.9, exec: 0.02, pure: 0.01, unknown: 0.1 },
+              readConfidence: 0.05,
+              writeConfidence: 0.02,
+              reasons: [],
+              scoreSource: "heuristic",
+            },
+          ],
+        },
+      ],
+    }
+
+    const filtered = filterReviewQueue(queue as any, { module: "pytest" })
+    const families = reviewFamilies(filtered)
+    const text = renderReviewModule(nextReview(filtered)!, "pytest", families)
+    expect(text).toContain("Module: pytest")
+    expect(text).toContain("Families in snippet: pytest.main (unknown, rule), pytest.skip (emit, rule)")
+  })
+
+  it("orders filtered review-next queues by representative snippets first", () => {
+    const time = new Date(2000).toISOString()
+    const queue = {
+      generatedAt: new Date(0).toISOString(),
+      db: "test.db",
+      ledger: "review-ledger.json",
+      analyzerVersion: "python-analyzer/v2",
+      engineVersion: "python-ir-v2",
+      filters: { samples: 3 },
+      totals: { snippets: 2, pendingCandidates: 2, decidedCandidates: 0 },
+      snippets: [
+        {
+          snippetFingerprint: "snippet-z",
+          code: "item.group(1)",
+          preview: "item.group(1)",
+          lastSeen: "2026-03-19T00:00:00Z",
+          occurrences: [{ sessionID: "s1", messageID: "m1", partID: "p1", title: "Newer", time, preview: "item.group(1)" }],
+          candidates: [
+            {
+              kind: "pure" as const,
+              call: "item.group",
+              sourceCall: "re.Match.group",
+              canonicalSource: "re.Match.group",
+              fingerprint: "fp-z",
+              confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+              readConfidence: 0.05,
+              writeConfidence: 0.05,
+              reasons: [],
+              scoreSource: "heuristic",
+              evidence: { explain: ["guarded-method:group"], receiverKind: "match" as any },
+            },
+          ],
+        },
+        {
+          snippetFingerprint: "snippet-a",
+          code: "item.group(1)",
+          preview: "item.group(1)",
+          lastSeen: "2026-03-18T00:00:00Z",
+          occurrences: [{ sessionID: "s2", messageID: "m2", partID: "p2", title: "Older", time, preview: "item.group(1)" }],
+          candidates: [
+            {
+              kind: "pure" as const,
+              call: "item.group",
+              sourceCall: "re.Match.group",
+              canonicalSource: "re.Match.group",
+              fingerprint: "fp-a",
+              confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+              readConfidence: 0.05,
+              writeConfidence: 0.05,
+              reasons: [],
+              scoreSource: "heuristic",
+              evidence: { explain: ["guarded-method:group"], receiverKind: "match" as any },
+            },
+          ],
+        },
+      ],
+    }
+
+    const filtered = filterReviewQueue(queue as any, { family: "re.Match.group" })
+    expect(filtered.snippets.map((item) => item.snippetFingerprint)).toEqual(["snippet-a", "snippet-z"])
   })
 
   it("renders and advances the next review item after batch decisions", async () => {
@@ -1915,6 +2675,123 @@ describe("python session report", () => {
     }
   })
 
+  it("blocks promotion when one review identity spans multiple outward call aliases", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const rules = path.join(tmp.dir, "python-rules.json")
+    const time = new Date(2000).toISOString()
+
+    try {
+      const report = {
+        generatedAt: new Date(0).toISOString(),
+        db: tmp.file,
+        analyzerVersion: "python-analyzer/v2",
+        engineVersion: "python-ir-v2",
+        filters: { samples: 3 },
+        totals: {
+          sessions: 1,
+          toolParts: 1,
+          inlineSnippets: 2,
+          unknownEvents: 2,
+          uniqueUnknownCalls: 2,
+          skippedRows: 0,
+        },
+        unknown: [
+          {
+            call: "first.group",
+            count: 1,
+            lastSeen: time,
+            sessions: [{ id: "s1", title: "Alpha", time }],
+            samples: [{ sessionID: "s1", messageID: "m1", partID: "p1", title: "Alpha", time, preview: "first.group(1)" }],
+          },
+          {
+            call: "second.group",
+            count: 1,
+            lastSeen: time,
+            sessions: [{ id: "s2", title: "Beta", time }],
+            samples: [{ sessionID: "s2", messageID: "m2", partID: "p2", title: "Beta", time, preview: "second.group(1)" }],
+          },
+        ],
+        occurrences: [
+          {
+            kind: "unknown" as const,
+            call: "first.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-first",
+            snippetFingerprint: "snippet-first",
+            sessionID: "s1",
+            messageID: "m1",
+            partID: "p1",
+            title: "Alpha",
+            time,
+            preview: "first.group(1)",
+            code: "first = re.search('a+', text)\nfirst.group(1)",
+            confidence: { read: 0.45, write: 0.12, emit: 0.03, exec: 0.05, pure: 0.06, unknown: 0.29 },
+            readConfidence: 0.45,
+            writeConfidence: 0.12,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+          {
+            kind: "unknown" as const,
+            call: "second.group",
+            sourceCall: "re.Match.group",
+            canonicalSource: "re.Match.group",
+            fingerprint: "fp-second",
+            snippetFingerprint: "snippet-second",
+            sessionID: "s2",
+            messageID: "m2",
+            partID: "p2",
+            title: "Beta",
+            time,
+            preview: "second.group(1)",
+            code: "second = re.search('b+', text)\nsecond.group(1)",
+            confidence: { read: 0.44, write: 0.13, emit: 0.03, exec: 0.05, pure: 0.07, unknown: 0.28 },
+            readConfidence: 0.44,
+            writeConfidence: 0.13,
+            reasons: [],
+            scoreSource: "heuristic",
+          },
+        ],
+      }
+
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      const base = JSON.parse(await readFile(src, "utf8")) as Record<string, any>
+      base.calls.read = (base.calls.read as string[]).filter((item) => !["first.group", "second.group"].includes(item))
+      base.candidates = {
+        unknown: [
+          { call: "first.group", count: 1, lastSeen: time, examples: ["s1"] },
+          { call: "second.group", count: 1, lastSeen: time, examples: ["s2"] },
+        ],
+      }
+      await writeFile(rules, `${JSON.stringify(base, null, 2)}\n`)
+
+      await recordOccurrenceDecision(ledger, report.occurrences[0]!, "read")
+      await recordOccurrenceDecision(ledger, report.occurrences[1]!, "read")
+
+      const plan = await promotions(report, { ledger, rules })
+      expect(plan.promotable.read).toEqual([])
+      expect(plan.blocked).toEqual([
+        {
+          call: "first.group",
+          reason: "review identity maps to multiple outward call aliases",
+          decisions: ["read"],
+          pendingContexts: 0,
+        },
+        {
+          call: "second.group",
+          reason: "review identity maps to multiple outward call aliases",
+          decisions: ["read"],
+          pendingContexts: 0,
+        },
+      ])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
   it("suggests preview-only rules from unanimous reviewed evidence", async () => {
     const tmp = await db()
     const ledger = path.join(tmp.dir, "review-ledger.json")
@@ -2210,6 +3087,13 @@ describe("python session report", () => {
     expect(parse(["--compare-rules", "/tmp/rules.json"]).compareRules).toBe("/tmp/rules.json")
   })
 
+  it("parses family summary options", () => {
+    expect(parse(["--review-families"]).reviewFamilies).toBeTrue()
+    expect(parse(["--review-families-json"]).reviewFamiliesJson).toBeTrue()
+    expect(parse(["--review-next", "--family", "re.Match.group"]).family).toBe("re.Match.group")
+    expect(parse(["--review-families", "--module", "pytest"]).module).toBe("pytest")
+  })
+
   it("rejects invalid suggestion option combinations", () => {
     expect(() => parse(["--suggest-rules", "--review-next"])).toThrow(
       "--suggest-rules cannot be combined with review, update, or promotion modes",
@@ -2218,11 +3102,18 @@ describe("python session report", () => {
       "--compare-rules cannot be combined with review, update, promotion, or suggest modes",
     )
     expect(() => parse(["--record-decision", "abc=read", "--suggest-rules"])).toThrow(
-      "--record-decision cannot be combined with suggest or compare rules modes",
+      "--record-decision cannot be combined with suggest, compare, or family summary modes",
     )
     expect(() => parse(["--record-decision", "abc=read", "--compare-rules", "/tmp/rules.json"])).toThrow(
-      "--record-decision cannot be combined with suggest or compare rules modes",
+      "--record-decision cannot be combined with suggest, compare, or family summary modes",
     )
+    expect(() => parse(["--record-decision", "abc=read", "--review-families"])).toThrow(
+      "--record-decision cannot be combined with suggest, compare, or family summary modes",
+    )
+    expect(() => parse(["--family", "re.Match.group"])).toThrow(
+      "--family/--module require --review-families, --review-families-json, or --review-next",
+    )
+    expect(() => parse(["--review-next", "--family", "a", "--module", "b"])).toThrow("Use only one of --family or --module")
     expect(() => parse(["--compare-rules"])).toThrow("Missing value for --compare-rules")
   })
 
@@ -2712,7 +3603,20 @@ describe("python session report", () => {
 
   it("rejects conflicting review modes", () => {
     expect(() => parse(["--review-next", "--review-tui"])).toThrow(
-      "Use only one of --review-json, --review-next, or --review-tui",
+      "Use only one of --review-json, --review-next, --review-tui, --review-families, or --review-families-json",
+    )
+    expect(() => parse(["--review-families", "--review-families-json"])).toThrow(
+      "Use only one of --review-json, --review-next, --review-tui, --review-families, or --review-families-json",
+    )
+  })
+
+  it("rejects family summary combinations with json, update, and promotion modes", () => {
+    expect(() => parse(["--json", "--review-families"])).toThrow("Use --json only with scan, suggest, or compare output")
+    expect(() => parse(["--review-families", "--update-candidates"])).toThrow(
+      "--update-candidates cannot be combined with review or promotion modes",
+    )
+    expect(() => parse(["--review-families-json", "--promote-reviewed"])).toThrow(
+      "--promote-reviewed cannot be combined with review modes",
     )
   })
 
@@ -3009,82 +3913,71 @@ describe("python session report", () => {
     }
   })
 
-  it("keeps same-call review items pending when their identity differs", async () => {
-    const tmp = await db()
-    const ledger = path.join(tmp.dir, "review-ledger.json")
-    const cache = path.join(tmp.dir, "score-cache.json")
-
-    try {
-      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 4000), ('s2', 'Beta', 3000);")
-      put(tmp.db, {
-        id: "p1",
-        messageID: "m1",
-        sessionID: "s1",
-        created: 1000,
-        updated: 4000,
-        data: data("python", { code: "print('a')" }),
-      })
-      put(tmp.db, {
-        id: "p2",
-        messageID: "m2",
-        sessionID: "s2",
-        created: 2000,
-        updated: 3000,
-        data: data(
-          "python",
-          {
-            code: ["def print(value):", "    return value", "print('b')", "writer.save('y')"].join("\n"),
-          },
-        ),
-      })
-
-      const queue = await review(await scan({ db: tmp.file, samples: 3, includeEmit: true }), { ledger })
-      for (const snippet of queue.snippets) {
-        await rescore(snippet, {
-          cache,
-          run: async () =>
-            JSON.stringify({
-              scores: snippet.candidates.map((candidate) => ({
-                fingerprint: candidate.fingerprint,
-                call: candidate.call,
-                confidence: {
-                  read: candidate.kind === "unknown" ? 0.9 : 0.1,
-                  write: candidate.call === "writer.save" ? 0.8 : 0.1,
-                  emit: candidate.kind === "emit" ? 0.92 : 0.08,
-                  exec: 0.08,
-                  pure: 0.1,
-                  unknown: 0.2,
-                },
-                reasons: [],
-              })),
-            }),
-        })
-      }
-
-      const input = new PassThrough() as PassThrough & { isTTY: boolean; setRawMode(flag: boolean): void }
-      input.isTTY = true
-      input.setRawMode = () => {}
-
-      let text = ""
-      const output = new Writable({
-        write(chunk, _enc, done) {
-          text += String(chunk)
-          done()
+  it("does not let settled propagation overwrite an existing decision", () => {
+    const time = new Date(2000).toISOString()
+    const queue = {
+      generatedAt: new Date(0).toISOString(),
+      db: "test.db",
+      ledger: "review-ledger.json",
+      analyzerVersion: "python-analyzer/v2",
+      engineVersion: "python-ir-v2",
+      filters: { samples: 3 },
+      totals: { snippets: 2, pendingCandidates: 1, decidedCandidates: 1 },
+      snippets: [
+        {
+          snippetFingerprint: "snippet-existing",
+          code: "item.group(1)",
+          preview: "item.group(1)",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s1", messageID: "m1", partID: "p1", title: "Alpha", time, preview: "item.group(1)" }],
+          candidates: [
+            {
+              kind: "pure" as const,
+              call: "item.group",
+              sourceCall: "re.Match.group",
+              canonicalSource: "re.Match.group",
+              fingerprint: "fp-existing",
+              confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+              readConfidence: 0.05,
+              writeConfidence: 0.05,
+              reasons: [],
+              scoreSource: "heuristic",
+              decision: "ignore" as const,
+            },
+          ],
         },
-      }) as Writable & { isTTY: boolean }
-      output.isTTY = true
-
-      const run = tui(queue, { ledger, cache, input: input as any, output: output as any })
-      setTimeout(() => input.emit("keypress", "y", { name: "y" }), 20)
-      setTimeout(() => input.emit("keypress", "q", { name: "q" }), 160)
-      await run
-
-      expect(text.match(/Call: print/g) ?? []).toHaveLength(2)
-      expect(text).not.toContain("Call: writer.save")
-    } finally {
-      tmp.db.close()
-      await rm(tmp.dir, { recursive: true, force: true })
+        {
+          snippetFingerprint: "snippet-pending",
+          code: "item.group(1)",
+          preview: "item.group(1)",
+          lastSeen: time,
+          occurrences: [{ sessionID: "s2", messageID: "m2", partID: "p2", title: "Beta", time, preview: "item.group(1)" }],
+          candidates: [
+            {
+              kind: "pure" as const,
+              call: "item.group",
+              sourceCall: "re.Match.group",
+              canonicalSource: "re.Match.group",
+              fingerprint: "fp-pending",
+              confidence: { read: 0.05, write: 0.05, emit: 0.02, exec: 0.03, pure: 0.92, unknown: 0.08 },
+              readConfidence: 0.05,
+              writeConfidence: 0.05,
+              reasons: [],
+              scoreSource: "heuristic",
+            },
+          ],
+        },
+      ],
     }
+
+    const next = settled(queue, "fp-pending", "pure", {
+      kind: "pure",
+      call: "item.group",
+      sourceCall: "re.Match.group",
+    })
+
+    expect(next.snippets[0]?.candidates[0]?.decision).toBe("ignore")
+    expect(next.snippets[1]?.candidates[0]?.decision).toBe("pure")
   })
 
   it("shows skip processing status before advancing", async () => {

@@ -621,6 +621,50 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("skips python ask for same-scope lambda helper params seeded from trusted string iterables", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "entries = ['x:1', 'x:2']",
+              "leaf = lambda entries: [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(entries)",
+            ].join("\n"),
+            args: [],
+            description: "lambda helper param string provenance",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(["unknown:callable:leaf"])
+      })
+    })
+
+    it("keeps same-scope lambda helper params conservative when callsites disagree", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "entries = ['x:1']",
+              "other = values",
+              "leaf = lambda entries: [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(entries)",
+              "leaf(other)",
+            ].join("\n"),
+            args: [],
+            description: "mixed lambda helper param provenance",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
     it("keeps helper-param string iterable seeds conservative after indexed mutation", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -672,7 +716,7 @@ describe("python tool runtime", () => {
       })
     })
 
-    it("keeps mutation-built receiver-path string lists conservative", async () => {
+    it("skips python ask for mutation-built receiver-path string lists when the builder stays homogeneous", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
 
@@ -694,7 +738,568 @@ describe("python tool runtime", () => {
         )
 
         const ask = getAsk(context, "python")
-        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+        expect(ask?.patterns).toEqual(["unknown:callable:leaf"])
+        expect(context.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "e.split", pattern: "pure:e.split" }),
+            expect.objectContaining({ kind: "pure", call: "e.startswith", pattern: "pure:e.startswith" }),
+          ]),
+        )
+      })
+    })
+
+    it("skips python ask for mutation-built receiver-path string lists when extend carries trusted strings", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].extend(Path('f').read_text().splitlines())",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(inv[current])",
+            ].join("\n"),
+            args: [],
+            description: "receiver path helper string provenance by extend",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(["unknown:callable:leaf"])
+      })
+    })
+
+    it("skips python ask for value-equivalent dynamic-to-literal dict subscript builders", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'python.test.ts'",
+              "inv[current] = []",
+              "inv[current].append('x -> title')",
+              "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "dict value string provenance by trusted append",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("skips python ask for direct iteration over exact dynamic dict subscript builders", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'python.test.ts'",
+              "inv[current] = []",
+              "inv[current].append('x -> title')",
+              "inv[current].append('x -> body')",
+              "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "exact dynamic dict subscript string provenance",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("skips python ask for direct iteration over exact literal dict subscript builders", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "inv['python.test.ts'] = []",
+              "inv['python.test.ts'].append('x -> title')",
+              "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "exact literal dict subscript string provenance",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("skips python ask for keys derived from exact split/strip string values", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "line = 'FILE python.test.ts'",
+              "current = line.split('FILE ', 1)[1].strip()",
+              "inv = {}",
+              "inv['python.test.ts'] = []",
+              "inv['python.test.ts'].append('x -> title')",
+              "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "exact split strip key derivation",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("skips python ask for keys derived from iterated exact literal lines", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "for line in ['FILE python.test.ts']:",
+              "    current = line.split('FILE ', 1)[1].strip()",
+              "    inv[current] = []",
+              "    inv[current].append('x -> title')",
+              "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "iterated exact literal line key derivation",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("skips python ask for keys derived from exact literal lines under startswith branch narrowing", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "for line in ['FILE python.test.ts', '- x -> title']:",
+              "    if line.startswith('FILE '):",
+              "        current = line.split('FILE ', 1)[1].strip()",
+              "        inv[current] = []",
+              "    elif current and line.startswith('- '):",
+              "        inv[current].append(line[2:])",
+              "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "mixed iterated literal line key derivation",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("keeps keys derived from dynamic-origin mixed lines conservative without value narrowing", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "inv = {}",
+              "current = None",
+              "for line in Path('snapshot.txt').read_text().splitlines():",
+              "    if line.startswith('FILE '):",
+              "        current = line.split('FILE ', 1)[1].strip()",
+              "        inv[current] = []",
+              "    elif current and line.startswith('- '):",
+              "        inv[current].append(line[2:])",
+              "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "dynamic mixed line key derivation",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
+    it("skips python ask for value-equivalent literal-to-dynamic dict subscript builders and exact insert builders", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const equivalentContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "inv['python.test.ts'] = []",
+              "current = 'python.test.ts'",
+              "inv['python.test.ts'].append('x -> title')",
+              "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "literal builder dynamic read equivalence",
+          },
+          equivalentContext,
+        )
+
+        expect(getAsk(equivalentContext, "python")?.patterns).toBeUndefined()
+
+        const mismatchContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'python.test.ts'",
+              "inv[current] = []",
+              "inv[current].append('x -> title')",
+              "result = [e.split(' -> ')[-1] for e in inv['python-runtime-execution.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "dynamic builder literal read mismatch",
+          },
+          mismatchContext,
+        )
+
+        expect(getAsk(mismatchContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+
+        const insertContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'python.test.ts'",
+              "inv[current] = []",
+              "inv[current].insert(0, 'x -> title')",
+              "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "exact dynamic dict insert provenance",
+          },
+          insertContext,
+        )
+
+        expect(getAsk(insertContext, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("skips python ask for value-equivalent literal dict list values", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {'python-runtime-execution.test.ts': [], 'python.test.ts': []}",
+              "current = 'python.test.ts'",
+              "inv[current].append('x -> title')",
+              "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "literal dict string provenance by trusted append",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("preserves value-equivalent dict list proofs across different known sibling keys", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {'a': [], 'b': []}",
+              "inv['a'].append('x -> title')",
+              "inv['b'].append(other)",
+              "result = [e.split(' -> ')[-1] for e in inv['a'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "literal dict sibling mutation string provenance",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("keeps exact direct dict subscript builders conservative after key rebinding and non-helper escapes", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const reboundContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'python.test.ts'",
+              "inv[current] = []",
+              "inv[current].append('x -> title')",
+              "current = other_key",
+              "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "exact dynamic dict rebinding",
+          },
+          reboundContext,
+        )
+
+        expect(getAsk(reboundContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+
+        const escapedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'python.test.ts'",
+              "inv[current] = []",
+              "inv[current].append('x -> title')",
+              "other(inv[current])",
+              "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "exact dynamic dict escape",
+          },
+          escapedContext,
+        )
+
+        expect(getAsk(escapedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
+    it("keeps direct exact-path dict reads conservative under dep shadowing and alias-root rebinding", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'python.test.ts'",
+              "inv[current] = []",
+              "inv[current].append('x -> title')",
+              "def outer(current):",
+              "    return [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+              "outer(other_key)",
+            ].join("\n"),
+            args: [],
+            description: "exact dynamic dict param shadowing",
+          },
+          shadowedContext,
+        )
+
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:outer"]))
+
+        const aliasRootContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "bucket = inv",
+              "current = 'python.test.ts'",
+              "bucket[current] = []",
+              "bucket[current].append('x -> title')",
+              "inv = other_map",
+              "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "exact dynamic dict alias root rebinding",
+          },
+          aliasRootContext,
+        )
+
+        expect(getAsk(aliasRootContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
+    it("keeps value-equivalent dict reads conservative when inner scopes shadow alias roots during same-root mutation", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "bucket = inv",
+              "current = 'python.test.ts'",
+              "bucket[current] = []",
+              "bucket[current].append('x -> title')",
+              "def clobber(bucket):",
+              "    inv['python.test.ts'].append(other_value)",
+              "clobber(other_map)",
+              "result = [e.split(' -> ')[-1] for e in bucket['python.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "inner alias shadow same-root mutation",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:clobber"]))
+      })
+    })
+
+    it("keeps raw alias-root exact-path reads conservative after subscript-to-identifier escapes mutate", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const appendContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "bucket = inv",
+              "current = 'python.test.ts'",
+              "bucket[current] = []",
+              "bucket[current].append('x -> title')",
+              "alias = bucket[current]",
+              "alias.append(other_value)",
+              "result = [e.split(' -> ')[-1] for e in bucket[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "raw alias root append escape",
+          },
+          appendContext,
+        )
+
+        expect(getAsk(appendContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+
+        const indexContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "bucket = inv",
+              "current = 'python.test.ts'",
+              "bucket[current] = []",
+              "bucket[current].append('x -> title')",
+              "alias = bucket[current]",
+              "alias[0] = other_value",
+              "result = [e.split(' -> ')[-1] for e in bucket[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "raw alias root indexed escape",
+          },
+          indexContext,
+        )
+
+        expect(getAsk(indexContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+      })
+    })
+
+    it("keeps direct exact-path dict reads conservative after same-root alternate-key mutations", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const variableAliasContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'python.test.ts'",
+              "other = current",
+              "inv[current] = []",
+              "inv[current].append('x -> title')",
+              "inv[other].append(other_value)",
+              "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "alternate key mutation via variable alias",
+          },
+          variableAliasContext,
+        )
+
+        expect(getAsk(variableAliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+
+        const literalAliasContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "alias = 'python.test.ts'",
+              "inv['python.test.ts'] = []",
+              "inv['python.test.ts'].append('x -> title')",
+              "inv[alias].insert(0, other_value)",
+              "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "alternate key mutation via literal alias",
+          },
+          literalAliasContext,
+        )
+
+        expect(getAsk(literalAliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+
+        const reassignedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'python.test.ts'",
+              "other = current",
+              "inv[current] = []",
+              "inv[current].append('x -> title')",
+              "inv[other] = [other_value]",
+              "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "alternate key reassignment invalidation",
+          },
+          reassignedContext,
+        )
+
+        expect(getAsk(reassignedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
+
+        const mixedRootContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "bucket = inv",
+              "current = 'python.test.ts'",
+              "other = current",
+              "bucket[current] = []",
+              "bucket[current].append('x -> title')",
+              "inv[other].append(other_value)",
+              "result = [e.split(' -> ')[-1] for e in bucket[current] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "mixed root alternate key invalidation",
+          },
+          mixedRootContext,
+        )
+
+        expect(getAsk(mixedRootContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith"]))
       })
     })
 
@@ -767,6 +1372,179 @@ describe("python tool runtime", () => {
           aliasIndexContext,
         )
         expect(getAsk(aliasIndexContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+      })
+    })
+
+    it("keeps mutation-built receiver-path string lists conservative after non-helper escape calls", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append('x:1')",
+              "other(inv[current])",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(inv[current])",
+            ].join("\n"),
+            args: [],
+            description: "receiver path helper non-helper escape",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+      })
+    })
+
+    it("keeps mutation-built receiver-path aliases conservative after the base path mutates", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const appendContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append('x:1')",
+              "bucket = inv[current]",
+              "inv[current].append(other)",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(bucket)",
+            ].join("\n"),
+            args: [],
+            description: "receiver path alias base append mutation",
+          },
+          appendContext,
+        )
+
+        expect(getAsk(appendContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+
+        const indexContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append('x:1')",
+              "bucket = inv[current]",
+              "inv[current][0] = other",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(bucket)",
+            ].join("\n"),
+            args: [],
+            description: "receiver path alias base indexed mutation",
+          },
+          indexContext,
+        )
+
+        expect(getAsk(indexContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+      })
+    })
+
+    it("keeps exact receiver-path helper seeds conservative after key rebinding and never-called inner builders", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const reboundContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append('x:1')",
+              "current = other_key",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(inv[current])",
+            ].join("\n"),
+            args: [],
+            description: "receiver path key rebinding",
+          },
+          reboundContext,
+        )
+
+        expect(getAsk(reboundContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+
+        const nestedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "def build():",
+              "    inv[current] = []",
+              "    inv[current].append('x:1')",
+              "def leaf(entries):",
+              "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "leaf(inv[current])",
+            ].join("\n"),
+            args: [],
+            description: "receiver path nested builder",
+          },
+          nestedContext,
+        )
+
+        expect(getAsk(nestedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf"]))
+      })
+    })
+
+    it("keeps exact receiver-path helper seeds conservative when key deps are shadowed by params", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const defContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append('x:1')",
+              "def outer(current):",
+              "    def leaf(entries):",
+              "        return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "    return leaf(inv[current])",
+              "outer(other_key)",
+            ].join("\n"),
+            args: [],
+            description: "receiver path param shadow def helper",
+          },
+          defContext,
+        )
+
+        expect(getAsk(defContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf", "unknown:callable:outer"]))
+
+        const lambdaContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "current = 'runtime'",
+              "inv[current] = []",
+              "inv[current].append('x:1')",
+              "def outer(current):",
+              "    leaf = lambda entries: [e.split(':')[-1] for e in entries if e.startswith('x')]",
+              "    return leaf(inv[current])",
+              "outer(other_key)",
+            ].join("\n"),
+            args: [],
+            description: "receiver path param shadow lambda helper",
+          },
+          lambdaContext,
+        )
+
+        expect(getAsk(lambdaContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:e.split", "unknown:callable:e.startswith", "unknown:callable:leaf", "unknown:callable:outer"]))
       })
     })
 
@@ -1242,6 +2020,324 @@ describe("python tool runtime", () => {
 
         const ask = getAsk(context, "python")
         expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:hashlib.sha256", "unknown:callable:hashlib.sha256.hexdigest"]))
+      })
+    })
+
+    it("skips python ask for pure-only zlib.decompress helpers and keeps tracked metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import zlib",
+              "raw = zlib.decompress(blob)",
+              "raw.split(b'\\x00', 1)",
+              "raw.decode('utf8').splitlines()",
+              "from zlib import decompress",
+              "payload = decompress(blob)",
+              "payload.count(b'x')",
+            ].join("\n"),
+            args: [],
+            description: "pure zlib decompress helpers",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "zlib.decompress", pattern: "pure:zlib.decompress" }),
+            expect.objectContaining({ kind: "pure", call: "raw.decode", pattern: "pure:raw.decode" }),
+            expect.objectContaining({ kind: "pure", call: "raw.decode.splitlines", pattern: "pure:raw.decode.splitlines" }),
+            expect.objectContaining({ kind: "pure", call: "payload.count", pattern: "pure:payload.count" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps shadowed zlib.decompress forms on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const reboundContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import zlib\nzlib = object()\nzlib.decompress(blob)",
+            args: [],
+            description: "shadowed zlib root",
+          },
+          reboundContext,
+        )
+
+        expect(getAsk(reboundContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:zlib.decompress"]))
+
+        const directImportContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "from zlib import decompress\ndef decompress(value):\n    return value\ndecompress(blob)",
+            args: [],
+            description: "shadowed zlib direct import",
+          },
+          directImportContext,
+        )
+
+        expect(getAsk(directImportContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:decompress"]))
+      })
+    })
+
+    it("skips python ask for zero-arg direct-imported RequestInformation constructors", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from kiota_abstractions.request_information import RequestInformation",
+              "dir(RequestInformation())",
+            ].join("\n"),
+            args: [],
+            description: "RequestInformation constructor introspection",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        expect(context.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "kiota_abstractions.request_information.RequestInformation", pattern: "pure:kiota_abstractions.request_information.RequestInformation" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps RequestInformation unknown when module-qualified, aliased, shadowed, or called with args", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const moduleContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import kiota_abstractions.request_information",
+              "kiota_abstractions.request_information.RequestInformation()",
+            ].join("\n"),
+            args: [],
+            description: "module qualified RequestInformation",
+          },
+          moduleContext,
+        )
+
+        expect(getAsk(moduleContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:kiota_abstractions.request_information.RequestInformation"]))
+
+        const aliasContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from kiota_abstractions.request_information import RequestInformation as RI",
+              "RI()",
+            ].join("\n"),
+            args: [],
+            description: "aliased RequestInformation",
+          },
+          aliasContext,
+        )
+
+        expect(getAsk(aliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:kiota_abstractions.request_information.RequestInformation"]))
+
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from kiota_abstractions.request_information import RequestInformation",
+              "def RequestInformation(value=None):",
+              "    return value",
+              "RequestInformation()",
+            ].join("\n"),
+            args: [],
+            description: "shadowed RequestInformation",
+          },
+          shadowedContext,
+        )
+
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:RequestInformation"]))
+
+        const argContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from kiota_abstractions.request_information import RequestInformation",
+              "RequestInformation('x')",
+              "RequestInformation(url='x')",
+            ].join("\n"),
+            args: [],
+            description: "RequestInformation with args",
+          },
+          argContext,
+        )
+
+        expect(getAsk(argContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:kiota_abstractions.request_information.RequestInformation"]))
+      })
+    })
+
+    it("skips python ask for exact direct-import tabulate calls when tablefmt is absent or literal", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from tabulate import tabulate",
+              "tabulate([[1]], headers=['a'])",
+              "tabulate([[1]], headers=['a'], tablefmt='git_hub')",
+            ].join("\n"),
+            args: [],
+            description: "pure tabulate formatting",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        expect(context.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "tabulate.tabulate", pattern: "pure:tabulate.tabulate" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps tabulate unknown when module-qualified, aliased, shadowed, or given dynamic tablefmt", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const moduleContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import tabulate",
+              "tabulate.tabulate([[1]], headers=['a'])",
+            ].join("\n"),
+            args: [],
+            description: "module qualified tabulate",
+          },
+          moduleContext,
+        )
+
+        expect(getAsk(moduleContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:tabulate.tabulate"]))
+
+        const aliasContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from tabulate import tabulate as t",
+              "t([[1]], headers=['a'])",
+            ].join("\n"),
+            args: [],
+            description: "aliased tabulate",
+          },
+          aliasContext,
+        )
+
+        expect(getAsk(aliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:tabulate.tabulate"]))
+
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from tabulate import tabulate",
+              "def tabulate(rows, **kwargs):",
+              "    return rows",
+              "tabulate([[1]], headers=['a'])",
+            ].join("\n"),
+            args: [],
+            description: "shadowed tabulate",
+          },
+          shadowedContext,
+        )
+
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:tabulate"]))
+
+        const dynamicFmtContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from tabulate import tabulate",
+              "fmt = table_format",
+              "tabulate([[1]], headers=['a'], tablefmt=fmt)",
+            ].join("\n"),
+            args: [],
+            description: "dynamic tablefmt",
+          },
+          dynamicFmtContext,
+        )
+
+        expect(getAsk(dynamicFmtContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:tabulate.tabulate"]))
+      })
+    })
+
+    it("asks for trusted mypy.api.run exec calls", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from mypy import api",
+              "api.run(args)",
+              "from mypy.api import run",
+              "run(args)",
+            ].join("\n"),
+            args: [],
+            description: "mypy api run",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["exec:mypy.api.run"]))
+      })
+    })
+
+    it("keeps mypy.api.run unknown when rebound or laundered", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const reboundContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from mypy import api",
+              "api = object()",
+              "api.run(args)",
+            ].join("\n"),
+            args: [],
+            description: "rebound mypy api run",
+          },
+          reboundContext,
+        )
+
+        expect(getAsk(reboundContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:api.run"]))
+
+        const launderedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from mypy import api",
+              "runner = api.run",
+              "runner(args)",
+            ].join("\n"),
+            args: [],
+            description: "laundered mypy api run",
+          },
+          launderedContext,
+        )
+
+        expect(getAsk(launderedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:mypy.api.run"]))
       })
     })
 

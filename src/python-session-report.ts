@@ -26,6 +26,10 @@ type Opts = {
   reviewJson: boolean
   reviewNext: boolean
   reviewTui: boolean
+  reviewFamilies: boolean
+  reviewFamiliesJson: boolean
+  family?: string
+  module?: string
   suggestRules: boolean
   compareRules?: string
   includeEmit: boolean
@@ -197,6 +201,61 @@ export type ReviewQueue = {
   }>
 }
 
+export type ReviewFamilyRecommendation = "rule" | "provenance" | "manual-split" | "blocked"
+
+export type ReviewFamilyCluster = {
+  familyKey: string
+  kind: Occurrence["kind"]
+  canonicalSource: string
+  aliases: string[]
+  evidenceBits: string[]
+  evidenceKeys: string[]
+  occurrenceCount: number
+  snippetCount: number
+  trustedCanonicalSource: boolean
+  variantCount: number
+  representativeCoverageIncomplete: boolean
+  moduleRootHint?: string
+  recommendation: ReviewFamilyRecommendation
+  reasons: string[]
+  representatives: Array<{
+    snippetFingerprint: string
+    candidateFingerprint: string
+    call: string
+    sourceCall?: string
+    preview: string
+  }>
+}
+
+export type ReviewFamilyModule = {
+  moduleRoot: string
+  occurrenceCount: number
+  familyCount: number
+  recommendationCounts: Record<ReviewFamilyRecommendation, number>
+  families: Array<{ kind: Occurrence["kind"]; canonicalSource: string }>
+}
+
+export type ReviewFamilySummaryReport = {
+  generatedAt: string
+  db: string
+  ledger: string
+  analyzerVersion: string
+  engineVersion: string
+  filters: ReviewQueue["filters"]
+  selectors: ReviewSelectors
+  totals: ReviewQueue["totals"] & {
+    families: number
+    modules: number
+  }
+  modules: ReviewFamilyModule[]
+  families: ReviewFamilyCluster[]
+}
+
+type ReviewSelectors = {
+  family?: string
+  module?: string
+}
+
 type SuggestionDecision = "read" | "write" | "emit" | "exec" | "pure"
 
 export type RuleSuggestionReport = {
@@ -361,6 +420,10 @@ function usage() {
     "  --review-json    Emit snippet-centric review queue JSON",
     "  --review-next    Show the next pending snippet review item",
     "  --review-tui     Launch one-key interactive review UI",
+    "  --review-families  Emit read-only family summary text",
+    "  --review-families-json  Emit read-only family summary JSON",
+    "  --family <canonical-source>  Filter family summary or review-next by exact canonical source",
+    "  --module <module-root>  Filter family summary or review-next by exact trusted module root",
     "  --suggest-rules  Emit preview-only rule suggestions from reviewed evidence",
     "  --compare-rules <file>  Diff report/review/suggestion output against an alternate rules file",
     "  --decide <spec>  Apply decisions like 1=read,2=write or fp=ignore",
@@ -899,6 +962,8 @@ export function parse(args: string[]) {
     reviewJson: false,
     reviewNext: false,
     reviewTui: false,
+    reviewFamilies: false,
+    reviewFamiliesJson: false,
     suggestRules: false,
     includeEmit: false,
     includePure: false,
@@ -943,6 +1008,26 @@ export function parse(args: string[]) {
     }
     if (arg === "--review-tui") {
       opts.reviewTui = true
+      continue
+    }
+    if (arg === "--review-families") {
+      opts.reviewFamilies = true
+      continue
+    }
+    if (arg === "--review-families-json") {
+      opts.reviewFamiliesJson = true
+      continue
+    }
+    if (arg === "--family") {
+      const val = args[++i]
+      if (!val) fail("Missing value for --family")
+      opts.family = val
+      continue
+    }
+    if (arg === "--module") {
+      const val = args[++i]
+      if (!val) fail("Missing value for --module")
+      opts.module = val
       continue
     }
     if (arg === "--suggest-rules") {
@@ -1010,29 +1095,33 @@ export function parse(args: string[]) {
     fail(`Unknown argument: ${arg}`)
   }
 
-  if (opts.json && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.promoteReviewed)) fail("Use --json only with scan, suggest, or compare output")
-  if ([opts.reviewJson, opts.reviewNext, opts.reviewTui].filter(Boolean).length > 1) {
-    fail("Use only one of --review-json, --review-next, or --review-tui")
+  if (opts.json && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.reviewFamilies || opts.reviewFamiliesJson || opts.promoteReviewed)) fail("Use --json only with scan, suggest, or compare output")
+  if ([opts.reviewJson, opts.reviewNext, opts.reviewTui, opts.reviewFamilies, opts.reviewFamiliesJson].filter(Boolean).length > 1) {
+    fail("Use only one of --review-json, --review-next, --review-tui, --review-families, or --review-families-json")
   }
-  if (opts.suggestRules && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.update || opts.promoteReviewed)) {
+  if (opts.suggestRules && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.reviewFamilies || opts.reviewFamiliesJson || opts.update || opts.promoteReviewed)) {
     fail("--suggest-rules cannot be combined with review, update, or promotion modes")
   }
-  if (opts.compareRules && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.update || opts.promoteReviewed || opts.suggestRules)) {
+  if (opts.compareRules && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.reviewFamilies || opts.reviewFamiliesJson || opts.update || opts.promoteReviewed || opts.suggestRules)) {
     fail("--compare-rules cannot be combined with review, update, promotion, or suggest modes")
   }
-  if (opts.recordDecision && (opts.suggestRules || opts.compareRules)) {
-    fail("--record-decision cannot be combined with suggest or compare rules modes")
+  if (opts.recordDecision && (opts.suggestRules || opts.compareRules || opts.reviewFamilies || opts.reviewFamiliesJson)) {
+    fail("--record-decision cannot be combined with suggest, compare, or family summary modes")
   }
   if (opts.decide && !opts.reviewNext) fail("--decide requires --review-next")
   if (opts.recordDecision && opts.reviewTui) fail("--record-decision cannot be combined with --review-tui")
-  if (opts.update && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.promoteReviewed)) {
+  if (opts.update && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.reviewFamilies || opts.reviewFamiliesJson || opts.promoteReviewed)) {
     fail("--update-candidates cannot be combined with review or promotion modes")
   }
-  if (opts.promoteReviewed && (opts.reviewJson || opts.reviewNext || opts.reviewTui)) {
+  if (opts.promoteReviewed && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.reviewFamilies || opts.reviewFamiliesJson)) {
     fail("--promote-reviewed cannot be combined with review modes")
   }
   if (opts.promoteReviewed && opts.since !== undefined) {
     fail("--promote-reviewed requires a full scan; omit --since")
+  }
+  if (opts.family && opts.module) fail("Use only one of --family or --module")
+  if ((opts.family || opts.module) && !(opts.reviewFamilies || opts.reviewFamiliesJson || opts.reviewNext)) {
+    fail("--family/--module require --review-families, --review-families-json, or --review-next")
   }
 
   return opts
@@ -1128,7 +1217,7 @@ export async function scan(opts: {
           kind,
           call,
           sourceCall: event.sourceCall,
-          canonicalSource: event.sourceCall ?? event.call,
+          canonicalSource: event.sourceCall ?? call,
           evidence: event.evidence,
           fingerprint: fingerprint(seed),
           snippetFingerprint: fingerprint(normalizedCode),
@@ -1382,14 +1471,16 @@ export async function review(report: Report, opts: { ledger: string }): Promise<
       time: item.time,
       preview: item.preview,
     })
-    if (!snippet.candidates.has(item.fingerprint)) {
-        snippet.candidates.set(item.fingerprint, {
+    const candidateKey = reviewCandidateKey(item)
+    if (!snippet.candidates.has(candidateKey)) {
+        const candidateFingerprint = fingerprint(candidateKey)
+        snippet.candidates.set(candidateKey, {
           kind: item.kind,
           call: item.call,
           sourceCall: item.sourceCall,
           canonicalSource: item.canonicalSource,
           evidence: item.evidence,
-          fingerprint: item.fingerprint,
+          fingerprint: candidateFingerprint,
           confidence: item.confidence,
           readConfidence: item.readConfidence,
           writeConfidence: item.writeConfidence,
@@ -1438,6 +1529,290 @@ export async function review(report: Report, opts: { ledger: string }): Promise<
     },
     snippets: out,
   }
+}
+
+function familyModuleRootHint(canonicalSource: string, trustedCanonicalSource: boolean) {
+  if (!trustedCanonicalSource) return
+  const parts = canonicalSource.split(".")
+  if (parts.length < 2) return
+  const prefix = parts.slice(0, -1)
+  if (!prefix.length || prefix.some((item) => !/^[a-z_][a-z0-9_]*$/.test(item))) return
+  return prefix.join(".")
+}
+
+function familyRecommendation(opts: {
+  aliases: string[]
+  canonicalSources: string[]
+  evidenceBits: string[]
+  evidenceKeys: string[]
+  canonicalSource: string
+  trustedCanonicalSource: boolean
+}) {
+  const reasons: string[] = []
+  if (opts.canonicalSources.length > 1) reasons.push("multiple canonical sources")
+  if (opts.aliases.length > 1) reasons.push("multiple outward aliases")
+  if (opts.evidenceKeys.length > 1) reasons.push("multiple evidence signatures")
+
+  if (opts.canonicalSources.length > 1) return { recommendation: "blocked" as const, reasons }
+  if (opts.aliases.length > 1 || opts.evidenceKeys.length > 1) return { recommendation: "manual-split" as const, reasons }
+  if (!opts.trustedCanonicalSource) {
+    reasons.push("canonical source is not provenance-backed")
+    return { recommendation: "blocked" as const, reasons }
+  }
+  if (opts.canonicalSource !== opts.aliases[0] || opts.evidenceBits.length) {
+    if (opts.canonicalSource !== opts.aliases[0]) reasons.push("canonical source differs from outward alias")
+    if (opts.evidenceBits.length) reasons.push("receiver or guard evidence present")
+    return { recommendation: "provenance" as const, reasons }
+  }
+  reasons.push("direct canonical family is stable")
+  return { recommendation: "rule" as const, reasons }
+}
+
+export function reviewFamilies(queue: ReviewQueue): ReviewFamilyCluster[] {
+  const byFamily = new Map<
+    string,
+    {
+      kind: Occurrence["kind"]
+      aliases: Set<string>
+      canonicalSources: Set<string>
+      trustedCanonicalSource: boolean
+      evidenceBits: Set<string>
+      evidenceKeys: Set<string>
+      occurrenceCount: number
+      snippets: Set<string>
+      representatives: Array<ReviewFamilyCluster["representatives"][number] & { evidenceKey: string }>
+    }
+  >()
+
+  for (const snippet of queue.snippets) {
+    for (const candidate of snippet.candidates) {
+      if (candidate.decision) continue
+      const familyKey = reviewKeyOf(candidate)
+      const row = byFamily.get(familyKey) ?? {
+        kind: candidate.kind,
+        aliases: new Set<string>(),
+        canonicalSources: new Set<string>(),
+        trustedCanonicalSource: true,
+        evidenceBits: new Set<string>(),
+        evidenceKeys: new Set<string>(),
+        occurrenceCount: 0,
+        snippets: new Set<string>(),
+        representatives: [],
+      }
+      row.aliases.add(candidate.call)
+      row.canonicalSources.add(candidate.canonicalSource)
+      const currentEvidenceKey = evidenceKey(candidate.evidence)
+      row.evidenceKeys.add(currentEvidenceKey)
+      for (const bit of evidenceBits(candidate.evidence)) row.evidenceBits.add(bit)
+      row.occurrenceCount += snippet.occurrences.length
+      row.snippets.add(snippet.snippetFingerprint)
+      row.trustedCanonicalSource &&= Boolean(candidate.sourceCall)
+      row.representatives.push({
+        snippetFingerprint: snippet.snippetFingerprint,
+        candidateFingerprint: candidate.fingerprint,
+        call: candidate.call,
+        sourceCall: candidate.sourceCall,
+        preview: snippet.preview,
+        evidenceKey: currentEvidenceKey,
+      })
+      byFamily.set(familyKey, row)
+    }
+  }
+
+  return [...byFamily.entries()]
+    .map(([familyKey, row]) => {
+      const aliases = [...row.aliases].sort((a, b) => a.localeCompare(b))
+      const canonicalSources = [...row.canonicalSources].sort((a, b) => a.localeCompare(b))
+      const currentEvidenceKeys = [...row.evidenceKeys].sort((a, b) => a.localeCompare(b))
+      const currentEvidenceBits = [...row.evidenceBits].sort((a, b) => a.localeCompare(b))
+      const canonicalSource = canonicalSources[0] ?? aliases[0] ?? ""
+      const trustedCanonicalSource = row.trustedCanonicalSource
+      const recommendation = familyRecommendation({
+        aliases,
+        canonicalSources,
+        evidenceBits: currentEvidenceBits,
+        evidenceKeys: currentEvidenceKeys,
+        canonicalSource,
+        trustedCanonicalSource,
+      })
+      const representatives = new Map<string, (typeof row.representatives)[number]>()
+      for (const item of [...row.representatives].sort((a, b) => a.call.localeCompare(b.call) || a.evidenceKey.localeCompare(b.evidenceKey) || a.snippetFingerprint.localeCompare(b.snippetFingerprint) || a.candidateFingerprint.localeCompare(b.candidateFingerprint))) {
+        const key = `${item.call}\n${item.evidenceKey}`
+        if (!representatives.has(key)) representatives.set(key, item)
+      }
+      const variantCount = representatives.size
+      return {
+        familyKey,
+        kind: row.kind,
+        canonicalSource,
+        aliases,
+        evidenceBits: currentEvidenceBits,
+        evidenceKeys: currentEvidenceKeys,
+        occurrenceCount: row.occurrenceCount,
+        snippetCount: row.snippets.size,
+        trustedCanonicalSource,
+        variantCount,
+        representativeCoverageIncomplete: variantCount > 3,
+        moduleRootHint: familyModuleRootHint(canonicalSource, trustedCanonicalSource),
+        recommendation: recommendation.recommendation,
+        reasons: recommendation.reasons,
+        representatives: [...representatives.values()]
+          .map(({ snippetFingerprint, candidateFingerprint, call, sourceCall, preview }) => ({
+            snippetFingerprint,
+            candidateFingerprint,
+            call,
+            sourceCall,
+            preview,
+          }))
+          .slice(0, 3),
+      } satisfies ReviewFamilyCluster
+    })
+    .sort(
+      (a, b) =>
+        b.occurrenceCount - a.occurrenceCount ||
+        b.snippetCount - a.snippetCount ||
+        a.canonicalSource.localeCompare(b.canonicalSource) ||
+        a.familyKey.localeCompare(b.familyKey),
+    )
+}
+
+export function selectReviewFamilies(queue: ReviewQueue, selectors: ReviewSelectors = {}): ReviewFamilyCluster[] {
+  const families = reviewFamilies(queue)
+  if (selectors.family) return families.filter((item) => item.canonicalSource === selectors.family)
+  if (selectors.module) return families.filter((item) => item.moduleRootHint === selectors.module)
+  return families
+}
+
+export function filterReviewQueue(queue: ReviewQueue, selectors: ReviewSelectors = {}): ReviewQueue {
+  if (!selectors.family && !selectors.module) return queue
+  const selectedFamilies = selectReviewFamilies(queue, selectors)
+  const allowed = new Set(selectedFamilies.map((item) => item.familyKey))
+  const preferred = new Map<string, number>()
+  let rank = 0
+  for (const family of selectedFamilies) {
+    for (const rep of family.representatives) {
+      if (!preferred.has(rep.snippetFingerprint)) preferred.set(rep.snippetFingerprint, rank++)
+    }
+  }
+  const snippets = queue.snippets
+    .map((snippet, index) => ({
+      ...snippet,
+      _index: index,
+      candidates: snippet.candidates.filter((candidate) => allowed.has(reviewKeyOf(candidate))),
+    }))
+    .filter((snippet) => snippet.candidates.length > 0)
+    .sort((a, b) => {
+      const left = preferred.get(a.snippetFingerprint)
+      const right = preferred.get(b.snippetFingerprint)
+      if (left !== undefined && right !== undefined) return left - right || a._index - b._index
+      if (left !== undefined) return -1
+      if (right !== undefined) return 1
+      return a._index - b._index
+    })
+    .map(({ _index, ...snippet }) => snippet)
+
+  let pendingCandidates = 0
+  let decidedCandidates = 0
+  for (const snippet of snippets) {
+    for (const candidate of snippet.candidates) {
+      if (candidate.decision) decidedCandidates++
+      else pendingCandidates++
+    }
+  }
+
+  return {
+    ...queue,
+    totals: {
+      snippets: snippets.length,
+      pendingCandidates,
+      decidedCandidates,
+    },
+    snippets,
+  }
+}
+
+export function reviewFamilySummary(queue: ReviewQueue, selectors: ReviewSelectors = {}): ReviewFamilySummaryReport {
+  const filteredQueue = filterReviewQueue(queue, selectors)
+  const families = selectReviewFamilies(filteredQueue)
+  const byModule = new Map<string, ReviewFamilyModule>()
+  for (const family of families) {
+    if (!family.moduleRootHint) continue
+    const current: ReviewFamilyModule = byModule.get(family.moduleRootHint) ?? {
+      moduleRoot: family.moduleRootHint,
+      occurrenceCount: 0,
+      familyCount: 0,
+      recommendationCounts: { rule: 0, provenance: 0, "manual-split": 0, blocked: 0 },
+      families: [],
+    }
+    current.occurrenceCount += family.occurrenceCount
+    current.familyCount += 1
+    current.recommendationCounts[family.recommendation] += 1
+    current.families.push({ kind: family.kind, canonicalSource: family.canonicalSource })
+    byModule.set(family.moduleRootHint, current)
+  }
+
+  const modules = [...byModule.values()]
+    .map((item) => ({
+      ...item,
+      families: item.families.sort((a, b) => a.canonicalSource.localeCompare(b.canonicalSource) || a.kind.localeCompare(b.kind)),
+    }))
+    .sort((a, b) => b.occurrenceCount - a.occurrenceCount || b.familyCount - a.familyCount || a.moduleRoot.localeCompare(b.moduleRoot))
+
+  return {
+    generatedAt: new Date().toISOString(),
+    db: filteredQueue.db,
+    ledger: filteredQueue.ledger,
+    analyzerVersion: filteredQueue.analyzerVersion,
+    engineVersion: filteredQueue.engineVersion,
+    filters: filteredQueue.filters,
+    selectors,
+    totals: {
+      ...filteredQueue.totals,
+      families: families.length,
+      modules: modules.length,
+    },
+    modules,
+    families,
+  }
+}
+
+export function renderReviewFamilies(report: ReviewFamilySummaryReport) {
+  const out = [
+    `Database: ${report.db}`,
+    `Ledger: ${report.ledger}`,
+    report.filters.since ? `Since: ${report.filters.since}` : "Since: all time",
+    report.selectors.family ? `Family filter: ${report.selectors.family}` : report.selectors.module ? `Module filter: ${report.selectors.module}` : "Filter: none",
+    `Pending review candidates: ${report.totals.pendingCandidates}`,
+    `Family clusters: ${report.totals.families}`,
+    `Module rollups: ${report.totals.modules}`,
+  ]
+
+  if (report.modules.length) {
+    out.push("", "Modules:")
+    for (const item of report.modules) {
+      const counts = Object.entries(item.recommendationCounts)
+        .filter(([, value]) => value > 0)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(", ")
+      out.push(`- ${item.moduleRoot} (${item.occurrenceCount} occurrences across ${item.familyCount} families${counts ? `; ${counts}` : ""})`)
+      out.push(`  families: ${item.families.map((family) => `${family.canonicalSource} (${family.kind})`).join(", ")}`)
+    }
+  }
+
+  if (!report.families.length) return `${out.join("\n")}\n\nNo pending family clusters.`
+
+  out.push("", "Families:")
+  for (const item of report.families) {
+    out.push(`- ${item.canonicalSource} kind=${item.kind} [${item.recommendation}] (${item.occurrenceCount} occurrences, ${item.snippetCount} snippets, ${item.variantCount} variants)`)
+    out.push(`  aliases: ${item.aliases.join(", ")}`)
+    if (item.moduleRootHint) out.push(`  module: ${item.moduleRootHint}`)
+    if (item.reasons.length) out.push(`  reasons: ${item.reasons.join("; ")}`)
+    if (item.evidenceBits.length) out.push(`  evidence: ${item.evidenceBits.join(" | ")}`)
+    for (const rep of item.representatives) out.push(`  - ${rep.snippetFingerprint} | ${rep.call} | ${rep.preview}`)
+    if (item.representativeCoverageIncomplete) out.push(`  - ... ${item.variantCount - item.representatives.length} more variants not shown`)
+  }
+
+  return out.join("\n")
 }
 
 export function nextReview(queue: ReviewQueue): ReviewSnippet | undefined {
@@ -1498,11 +1873,44 @@ export async function applyDecisions(opts: { ledger: string; item: ReviewSnippet
   await writeDecisions({ ledger: opts.ledger, decisions: resolved })
 }
 
-export function renderReview(item: ReviewSnippet) {
+export function renderReview(item: ReviewSnippet, family?: ReviewFamilyCluster) {
   const out = [
     `Snippet: ${item.snippetFingerprint}`,
     `Last seen: ${item.lastSeen}`,
     `Occurrences: ${item.occurrences.length}`,
+  ]
+
+  if (family) {
+    out.push(`Family: ${family.canonicalSource} kind=${family.kind} [${family.recommendation}]`)
+    if (family.moduleRootHint) out.push(`Module: ${family.moduleRootHint}`)
+    if (family.reasons.length) out.push(`Family reasons: ${family.reasons.join("; ")}`)
+  }
+
+  out.push("", "Code:", item.code, "", "Candidates:")
+
+  item.candidates.forEach((candidate, i) => {
+    const decision = candidate.decision ? ` decided=${candidate.decision}` : ""
+    out.push(
+      `${i + 1}. ${candidate.call} [${candidate.fingerprint}] kind=${candidate.kind} ${viewConfidence(candidate.confidence)} source=${candidate.scoreSource}${decision}`,
+    )
+    if (candidate.sourceCall && candidate.sourceCall !== candidate.call) out.push(`   from: ${candidate.sourceCall}`)
+    const evidence = evidenceBits(candidate.evidence)
+    if (evidence.length) out.push(`   evidence: ${evidence.join(" | ")}`)
+    if (candidate.reasons.length) out.push(`   reasons: ${candidate.reasons.join("; ")}`)
+  })
+
+  out.push("")
+  out.push("Apply decisions with --review-next --decide 1=read,2=write,3=emit")
+  return out.join("\n")
+}
+
+export function renderReviewModule(item: ReviewSnippet, moduleRoot: string, families: ReviewFamilyCluster[]) {
+  const out = [
+    `Snippet: ${item.snippetFingerprint}`,
+    `Last seen: ${item.lastSeen}`,
+    `Occurrences: ${item.occurrences.length}`,
+    `Module: ${moduleRoot}`,
+    `Families in snippet: ${families.map((family) => `${family.canonicalSource} (${family.kind}, ${family.recommendation})`).join(", ")}`,
     "",
     "Code:",
     item.code,
@@ -1592,6 +2000,10 @@ function evidenceKey(evidence?: PythonEventEvidence) {
     dependencySignature: evidence?.dependencySignature ?? [],
     guardFailure: evidence?.guardFailure ?? null,
   })
+}
+
+function reviewCandidateKey(item: Pick<Occurrence, "fingerprint" | "kind" | "call" | "sourceCall" | "evidence">) {
+  return `${item.fingerprint}\n${reviewKeyOf(item)}\n${evidenceKey(item.evidence)}`
 }
 
 function block(code: string, call: string, full: boolean) {
@@ -2351,17 +2763,27 @@ export async function main(args = process.argv.slice(2)) {
     console.log(JSON.stringify(await review(report, { ledger: opts.ledger }), null, 2))
     return
   }
+  if (opts.reviewFamiliesJson) {
+    console.log(JSON.stringify(reviewFamilySummary(await review(report, { ledger: opts.ledger }), { family: opts.family, module: opts.module }), null, 2))
+    return
+  }
+  if (opts.reviewFamilies) {
+    console.log(renderReviewFamilies(reviewFamilySummary(await review(report, { ledger: opts.ledger }), { family: opts.family, module: opts.module })))
+    return
+  }
   if (opts.reviewTui) {
     await tui(await review(report, { ledger: opts.ledger }), { ledger: opts.ledger, cache: opts.scoreCache })
     return
   }
   if (opts.reviewNext) {
-    const queue = await review(report, { ledger: opts.ledger })
+    const familySelectors = { family: opts.family, module: opts.module }
+    let queue = filterReviewQueue(await review(report, { ledger: opts.ledger }), familySelectors)
     let item = nextReview(queue)
     if (opts.decide) {
       if (!item) fail("No pending review items")
       await applyDecisions({ ledger: opts.ledger, item, decide: opts.decide })
-      item = nextReview(await review(report, { ledger: opts.ledger }))
+      queue = filterReviewQueue(await review(report, { ledger: opts.ledger }), familySelectors)
+      item = nextReview(queue)
     }
     if (!item) {
       console.log("No pending review items.")
@@ -2369,7 +2791,9 @@ export async function main(args = process.argv.slice(2)) {
     }
     const next = await rescore(item, { cache: opts.scoreCache })
     if (next.warning) console.error(next.warning)
-    console.log(renderReview(next.item))
+    const families = reviewFamilies(queue).filter((cluster) => next.item.candidates.some((candidate) => cluster.familyKey === reviewKeyOf(candidate)))
+    if (opts.module) console.log(renderReviewModule(next.item, opts.module, families))
+    else console.log(renderReview(next.item, families[0]))
     return
   }
   if (opts.promoteReviewed) {

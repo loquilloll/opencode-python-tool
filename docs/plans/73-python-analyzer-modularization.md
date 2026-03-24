@@ -1,9 +1,9 @@
 ---
 title: Python Analyzer Modularization
-status: active
+status: done
 plan: 73-python-analyzer-modularization
 created: 2026-03-13
-updated: 2026-03-13
+updated: 2026-03-23
 tags:
   - type/plan
   - status/active
@@ -26,7 +26,8 @@ Break `src/python/python-analyze.ts` into smaller analyzer modules while keeping
 - `src/python/python-analyze.ts`
 - new focused modules under `src/python/`
 - `.opencode/test/python-analyze.test.ts`
-- `.opencode/test/python.test.ts`
+- `.opencode/test/python-inline-permissions-basic.test.ts`
+- `.opencode/test/python-inline-permissions-inference.test.ts`
 - `docs/python-classification-system-design.md`
 - `README.md`
 - this plan file
@@ -42,6 +43,8 @@ Break `src/python/python-analyze.ts` into smaller analyzer modules while keeping
 ## Design Direction
 
 The current analyzer already has partial seams in `src/python/python-ir.ts`, `src/python/python-values.ts`, `src/python/python-provenance.ts`, `src/python/python-rule-schema.ts`, `src/python/python-guard-eval.ts`, and `src/python/frontend/`. This plan continues that layering by extracting the remaining clusters from `src/python/python-analyze.ts` into explicit modules.
+
+Historical notes below may mention the earlier `.opencode/test/python.test.ts` runtime suite from March 2026; that coverage now lives in `.opencode/test/python-inline-permissions-basic.test.ts` and `.opencode/test/python-inline-permissions-inference.test.ts`.
 
 ### Target module boundaries
 
@@ -512,6 +515,93 @@ Line estimates are approximate and may shift during extraction; the constraint i
 - Commit: Not committed
 - PR/Jira: None
 
+### Phase 10 - Extract replay handlers and helper-seed discovery
+
+**Goal:** Move the stateful replay branches and helper-seed prepass out of `python-analyze.ts` so the public entrypoint stays orchestration-only while preserving replay order and mutation invalidation semantics.
+
+**Files:**
+
+- `src/python/python-analyze.ts`
+- `src/python/python-replay.ts` (new)
+- `.opencode/test/python-analyze.test.ts`
+- `.opencode/test/python-inline-permissions-basic.test.ts`
+- `README.md`
+- `docs/python-classification-system-design.md`
+- this plan file
+
+**Changes:**
+
+- extract replay handlers for import, definition, rebind, and assignment entries into `src/python/python-replay.ts`
+- move helper-seed discovery and mutation invalidation helpers into the replay seam so both replay passes share one implementation
+- keep `analyzeDetailed()` responsible only for parse, timeline construction, two-pass replay orchestration, classification dispatch, and final event folding
+- refresh docs so replay-specific guidance points at `src/python/python-replay.ts` instead of the public orchestrator
+
+**Validation:**
+
+- `cd .opencode && bun test test/python-analyze.test.ts`
+- `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`
+
+**Commit message:**
+
+- `refactor: extract python analyzer replay seam`
+
+#### Notes
+
+- Status: Done (2026-03-23)
+- Summary: Extracted the ordered replay handlers, helper-seed discovery pass, and mutation invalidation helpers into `src/python/python-replay.ts`, leaving `src/python/python-analyze.ts` as a small public orchestrator that composes the two replay passes with classification and event folding.
+- Files: `src/python/python-analyze.ts`, `src/python/python-replay.ts`, `README.md`, `docs/python-classification-system-design.md`, `docs/plans/73-python-analyzer-modularization.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`
+- Follow-ups: `src/python/python-inference-containers.ts` still holds the densest container/rebind logic; if future provenance work keeps landing there, split return-kind or iterable helpers again without moving replay ownership back into the orchestrator.
+- Commit: Not committed
+- PR/Jira: None
+
+### Phase 11 - Split inference into focused helper modules
+
+**Goal:** Break the oversized inference seam into smaller modules while preserving the public `python-inference.ts` import surface for callers.
+
+**Files:**
+
+- `src/python/python-inference.ts`
+- `src/python/python-inference-values.ts` (new)
+- `src/python/python-inference-effects.ts` (new)
+- `src/python/python-inference-paths.ts` (new)
+- `src/python/python-inference-containers.ts` (new)
+- `src/python/python-classifier.ts`
+- `src/python/python-replay.ts`
+- `.opencode/test/python-analyze.test.ts`
+- `.opencode/test/python-inline-permissions-basic.test.ts`
+- `README.md`
+- `docs/python-classification-system-design.md`
+- this plan file
+
+**Changes:**
+
+- turn `src/python/python-inference.ts` into a small barrel that re-exports focused inference modules
+- extract literal/argument parsing into `src/python/python-inference-values.ts`
+- extract builtin-purity, response-json, and splat helpers into `src/python/python-inference-effects.ts`
+- extract tracked path and iterated-path helpers into `src/python/python-inference-paths.ts`
+- move the remaining container, receiver, iterable, and rebind-kind logic into `src/python/python-inference-containers.ts`
+- update docs and install-sync file lists to include the new inference submodules
+
+**Validation:**
+
+- `cd .opencode && bun test test/python-analyze.test.ts`
+- `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`
+
+**Commit message:**
+
+- `refactor: split python inference helpers`
+
+#### Notes
+
+- Status: Done (2026-03-23)
+- Summary: Replaced the monolithic inference file with a small public barrel plus focused value/effect/path/container helper modules, keeping existing callers on `src/python/python-inference.ts` while shrinking the core entry files that new analyzer work most often touched.
+- Files: `src/python/python-inference.ts`, `src/python/python-inference-values.ts`, `src/python/python-inference-effects.ts`, `src/python/python-inference-paths.ts`, `src/python/python-inference-containers.ts`, `src/python/python-replay.ts`, `src/python/python-analyze.ts`, `README.md`, `docs/python-classification-system-design.md`, `docs/plans/73-python-analyzer-modularization.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`
+- Follow-ups: `src/python/python-inference-containers.ts` is still the largest remaining behavior-heavy file at roughly the high-500-line range, so any future size-budget cleanup should split that module next without disturbing the stable barrel API.
+- Commit: Not committed
+- PR/Jira: None
+
 ## Rollout Gates
 
 - no change in outward `analyzeDetailed()` or `analyze()` results across the focused analyzer suite
@@ -540,3 +630,5 @@ Line estimates are approximate and may shift during extraction; the constraint i
 - Phase 7: DONE
 - Phase 8: DONE
 - Phase 9: DONE
+- Phase 10: DONE
+- Phase 11: DONE

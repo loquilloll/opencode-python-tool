@@ -1,5 +1,5 @@
 import type { PythonAstNode as Node } from "./frontend/interface"
-import { DIRECT_IMPORT_BINDINGS, HTTP_REQUEST_CALL_BASES, TRACKED_HTTP_CLIENT_CONSTRUCTORS } from "./python-known-methods"
+import { DIRECT_IMPORT_BINDINGS, HTTP_REQUEST_CALL_BASES, TRACKED_HTTP_CLIENT_CONSTRUCTORS, TRUSTED_CALL_POLICIES, TRUSTED_MODULE_BINDINGS } from "./python-known-methods"
 import type { AtlassianClientFamily, Rules, Scope } from "./python-analyze-types"
 import { clearTrackedProvenanceForName, type ContainerKind, type ReceiverContainer, type ReceiverPath } from "./python-provenance"
 import type { PythonArgs as Args, PythonValue as Value } from "./python-values"
@@ -40,6 +40,9 @@ export function scope(parent?: Scope): Scope {
     localDefinitions: new Set<string>(),
     callableFactories: new Map<string, Node>(),
     containerInstances: new Map<string, ContainerKind>(),
+    valueInstances: new Map<string, Value>(),
+    exactStringSets: new Map<string, string[]>(),
+    exactIteratedStringSets: new Map<string, string[]>(),
     iteratedElementInstances: new Map<string, ContainerKind>(),
     iteratedPathInstances: new Map<string, Value>(),
     receiverContainers: new Map<string, ReceiverContainer>(),
@@ -140,6 +143,28 @@ export function trustedExactDirectImportCall(node: Node | null, resolvedCall: st
   return Boolean(leaf && raw === leaf && hasTrustedDirectBinding(current, raw))
 }
 
+export function trustedCallWithPolicy(node: Node | null, resolvedCall: string, current: Scope) {
+  const policy = TRUSTED_CALL_POLICIES.get(resolvedCall)
+  if (!policy) return true
+  if (policy === "resolved-module") return trustedResolvedModuleCall(node, resolvedCall, current)
+  if (policy === "module-qualified-or-exact-direct-import") return trustedExactDirectImportCall(node, resolvedCall, current)
+  if (policy === "exact-direct-import") {
+    const raw = name(node)
+    if (!raw) return false
+    const parts = resolvedCall.split(".")
+    const leaf = parts[parts.length - 1]
+    return Boolean(leaf && raw === leaf && hasTrustedDirectBinding(current, raw))
+  }
+
+  if (trustedExactDirectImportCall(node, resolvedCall, current)) return true
+  const raw = name(node)
+  if (!raw) return false
+  const parts = raw.split(".")
+  const resolvedParts = resolvedCall.split(".")
+  const leaf = resolvedParts[resolvedParts.length - 1]
+  return Boolean(parts.length === 2 && leaf && parts[1] === leaf && hasTrustedModuleBinding(current, parts[0] ?? ""))
+}
+
 export function trustedAliasSource(node: Node | null, current: Scope) {
   const raw = name(node)
   if (!raw) return false
@@ -161,6 +186,9 @@ export function clearTrackedName(current: Scope, name: string) {
   current.localDefinitions.delete(name)
   current.callableFactories.delete(name)
   current.containerInstances.delete(name)
+  current.valueInstances.delete(name)
+  current.exactStringSets.delete(name)
+  current.exactIteratedStringSets.delete(name)
   current.iteratedElementInstances.delete(name)
   current.iteratedPathInstances.delete(name)
   current.pathInstances.delete(name)
@@ -181,6 +209,32 @@ export function clearIteratedElementProvenance(current: Scope, name: string) {
       if (resolveQualified(key, current) === target) toDelete.add(key)
     }
     for (const key of toDelete) scope.iteratedElementInstances.delete(key)
+  }
+}
+
+export function clearExactStringSetProvenance(current: Scope, name: string) {
+  const target = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.exactStringSets.delete(name)
+    if (!target) continue
+    const toDelete = new Set<string>([target])
+    for (const key of scope.exactStringSets.keys()) {
+      if (resolveQualified(key, current) === target) toDelete.add(key)
+    }
+    for (const key of toDelete) scope.exactStringSets.delete(key)
+  }
+}
+
+export function clearExactIteratedStringSetProvenance(current: Scope, name: string) {
+  const target = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.exactIteratedStringSets.delete(name)
+    if (!target) continue
+    const toDelete = new Set<string>([target])
+    for (const key of scope.exactIteratedStringSets.keys()) {
+      if (resolveQualified(key, current) === target) toDelete.add(key)
+    }
+    for (const key of toDelete) scope.exactIteratedStringSets.delete(key)
   }
 }
 
@@ -299,16 +353,12 @@ export function importBindings(node: Node) {
 export function shouldBindDirectImport(target: string, rules: Rules) {
   return (
     DIRECT_IMPORT_BINDINGS.has(target) ||
+    TRUSTED_CALL_POLICIES.has(target) ||
+    TRUSTED_MODULE_BINDINGS.has(target) ||
     target.startsWith("calendar.") ||
-    target === "collections.Counter" ||
-    target === "collections.defaultdict" ||
     target.startsWith("datetime.") ||
-    target === "hashlib.sha256" ||
-    target === "importlib.import_module" ||
     target === "importlib.metadata" ||
-    target === "importlib.metadata.version" ||
     target.startsWith("os.path.") ||
-    target === "pytest.main" ||
     target.startsWith("time.") ||
     target.startsWith("zoneinfo.") ||
     (target.startsWith("ast.") && rules.calls.pure.has(target)) ||

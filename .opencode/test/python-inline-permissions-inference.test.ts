@@ -596,6 +596,183 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("keeps only the dynamic path read ask for text.count and text.endswith through sorted identity path generators", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src/python')",
+              "files = sorted(p for p in root.glob('*.ts') if p.is_file())",
+              "for path in files:",
+              "    text = path.read_text()",
+              "    text.count('\\n')",
+              "    text.endswith('\\n')",
+            ].join("\n"),
+            args: [],
+            description: "sorted identity path generator string methods",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(["read:<dynamic>"])
+        expect(context.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "path.read_text", pattern: "read:<dynamic>" }),
+            expect.objectContaining({ kind: "pure", call: "text.count", pattern: "pure:text.count" }),
+            expect.objectContaining({ kind: "pure", call: "text.endswith", pattern: "pure:text.endswith" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps text.count and text.endswith conservative when sorted is shadowed or the generator is non-identity", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src/python')",
+              "sorted = custom_sorted",
+              "files = sorted(p for p in root.glob('*.ts') if p.is_file())",
+              "for path in files:",
+              "    text = path.read_text()",
+              "    text.count('\\n')",
+              "    text.endswith('\\n')",
+            ].join("\n"),
+            args: [],
+            description: "shadowed sorted path generator string methods",
+          },
+          shadowedContext,
+        )
+
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:text.count", "unknown:callable:text.endswith"]))
+
+        const nonIdentityContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src/python')",
+              "files = sorted(str(p) for p in root.glob('*.ts') if p.is_file())",
+              "for path in files:",
+              "    text = path.read_text()",
+              "    text.count('\\n')",
+              "    text.endswith('\\n')",
+            ].join("\n"),
+            args: [],
+            description: "non identity path generator string methods",
+          },
+          nonIdentityContext,
+        )
+
+        expect(getAsk(nonIdentityContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:text.count", "unknown:callable:text.endswith"]))
+      })
+    })
+
+    it("keeps only read asks while parent-derived path joins feed target.relative_to and target.with_suffix", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src/python')",
+              "files = sorted(root.glob('*.ts'))",
+              "for file in files:",
+              "    rel = './python-scope.ts'",
+              "    target = (file.parent / rel).resolve()",
+              "    if target.suffix != '.ts':",
+              "        target = target.with_suffix('.ts')",
+              "    target.relative_to(root).as_posix()",
+            ].join("\n"),
+            args: [],
+            description: "parent derived path joins",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["read:<dynamic>"]))
+        expect(getAsk(context, "python")?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:target.with_suffix", "unknown:callable:target.relative_to"]))
+        expect(context.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "target.with_suffix", pattern: "pure:target.with_suffix" }),
+            expect.objectContaining({ kind: "pure", call: "target.relative_to", pattern: "pure:target.relative_to" }),
+            expect.objectContaining({ kind: "pure", call: "target.relative_to.as_posix", pattern: "pure:target.relative_to.as_posix" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps only the dynamic read ask while bytes slices and split elements from zlib outputs feed decode chains", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import zlib",
+              "data = zlib.decompress(blob)",
+              "nul = data.index(b'\\x00')",
+              "header = data[:nul].decode()",
+              "header.split(' ')",
+              "body = data.split(b'\\x00', 1)[1]",
+              "body.decode().splitlines()",
+            ].join("\n"),
+            args: [],
+            description: "zlib bytes slices and split elements",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toBeUndefined()
+        expect(context.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "data.index", pattern: "pure:data.index" }),
+            expect.objectContaining({ kind: "pure", call: "data.decode", pattern: "pure:data.decode" }),
+            expect.objectContaining({ kind: "pure", call: "header.split", pattern: "pure:header.split" }),
+            expect.objectContaining({ kind: "pure", call: "data.split", pattern: "pure:data.split" }),
+            expect.objectContaining({ kind: "pure", call: "body.decode", pattern: "pure:body.decode" }),
+            expect.objectContaining({ kind: "pure", call: "body.decode.splitlines", pattern: "pure:body.decode.splitlines" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps unknown bytes slices and split elements conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "part = obj[:1]",
+              "part.decode()",
+              "chunk = obj.split(b',')[0]",
+              "chunk.decode().splitlines()",
+            ].join("\n"),
+            args: [],
+            description: "unknown bytes slices and split elements",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(
+          expect.arrayContaining([
+            "unknown:callable:part.decode",
+            "unknown:callable:chunk.decode",
+            "unknown:callable:chunk.decode.splitlines",
+          ]),
+        )
+      })
+    })
+
     it("skips python ask for tracked string self-reassignment", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })

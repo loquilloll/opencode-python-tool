@@ -90,11 +90,16 @@ flowchart TD
 
 ### Module ownership
 
-- `src/python/python-analyze.ts`: orchestrates parse, timeline build, scoped replay, classification dispatch, and final event folding
+- `src/python/python-analyze.ts`: orchestrates parse, helper-seed prepass, main replay/classification dispatch, and final event folding
 - `src/python/python-bootstrap.ts`: loads and validates rules plus parser frontend caches
+- `src/python/python-replay.ts`: owns stateful replay handlers, helper-seed discovery, and mutation invalidation shared across replay passes
 - `src/python/python-timeline.ts`: builds source-ordered timeline entries with comprehension-aware rebinding semantics
 - `src/python/python-scope.ts`: manages bindings, invalidation, imports, and tracked instances
-- `src/python/python-inference.ts`: parses literals/args and derives path/container/iterable provenance
+- `src/python/python-inference.ts`: public barrel for focused inference submodules
+- `src/python/python-inference-values.ts`: parses literals and call arguments
+- `src/python/python-inference-effects.ts`: resolves builtin-pure, response-json, and dictionary-splat effect helpers
+- `src/python/python-inference-paths.ts`: derives path and iterated-path provenance
+- `src/python/python-inference-containers.ts`: derives container, receiver, iterable, and rebind provenance
 - `src/python/python-classifier.ts`: resolves calls and raises into internal effects
 - `src/python/python-events.ts`: folds internal effects into outward `PythonEvent[]`
 
@@ -212,7 +217,7 @@ The next layer of declarative growth is a guarded schema parsed by `src/python/p
 
 ### Procedural rules
 
-The procedural layer is now split primarily across `src/python/python-classifier.ts`, `src/python/python-inference.ts`, `src/python/python-scope.ts`, and `src/python/python-timeline.ts`. Together they implement bounded logic that depends on AST shape and provenance, such as:
+The procedural layer is now split primarily across `src/python/python-replay.ts`, `src/python/python-classifier.ts`, `src/python/python-inference.ts` and its focused submodules, `src/python/python-scope.ts`, and `src/python/python-timeline.ts`. Together they implement bounded logic that depends on AST shape and provenance, such as:
 
 - shadow-aware builtin handling
 - HTTP response `.json()` tracking
@@ -260,11 +265,16 @@ This keeps the classifier useful without drifting into unsafe overgeneralization
 ## Key Files
 
 - `src/python/python-analyze.ts`: public orchestrator for parse -> timeline -> replay -> classify -> fold
+- `src/python/python-replay.ts`: replay handlers and helper-seed discovery
 - `src/python/python-bootstrap.ts`: rules loading and parser bootstrap
 - `src/python/python-events.ts`: outward event folding and result assembly
 - `src/python/python-scope.ts`: bindings, imports, invalidation, and tracked-instance lookup
 - `src/python/python-timeline.ts`: timeline collection and ordering semantics
-- `src/python/python-inference.ts`: literal parsing, path/container inference, and rebinding support
+- `src/python/python-inference.ts`: public barrel for inference helpers
+- `src/python/python-inference-values.ts`: literal and argument parsing helpers
+- `src/python/python-inference-effects.ts`: builtin-purity and response-json helpers
+- `src/python/python-inference-paths.ts`: tracked path and iterated-path inference
+- `src/python/python-inference-containers.ts`: container, receiver, iterable, and rebind-kind inference
 - `src/python/python-classifier.ts`: call/raise classification and evidence construction
 - `src/python/python-analyze-types.ts`: shared analyzer contracts
 - `src/python/frontend/interface.ts`: parser frontend boundary used by the analyzer core
@@ -274,7 +284,8 @@ This keeps the classifier useful without drifting into unsafe overgeneralization
 - `src/python.ts`: runtime permission planning
 - `src/python-session-report.ts`: historical review and TUI workflow
 - `.opencode/test/python-analyze.test.ts`: analyzer regressions
-- `.opencode/test/python.test.ts`: runtime permission regressions
+- `.opencode/test/python-inline-permissions-basic.test.ts`: inline runtime permission regressions for common analyzer flows
+- `.opencode/test/python-inline-permissions-inference.test.ts`: inline runtime permission regressions for inference-heavy analyzer flows
 - `.opencode/test/python-session-report.test.ts`: review and TUI regressions
 
 ## Summary

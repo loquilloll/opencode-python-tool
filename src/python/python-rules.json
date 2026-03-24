@@ -145,6 +145,7 @@
       "eval",
       "exec",
       "importlib.import_module",
+      "mypy.api.run",
       "os.popen",
       "os.system",
       "pytest.main"
@@ -165,6 +166,7 @@
       "collections.Counter",
       "collections.defaultdict",
       "hashlib.sha256",
+      "zlib.decompress",
       "os.path.abspath",
       "os.path.basename",
       "os.path.commonpath",
@@ -692,6 +694,53 @@
               "parse_float",
               "parse_int",
               "parse_constant"
+            ]
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
+      },
+      {
+        "call": "kiota_abstractions.request_information.RequestInformation",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "positionalCountEquals",
+            "count": 0
+          },
+          {
+            "type": "keywordCountEquals",
+            "count": 0
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
+      },
+      {
+        "call": "tabulate.tabulate",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "kwargAbsent",
+            "names": [
+              "tablefmt"
+            ]
+          },
+          {
+            "type": "kwargSplatAbsent"
+          }
+        ]
+      },
+      {
+        "call": "tabulate.tabulate",
+        "effect": "pure.compute",
+        "guards": [
+          {
+            "type": "kwargLiteralPresent",
+            "names": [
+              "tablefmt"
             ]
           },
           {

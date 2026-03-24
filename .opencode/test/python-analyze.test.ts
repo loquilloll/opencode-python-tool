@@ -685,6 +685,76 @@ describe("python analyzer", () => {
       )
     })
 
+    it("tracks text.count and text.endswith through sorted identity path generators", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src/python')",
+          "files = sorted(p for p in root.glob('*.ts') if p.is_file())",
+          "for path in files:",
+          "    text = path.read_text()",
+          "    text.count('\\n')",
+          "    text.endswith('\\n')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "text.count" }, { kind: "pure", call: "text.endswith" }, { kind: "read", call: "path.read_text", dynamicPath: true, sourceCall: "pathlib.Path.read_text" }]))
+    })
+
+    it("keeps text.count and text.endswith conservative when sorted is shadowed or the generator is non-identity", async () => {
+      const shadowedEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src/python')",
+          "sorted = custom_sorted",
+          "files = sorted(p for p in root.glob('*.ts') if p.is_file())",
+          "for path in files:",
+          "    text = path.read_text()",
+          "    text.count('\\n')",
+          "    text.endswith('\\n')",
+        ].join("\n"),
+      )
+
+      const nonIdentityEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src/python')",
+          "files = sorted(str(p) for p in root.glob('*.ts') if p.is_file())",
+          "for path in files:",
+          "    text = path.read_text()",
+          "    text.count('\\n')",
+          "    text.endswith('\\n')",
+        ].join("\n"),
+      )
+
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:text.count" }, { kind: "unknown", call: "callable:text.endswith" }]))
+      expect(nonIdentityEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:text.count" }, { kind: "unknown", call: "callable:text.endswith" }]))
+    })
+
+    it("tracks target.relative_to and target.with_suffix through parent-derived path joins", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src/python')",
+          "files = sorted(root.glob('*.ts'))",
+          "for file in files:",
+          "    rel = './python-scope.ts'",
+          "    target = (file.parent / rel).resolve()",
+          "    if target.suffix != '.ts':",
+          "        target = target.with_suffix('.ts')",
+          "    target.relative_to(root).as_posix()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "pure", call: "target.with_suffix" }),
+          expect.objectContaining({ kind: "pure", call: "target.relative_to" }),
+          expect.objectContaining({ kind: "pure", call: "target.relative_to.as_posix" }),
+        ]),
+      )
+    })
+
     it("keeps tracked string provenance across self-reassignment", async () => {
       const events = await analyze(
         [
@@ -1549,6 +1619,35 @@ describe("python analyzer", () => {
       )
     })
 
+    it("seeds same-scope lambda helper params from trusted string iterables", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "leaf = lambda entries: [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(entries)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }, { kind: "unknown", call: "callable:leaf" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps same-scope lambda helper params conservative when callsites disagree", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "entries = Path('f').read_text().splitlines()",
+          "other = values",
+          "leaf = lambda entries: [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(entries)",
+          "leaf(other)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
     it("clears helper-param string iterable seeds after indexed mutation", async () => {
       const events = await analyze(
         [
@@ -1585,7 +1684,7 @@ describe("python analyzer", () => {
       expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
     })
 
-    it("keeps mutation-built exact receiver-path string lists conservative", async () => {
+    it("seeds helper params from mutation-built exact receiver-path string lists when the builder stays homogeneous", async () => {
       const events = await analyze(
         [
           "inv = {}",
@@ -1598,7 +1697,356 @@ describe("python analyzer", () => {
         ].join("\n"),
       )
 
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }, { kind: "unknown", call: "callable:leaf" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("seeds helper params from mutation-built exact receiver-path string lists when extend carries trusted strings", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].extend(Path('f').read_text().splitlines())",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(inv[current])",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }]))
+    })
+
+    it("tracks direct iteration over value-equivalent dynamic-to-literal dict subscript builders", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "current = 'python.test.ts'",
+          "inv[current] = []",
+          "inv[current].append('x -> title')",
+          "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }]))
+    })
+
+    it("tracks direct iteration over exact dynamic dict subscript builders", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "current = 'python.test.ts'",
+          "inv[current] = []",
+          "inv[current].append('x -> title')",
+          "inv[current].append('x -> body')",
+          "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("tracks direct iteration over exact literal dict subscript builders", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "inv['python.test.ts'] = []",
+          "inv['python.test.ts'].append('x -> title')",
+          "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }]))
+    })
+
+    it("tracks direct iteration over keys derived from exact split/strip string values", async () => {
+      const events = await analyze(
+        [
+          "line = 'FILE python.test.ts'",
+          "current = line.split('FILE ', 1)[1].strip()",
+          "inv = {}",
+          "inv['python.test.ts'] = []",
+          "inv['python.test.ts'].append('x -> title')",
+          "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }, { kind: "pure", call: "line.split" }, { kind: "pure", call: "line.split.strip" }]))
+    })
+
+    it("tracks direct iteration over keys derived from iterated exact literal lines", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "for line in ['FILE python.test.ts']:",
+          "    current = line.split('FILE ', 1)[1].strip()",
+          "    inv[current] = []",
+          "    inv[current].append('x -> title')",
+          "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }, { kind: "pure", call: "line.split" }, { kind: "pure", call: "line.split.strip" }]))
+    })
+
+    it("tracks keys derived from exact literal lines under startswith branch narrowing", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "for line in ['FILE python.test.ts', '- x -> title']:",
+          "    if line.startswith('FILE '):",
+          "        current = line.split('FILE ', 1)[1].strip()",
+          "        inv[current] = []",
+          "    elif current and line.startswith('- '):",
+          "        inv[current].append(line[2:])",
+          "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }, { kind: "pure", call: "line.startswith" }]))
+    })
+
+    it("keeps keys derived from dynamic-origin mixed lines conservative without value narrowing", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "inv = {}",
+          "current = None",
+          "for line in Path('snapshot.txt').read_text().splitlines():",
+          "    if line.startswith('FILE '):",
+          "        current = line.split('FILE ', 1)[1].strip()",
+          "        inv[current] = []",
+          "    elif current and line.startswith('- '):",
+          "        inv[current].append(line[2:])",
+          "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
       expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("tracks direct iteration over value-equivalent literal-to-dynamic dict subscript builders and exact insert builders", async () => {
+      const dynamicEquivalentEvents = await analyze(
+        [
+          "inv = {}",
+          "inv['python.test.ts'] = []",
+          "current = 'python.test.ts'",
+          "inv['python.test.ts'].append('x -> title')",
+          "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      const literalMismatchEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'python.test.ts'",
+          "inv[current] = []",
+          "inv[current].append('x -> title')",
+          "result = [e.split(' -> ')[-1] for e in inv['python-runtime-execution.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      const insertEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'python.test.ts'",
+          "inv[current] = []",
+          "inv[current].insert(0, 'x -> title')",
+          "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(dynamicEquivalentEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }]))
+      expect(literalMismatchEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(insertEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }]))
+    })
+
+    it("tracks direct iteration over value-equivalent literal dict list values", async () => {
+      const events = await analyze(
+        [
+          "inv = {'python-runtime-execution.test.ts': [], 'python.test.ts': []}",
+          "current = 'python.test.ts'",
+          "inv[current].append('x -> title')",
+          "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }]))
+    })
+
+    it("preserves value-equivalent dict list proofs across different known sibling keys", async () => {
+      const events = await analyze(
+        [
+          "inv = {'a': [], 'b': []}",
+          "inv['a'].append('x -> title')",
+          "inv['b'].append(other)",
+          "result = [e.split(' -> ')[-1] for e in inv['a'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }]))
+    })
+
+    it("keeps exact direct dict subscript builders conservative after key rebinding and non-helper escapes", async () => {
+      const reboundEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'python.test.ts'",
+          "inv[current] = []",
+          "inv[current].append('x -> title')",
+          "current = other_key",
+          "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      const escapedEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'python.test.ts'",
+          "inv[current] = []",
+          "inv[current].append('x -> title')",
+          "other(inv[current])",
+          "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(reboundEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(escapedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps direct exact-path dict reads conservative under dep shadowing and alias-root rebinding", async () => {
+      const shadowedEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'python.test.ts'",
+          "inv[current] = []",
+          "inv[current].append('x -> title')",
+          "def outer(current):",
+          "    return [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+          "outer(other_key)",
+        ].join("\n"),
+      )
+
+      const aliasRootEvents = await analyze(
+        [
+          "inv = {}",
+          "bucket = inv",
+          "current = 'python.test.ts'",
+          "bucket[current] = []",
+          "bucket[current].append('x -> title')",
+          "inv = other_map",
+          "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(aliasRootEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps value-equivalent dict reads conservative when inner scopes shadow alias roots during same-root mutation", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "bucket = inv",
+          "current = 'python.test.ts'",
+          "bucket[current] = []",
+          "bucket[current].append('x -> title')",
+          "def clobber(bucket):",
+          "    inv['python.test.ts'].append(other_value)",
+          "clobber(other_map)",
+          "result = [e.split(' -> ')[-1] for e in bucket['python.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps raw alias-root exact-path reads conservative after subscript-to-identifier escapes mutate", async () => {
+      const appendEvents = await analyze(
+        [
+          "inv = {}",
+          "bucket = inv",
+          "current = 'python.test.ts'",
+          "bucket[current] = []",
+          "bucket[current].append('x -> title')",
+          "alias = bucket[current]",
+          "alias.append(other_value)",
+          "result = [e.split(' -> ')[-1] for e in bucket[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      const indexEvents = await analyze(
+        [
+          "inv = {}",
+          "bucket = inv",
+          "current = 'python.test.ts'",
+          "bucket[current] = []",
+          "bucket[current].append('x -> title')",
+          "alias = bucket[current]",
+          "alias[0] = other_value",
+          "result = [e.split(' -> ')[-1] for e in bucket[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(appendEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(indexEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps direct exact-path dict reads conservative after same-root alternate-key mutations", async () => {
+      const variableAliasEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'python.test.ts'",
+          "other = current",
+          "inv[current] = []",
+          "inv[current].append('x -> title')",
+          "inv[other].append(other_value)",
+          "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      const literalAliasEvents = await analyze(
+        [
+          "inv = {}",
+          "alias = 'python.test.ts'",
+          "inv['python.test.ts'] = []",
+          "inv['python.test.ts'].append('x -> title')",
+          "inv[alias].insert(0, other_value)",
+          "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      const reassignedEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'python.test.ts'",
+          "other = current",
+          "inv[current] = []",
+          "inv[current].append('x -> title')",
+          "inv[other] = [other_value]",
+          "result = [e.split(' -> ')[-1] for e in inv[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      const mixedRootEvents = await analyze(
+        [
+          "inv = {}",
+          "bucket = inv",
+          "current = 'python.test.ts'",
+          "other = current",
+          "bucket[current] = []",
+          "bucket[current].append('x -> title')",
+          "inv[other].append(other_value)",
+          "result = [e.split(' -> ')[-1] for e in bucket[current] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(variableAliasEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(literalAliasEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(reassignedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(mixedRootEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
     })
 
     it("keeps mutation-built receiver-path string lists conservative when appended values are unknown", async () => {
@@ -1648,6 +2096,119 @@ describe("python analyzer", () => {
 
       expect(appendEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
       expect(indexEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps mutation-built receiver-path string lists conservative after non-helper escape calls", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append('x:1')",
+          "other(inv[current])",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(inv[current])",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps mutation-built receiver-path aliases conservative after the base path mutates", async () => {
+      const appendEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append('x:1')",
+          "bucket = inv[current]",
+          "inv[current].append(other)",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(bucket)",
+        ].join("\n"),
+      )
+
+      const indexEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append('x:1')",
+          "bucket = inv[current]",
+          "inv[current][0] = other",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(bucket)",
+        ].join("\n"),
+      )
+
+      expect(appendEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(indexEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps exact receiver-path helper seeds conservative after key rebinding and never-called inner builders", async () => {
+      const reboundEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append('x:1')",
+          "current = other_key",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(inv[current])",
+        ].join("\n"),
+      )
+
+      const nestedEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "def build():",
+          "    inv[current] = []",
+          "    inv[current].append('x:1')",
+          "def leaf(entries):",
+          "    return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "leaf(inv[current])",
+        ].join("\n"),
+      )
+
+      expect(reboundEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(nestedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+    })
+
+    it("keeps exact receiver-path helper seeds conservative when key deps are shadowed by params", async () => {
+      const defEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append('x:1')",
+          "def outer(current):",
+          "    def leaf(entries):",
+          "        return [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "    return leaf(inv[current])",
+          "outer(other_key)",
+        ].join("\n"),
+      )
+
+      const lambdaEvents = await analyze(
+        [
+          "inv = {}",
+          "current = 'runtime'",
+          "inv[current] = []",
+          "inv[current].append('x:1')",
+          "def outer(current):",
+          "    leaf = lambda entries: [e.split(':')[-1] for e in entries if e.startswith('x')]",
+          "    return leaf(inv[current])",
+          "outer(other_key)",
+        ].join("\n"),
+      )
+
+      expect(defEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
+      expect(lambdaEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:e.split" }, { kind: "unknown", call: "callable:e.startswith" }]))
     })
 
     it("clears helper-param string iterable seeds after mutating list methods", async () => {
@@ -2727,7 +3288,348 @@ describe("python analyzer", () => {
     })
   })
 
+  describe("zlib classification", () => {
+    it("classifies zlib.decompress and tracked bytes/string helpers as pure", async () => {
+      const events = await analyze(
+        [
+          "import zlib",
+          "raw = zlib.decompress(blob)",
+          "raw.split(b'\\x00', 1)",
+          "raw.count(b'x')",
+          "raw.decode('utf8')",
+          "raw.decode('utf8').splitlines()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "zlib.decompress" },
+          { kind: "pure", call: "raw.split" },
+          { kind: "pure", call: "raw.count" },
+          { kind: "pure", call: "raw.decode" },
+          { kind: "pure", call: "raw.decode.splitlines" },
+        ]),
+      )
+    })
+
+    it("classifies direct-imported zlib.decompress and keeps shadowed names conservative", async () => {
+      const directImportEvents = await analyze(
+        [
+          "from zlib import decompress",
+          "decompress(blob)",
+          "payload = decompress(blob)",
+          "payload.decode('utf8').endswith('x')",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "from zlib import decompress",
+          "def decompress(value):",
+          "    return value",
+          "decompress(blob)",
+        ].join("\n"),
+      )
+
+      expect(directImportEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "zlib.decompress" },
+          { kind: "pure", call: "payload.decode" },
+          { kind: "pure", call: "payload.decode.endswith" },
+        ]),
+      )
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:decompress" }]))
+      expect(shadowedEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "zlib.decompress" }]))
+    })
+
+    it("keeps module-root zlib.decompress conservative when zlib is rebound but preserves tracked bytes", async () => {
+      const reboundEvents = await analyze(
+        [
+          "import zlib",
+          "zlib = object()",
+          "zlib.decompress(blob)",
+        ].join("\n"),
+      )
+
+      const trackedBytesEvents = await analyze(
+        [
+          "import zlib",
+          "raw = zlib.decompress(blob)",
+          "zlib = object()",
+          "raw.decode('utf8').splitlines()",
+        ].join("\n"),
+      )
+
+      expect(reboundEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:zlib.decompress" }]))
+      expect(reboundEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "zlib.decompress" }]))
+      expect(trackedBytesEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "raw.decode" }, { kind: "pure", call: "raw.decode.splitlines" }]))
+    })
+
+    it("tracks bytes slices and split elements from zlib.decompress outputs into decode chains", async () => {
+      const events = await analyze(
+        [
+          "import zlib",
+          "data = zlib.decompress(blob)",
+          "nul = data.index(b'\\x00')",
+          "header = data[:nul].decode()",
+          "header.split(' ')",
+          "body = data.split(b'\\x00', 1)[1]",
+          "body.decode().splitlines()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "data.index" },
+          { kind: "pure", call: "data.decode" },
+          { kind: "pure", call: "header.split" },
+          { kind: "pure", call: "data.split" },
+          { kind: "pure", call: "body.decode" },
+          { kind: "pure", call: "body.decode.splitlines" },
+        ]),
+      )
+    })
+  })
+
+  describe("zlib classification", () => {
+    it("classifies zlib.decompress and tracked bytes helpers as pure", async () => {
+      const events = await analyze(
+        [
+          "import zlib",
+          "raw = zlib.decompress(blob)",
+          "raw.split(b'\\x00', 1)",
+          "raw.count(b'x')",
+          "raw.decode('utf8')",
+          "raw.decode('utf8').splitlines()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "zlib.decompress" },
+          { kind: "pure", call: "raw.split" },
+          { kind: "pure", call: "raw.count" },
+          { kind: "pure", call: "raw.decode" },
+          { kind: "pure", call: "raw.decode.splitlines" },
+        ]),
+      )
+    })
+
+    it("classifies direct-imported zlib.decompress and keeps shadowed names conservative", async () => {
+      const directImportEvents = await analyze(
+        [
+          "from zlib import decompress",
+          "decompress(blob)",
+          "payload = decompress(blob)",
+          "payload.decode('utf8').endswith('x')",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "from zlib import decompress",
+          "def decompress(value):",
+          "    return value",
+          "decompress(blob)",
+        ].join("\n"),
+      )
+
+      expect(directImportEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "zlib.decompress" },
+          { kind: "pure", call: "payload.decode" },
+          { kind: "pure", call: "payload.decode.endswith" },
+        ]),
+      )
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:decompress" }]))
+      expect(shadowedEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "zlib.decompress" }]))
+    })
+
+    it("keeps module-root zlib.decompress conservative when zlib is rebound but preserves tracked bytes", async () => {
+      const reboundEvents = await analyze(
+        [
+          "import zlib",
+          "zlib = object()",
+          "zlib.decompress(blob)",
+        ].join("\n"),
+      )
+
+      const trackedBytesEvents = await analyze(
+        [
+          "import zlib",
+          "raw = zlib.decompress(blob)",
+          "zlib = object()",
+          "raw.decode('utf8').splitlines()",
+        ].join("\n"),
+      )
+
+      expect(reboundEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:zlib.decompress" }]))
+      expect(reboundEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "zlib.decompress" }]))
+      expect(trackedBytesEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "raw.decode" }, { kind: "pure", call: "raw.decode.splitlines" }]))
+    })
+  })
+
+  describe("RequestInformation classification", () => {
+    it("classifies zero-arg direct-imported RequestInformation constructors as pure", async () => {
+      const directEvents = await analyze(
+        [
+          "from kiota_abstractions.request_information import RequestInformation",
+          "RequestInformation()",
+          "dir(RequestInformation())",
+        ].join("\n"),
+      )
+
+      expect(directEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "kiota_abstractions.request_information.RequestInformation" }, { kind: "pure", call: "dir" }]))
+    })
+
+    it("keeps RequestInformation conservative when module-qualified, aliased, shadowed, or called with args", async () => {
+      const moduleQualifiedEvents = await analyze(
+        [
+          "import kiota_abstractions.request_information",
+          "kiota_abstractions.request_information.RequestInformation()",
+        ].join("\n"),
+      )
+
+      const aliasEvents = await analyze(
+        [
+          "from kiota_abstractions.request_information import RequestInformation as RI",
+          "RI()",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "from kiota_abstractions.request_information import RequestInformation",
+          "def RequestInformation(value=None):",
+          "    return value",
+          "RequestInformation()",
+        ].join("\n"),
+      )
+
+      const argEvents = await analyze(
+        [
+          "from kiota_abstractions.request_information import RequestInformation",
+          "RequestInformation('x')",
+          "RequestInformation(url='x')",
+        ].join("\n"),
+      )
+
+      expect(moduleQualifiedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:kiota_abstractions.request_information.RequestInformation" }]))
+      expect(aliasEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:kiota_abstractions.request_information.RequestInformation" }]))
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:RequestInformation" }]))
+      expect(argEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:kiota_abstractions.request_information.RequestInformation" }]))
+      expect(argEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "kiota_abstractions.request_information.RequestInformation" }]))
+    })
+  })
+
+  describe("tabulate classification", () => {
+    it("classifies exact direct-import tabulate calls as pure when tablefmt is absent or literal", async () => {
+      const events = await analyze(
+        [
+          "from tabulate import tabulate",
+          "tabulate([[1]], headers=['a'])",
+          "tabulate([[1]], headers=['a'], tablefmt='git_hub')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "tabulate.tabulate" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:tabulate.tabulate" }]))
+    })
+
+    it("keeps tabulate conservative when module-qualified, aliased, shadowed, or given dynamic tablefmt", async () => {
+      const moduleQualifiedEvents = await analyze(
+        [
+          "import tabulate",
+          "tabulate.tabulate([[1]], headers=['a'])",
+        ].join("\n"),
+      )
+
+      const aliasEvents = await analyze(
+        [
+          "from tabulate import tabulate as t",
+          "t([[1]], headers=['a'])",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "from tabulate import tabulate",
+          "def tabulate(rows, **kwargs):",
+          "    return rows",
+          "tabulate([[1]], headers=['a'])",
+        ].join("\n"),
+      )
+
+      const dynamicFmtEvents = await analyze(
+        [
+          "from tabulate import tabulate",
+          "fmt = table_format",
+          "tabulate([[1]], headers=['a'], tablefmt=fmt)",
+        ].join("\n"),
+      )
+
+      expect(moduleQualifiedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:tabulate.tabulate" }]))
+      expect(aliasEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:tabulate.tabulate" }]))
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:tabulate" }]))
+      expect(dynamicFmtEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:tabulate.tabulate" }]))
+      expect(dynamicFmtEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "tabulate.tabulate" }]))
+    })
+  })
+
   describe("exec classification", () => {
+    it("classifies trusted mypy.api.run calls as exec", async () => {
+      const moduleBindingEvents = await analyze(
+        [
+          "from mypy import api",
+          "api.run(args)",
+        ].join("\n"),
+      )
+
+      const directImportEvents = await analyze(
+        [
+          "from mypy.api import run",
+          "run(args)",
+        ].join("\n"),
+      )
+
+      const aliasModuleBindingEvents = await analyze(
+        [
+          "from mypy import api as mapi",
+          "mapi.run(args)",
+        ].join("\n"),
+      )
+
+      expect(moduleBindingEvents).toEqual(expect.arrayContaining([{ kind: "exec", call: "mypy.api.run" }]))
+      expect(directImportEvents).toEqual(expect.arrayContaining([{ kind: "exec", call: "mypy.api.run" }]))
+      expect(aliasModuleBindingEvents).toEqual(expect.arrayContaining([{ kind: "exec", call: "mypy.api.run" }]))
+    })
+
+    it("keeps mypy.api.run conservative when rebound or laundered through extracted callables", async () => {
+      const reboundEvents = await analyze(
+        [
+          "from mypy import api",
+          "api = object()",
+          "api.run(args)",
+        ].join("\n"),
+      )
+
+      const launderedEvents = await analyze(
+        [
+          "from mypy import api",
+          "runner = api.run",
+          "runner(args)",
+        ].join("\n"),
+      )
+
+      expect(reboundEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:api.run" }]))
+      expect(launderedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:mypy.api.run" }]))
+      expect(launderedEvents).not.toEqual(expect.arrayContaining([{ kind: "exec", call: "mypy.api.run" }]))
+    })
+
     it("classifies importlib.import_module as exec and importlib.metadata.version as read", async () => {
       const moduleExecEvents = await analyze(["import importlib", "importlib.import_module('json')"].join("\n"))
       const directImportExecEvents = await analyze(["from importlib import import_module", "import_module('json')"].join("\n"))
@@ -5013,10 +5915,13 @@ describe("python analyzer", () => {
       try {
         const src = new URL("../../src/python/python-rules.json", import.meta.url)
         const data = JSON.parse(await readFile(src, "utf8")) as Record<string, any>
-        data.guarded.calls[4].guards[0].values = {}
+        const callIndex = data.guarded.calls.findIndex((rule: any) => rule.guards?.some((guard: any) => guard.type === "argLiteralIn"))
+        expect(callIndex).toBeGreaterThanOrEqual(0)
+        const guardIndex = data.guarded.calls[callIndex].guards.findIndex((guard: any) => guard.type === "argLiteralIn")
+        data.guarded.calls[callIndex].guards[guardIndex].values = {}
         process.env.OPENCODE_PYTHON_RULES = file
         await writeFile(file, JSON.stringify(data))
-        await expect(analyze("open('f')")).rejects.toThrow("Invalid python-rules.json: guarded.calls[4].guards[0].values must be a string[]")
+        await expect(analyze("open('f')")).rejects.toThrow(`Invalid python-rules.json: guarded.calls[${callIndex}].guards[${guardIndex}].values must be a string[]`)
       } finally {
         if (prev === undefined) delete process.env.OPENCODE_PYTHON_RULES
         else process.env.OPENCODE_PYTHON_RULES = prev

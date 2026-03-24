@@ -33,7 +33,10 @@ export type GuardReceiverKind = "path" | "match"
 export type GuardPrimitive =
   | { type: "receiverKindIn"; kinds: GuardReceiverKind[] }
   | { type: "kwargAbsent"; names: string[] }
+  | { type: "kwargLiteralPresent"; names: string[] }
+  | { type: "keywordCountEquals"; count: number }
   | { type: "bindingAbsent"; names: string[] }
+  | { type: "positionalCountEquals"; count: number }
   | { type: "argLiteralIn"; index: number; names: string[]; values: string[] }
   | { type: "kwargSplatAbsent" }
 
@@ -74,7 +77,10 @@ function guard(input: unknown, label: string, helpers: ParseHelpers): GuardPrimi
   const type = obj.type
   if (type === "receiverKindIn") return { type, kinds: receiverKinds(obj.kinds, `${label}.kinds`, helpers) }
   if (type === "kwargAbsent") return { type, names: helpers.list(obj.names, `${label}.names`) }
+  if (type === "kwargLiteralPresent") return { type, names: helpers.list(obj.names, `${label}.names`) }
+  if (type === "keywordCountEquals") return { type, count: helpers.num(obj.count, `${label}.count`) }
   if (type === "bindingAbsent") return { type, names: helpers.list(obj.names, `${label}.names`) }
+  if (type === "positionalCountEquals") return { type, count: helpers.num(obj.count, `${label}.count`) }
   if (type === "argLiteralIn") {
     return {
       type,

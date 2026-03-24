@@ -37,6 +37,9 @@ export type Scope = {
   localDefinitions: Set<string>
   callableFactories: Map<string, Node>
   containerInstances: Map<string, ContainerKind>
+  valueInstances: Map<string, Value>
+  exactStringSets: Map<string, string[]>
+  exactIteratedStringSets: Map<string, string[]>
   iteratedElementInstances: Map<string, ContainerKind>
   iteratedPathInstances: Map<string, Value>
   receiverContainers: Map<string, ReceiverContainer>
@@ -55,6 +58,7 @@ export type TimelineEntry = {
   node: Node
   scope: Scope
   bodyScope?: Scope
+  guards?: Node[]
   startIndex: number
   endIndex: number
 }

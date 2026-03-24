@@ -3,10 +3,12 @@ import type { GuardPrimitive, GuardReceiverKind } from "./python-rule-schema"
 
 export type GuardContext = {
   receiverKind?: GuardReceiverKind
+  positionalCount: number
   keywordNames: Set<string>
   hasKwargSplat: boolean
   hasBoundName?: (name: string) => boolean
   pickLiteral?: (index: number, names: string[]) => string | undefined
+  pickKeywordLiteral?: (names: string[]) => string | undefined
 }
 
 export type GuardEvaluation = {
@@ -33,9 +35,28 @@ export function evaluateGuardsDetailed(guards: GuardPrimitive[], context: GuardC
       if (hit) return { matched: false, failure: { type: guard.type, detail: hit } }
       continue
     }
+    if (guard.type === "kwargLiteralPresent") {
+      const literal = context.pickKeywordLiteral?.(guard.names)
+      if (literal === undefined) {
+        return { matched: false, failure: { type: guard.type, detail: guard.names.join("|") } }
+      }
+      continue
+    }
+    if (guard.type === "keywordCountEquals") {
+      if (context.keywordNames.size !== guard.count) {
+        return { matched: false, failure: { type: guard.type, detail: `expected=${guard.count} actual=${context.keywordNames.size}` } }
+      }
+      continue
+    }
     if (guard.type === "bindingAbsent") {
       const hit = guard.names.find((name) => context.hasBoundName?.(name))
       if (hit) return { matched: false, failure: { type: guard.type, detail: hit } }
+      continue
+    }
+    if (guard.type === "positionalCountEquals") {
+      if (context.positionalCount !== guard.count) {
+        return { matched: false, failure: { type: guard.type, detail: `expected=${guard.count} actual=${context.positionalCount}` } }
+      }
       continue
     }
     if (guard.type === "argLiteralIn") {

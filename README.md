@@ -83,14 +83,19 @@ flowchart TD
 | File | Purpose |
 |------|---------|
 | `src/python.ts` | Runtime entry point: arg validation, source loading, analyzer call, permission asks, subprocess guard, process execution, timeout/abort handling, metadata streaming. |
-| `src/python/python-analyze.ts` | Thin analyzer orchestrator: loads rules/frontend, computes import provenance, builds timeline, replays scoped state, delegates raise/call classification, and exposes `analyzeDetailed()` / `analyze()`. |
+| `src/python/python-analyze.ts` | Thin public analyzer orchestrator: parse, helper-seed prepass, main replay/classify loop, and `analyzeDetailed()` / `analyze()` exports. |
+| `src/python/python-replay.ts` | Replay seam for import/definition/rebind/assignment handlers, helper-seed discovery, and mutation invalidation shared by both replay passes. |
 | `src/python/python-analyze-types.ts` | Shared analyzer contracts for `PythonEvent`, `Scope`, `TimelineEntry`, `Rules`, and supporting internal types. |
 | `src/python/python-known-methods.ts` | Static analyzer data tables: pure-method inventories, builtin/HTTP constants, effect-kind mapping, and rules-file constants. |
 | `src/python/python-bootstrap.ts` | Rules/frontend bootstrap seam: JSON validation, rules loading, `OPENCODE_PYTHON_RULES` handling, and parser caching. |
 | `src/python/python-events.ts` | Outward event helpers: `ResolvedEffect` construction, public-event folding, dedupe, and `PythonAnalyzeResult` assembly. |
 | `src/python/python-scope.ts` | Lexical scope helpers: bindings/import normalization, invalidation, callable-factory lookup, and tracked-instance/path/container maps. |
 | `src/python/python-timeline.ts` | Timeline builder: assignment/rebind/definition/import/call/raise collection plus comprehension-aware ordering rules. |
-| `src/python/python-inference.ts` | Value/path/container inference helpers: literal parsing, tracked Path/container derivation, iterable/rebind seeding, and response-json/builtin-pure support logic. |
+| `src/python/python-inference.ts` | Public inference barrel that re-exports the focused value/effect/path/container helper modules. |
+| `src/python/python-inference-values.ts` | Literal/argument parsing helpers used across classifier, replay, and inference paths. |
+| `src/python/python-inference-effects.ts` | Builtin-purity, response-json, dictionary-splat, and pure-container-method helpers that resolve to internal effects. |
+| `src/python/python-inference-paths.ts` | Tracked path and iterated-path inference, including rebind path propagation for loop and destructuring targets. |
+| `src/python/python-inference-containers.ts` | Container-kind, receiver-kind, iterable-kind, and rebind-container inference for bounded provenance-aware families. |
 | `src/python/python-classifier.ts` | Call/raise classifier seam: builtin/guarded/HTTP/Path/GHAPI/Atlassian/subprocess/fallback resolution to internal effects. |
 | `src/python/frontend/interface.ts` | Minimal parser frontend contract consumed by the analyzer core. |
 | `src/python/frontend/tree-sitter.ts` | Default tree-sitter-backed frontend implementation, including parser/WASM loading and caching. |
@@ -169,6 +174,7 @@ mkdir -p "$DST/.opencode/tool" "$DST/src/python" "$DST/src/python/frontend"
 
 cp "$SRC/src/python.ts" "$DST/src/python.ts"
 cp "$SRC/src/python/python-analyze.ts" "$DST/src/python/python-analyze.ts"
+cp "$SRC/src/python/python-replay.ts" "$DST/src/python/python-replay.ts"
 cp "$SRC/src/python/python-analyze-types.ts" "$DST/src/python/python-analyze-types.ts"
 cp "$SRC/src/python/python-known-methods.ts" "$DST/src/python/python-known-methods.ts"
 cp "$SRC/src/python/python-bootstrap.ts" "$DST/src/python/python-bootstrap.ts"
@@ -176,6 +182,10 @@ cp "$SRC/src/python/python-events.ts" "$DST/src/python/python-events.ts"
 cp "$SRC/src/python/python-scope.ts" "$DST/src/python/python-scope.ts"
 cp "$SRC/src/python/python-timeline.ts" "$DST/src/python/python-timeline.ts"
 cp "$SRC/src/python/python-inference.ts" "$DST/src/python/python-inference.ts"
+cp "$SRC/src/python/python-inference-values.ts" "$DST/src/python/python-inference-values.ts"
+cp "$SRC/src/python/python-inference-effects.ts" "$DST/src/python/python-inference-effects.ts"
+cp "$SRC/src/python/python-inference-paths.ts" "$DST/src/python/python-inference-paths.ts"
+cp "$SRC/src/python/python-inference-containers.ts" "$DST/src/python/python-inference-containers.ts"
 cp "$SRC/src/python/python-classifier.ts" "$DST/src/python/python-classifier.ts"
 cp "$SRC/src/python/python-ir.ts" "$DST/src/python/python-ir.ts"
 cp "$SRC/src/python/python-values.ts" "$DST/src/python/python-values.ts"
@@ -261,6 +271,7 @@ mkdir -p "$OPENCODE_HOME/tools/python" "$OPENCODE_HOME/tools/python/frontend"
 
 cp "$SRC/src/python.ts" "$OPENCODE_HOME/tools/python.ts"
 cp "$SRC/src/python/python-analyze.ts" "$OPENCODE_HOME/tools/python/python-analyze.ts"
+cp "$SRC/src/python/python-replay.ts" "$OPENCODE_HOME/tools/python/python-replay.ts"
 cp "$SRC/src/python/python-analyze-types.ts" "$OPENCODE_HOME/tools/python/python-analyze-types.ts"
 cp "$SRC/src/python/python-known-methods.ts" "$OPENCODE_HOME/tools/python/python-known-methods.ts"
 cp "$SRC/src/python/python-bootstrap.ts" "$OPENCODE_HOME/tools/python/python-bootstrap.ts"
@@ -268,6 +279,10 @@ cp "$SRC/src/python/python-events.ts" "$OPENCODE_HOME/tools/python/python-events
 cp "$SRC/src/python/python-scope.ts" "$OPENCODE_HOME/tools/python/python-scope.ts"
 cp "$SRC/src/python/python-timeline.ts" "$OPENCODE_HOME/tools/python/python-timeline.ts"
 cp "$SRC/src/python/python-inference.ts" "$OPENCODE_HOME/tools/python/python-inference.ts"
+cp "$SRC/src/python/python-inference-values.ts" "$OPENCODE_HOME/tools/python/python-inference-values.ts"
+cp "$SRC/src/python/python-inference-effects.ts" "$OPENCODE_HOME/tools/python/python-inference-effects.ts"
+cp "$SRC/src/python/python-inference-paths.ts" "$OPENCODE_HOME/tools/python/python-inference-paths.ts"
+cp "$SRC/src/python/python-inference-containers.ts" "$OPENCODE_HOME/tools/python/python-inference-containers.ts"
 cp "$SRC/src/python/python-classifier.ts" "$OPENCODE_HOME/tools/python/python-classifier.ts"
 cp "$SRC/src/python/python-ir.ts" "$OPENCODE_HOME/tools/python/python-ir.ts"
 cp "$SRC/src/python/python-values.ts" "$OPENCODE_HOME/tools/python/python-values.ts"
@@ -553,11 +568,13 @@ Terminal conditions append `<python_metadata>` to the output:
 - `src/python-session-report.ts` scans saved OpenCode sessions, re-analyzes inline `state.input.code`, skips `scriptPath` entries, and suppresses calls back into definitions declared in the same snippet.
 - `--update-candidates` only updates `candidates.unknown` in the rules JSON. It does not automatically change live `methods`, `calls`, or `pathCalls` classifier buckets.
 - `--review-next` and `--decide` provide a snippet-centric human review loop backed by a sidecar ledger, with decisions such as `read`, `write`, `emit`, `exec`, `pure`, `ignore`, and `needs-code`.
+- `--review-families` and `--review-families-json` provide read-only family/module summaries on top of the pending review queue so you can pick a whole family to investigate before dropping into snippet-by-snippet review.
 - The review ledger stores the exact occurrence fingerprint plus review identity metadata (`kind` and `sourceCall` when available). Exact fingerprint matches always replay, while cross-snippet reuse only happens when the later occurrence resolves to the same review identity.
 - `--review-tui` provides a one-key terminal review UI that opens with the full syntax-highlighted code page visible and one focused candidate at a time; the active call is visually emphasized, `v` toggles between full-page and focused-window code views, and a transient status line is shown while loading/rescoring the next candidate. Default `y` suggestions are `read`, `write`, `emit`, `ignore`, or `pure` (not `needs-code`), while `c` remains an explicit `needs-code` override.
 - Review modes include `unknown` by default; add `--include-emit` to audit already-classified `emit` callables and `--include-pure` when you also want `pure` candidates in the queue. Promoted callables should no longer reappear in default review runs.
 - `--review-next` now asks `opencode run` for taxonomy confidence scores (`read`, `write`, `emit`, `exec`, `pure`, `unknown`), caches successful score bundles, and falls back to local heuristics if scoring fails.
 - `--promote-reviewed` promotes consistently reviewed outward call strings into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`, but blocks promotion when one live call target would merge multiple reviewed identities.
+- Recommended operator flow is: `--update-candidates` -> `--review-families`/`--review-families-json` -> optional `--family`/`--module` pivot into `--review-next` -> broader `--review-tui` or more `--review-next` decisions as needed -> `--suggest-rules`/`--compare-rules` -> `--promote-reviewed` -> rerun the report.
 - `src/python-session-report.ts` is an operator utility run from this repo checkout; it is not an OpenCode tool that belongs in `~/.config/opencode/tools/`.
 
 Example report commands:
@@ -574,7 +591,11 @@ bun run ../src/python-session-report.ts --db "$bundle" --json
 bun run ../src/python-session-report.ts --db "$bundle" --update-candidates
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --suggest-rules
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --compare-rules ../tmp/python-rules-alt.json
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-families
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-families-json
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-families --family re.Match.group
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-next
+bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-next --module pytest
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-tui
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --decide 1=read,2=emit
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --include-emit
@@ -662,6 +683,7 @@ When this repo changes, use one of these refresh paths.
 2. Re-copy core files:
    - `src/python.ts`
    - `src/python/python-analyze.ts`
+   - `src/python/python-replay.ts`
    - `src/python/python-analyze-types.ts`
    - `src/python/python-known-methods.ts`
    - `src/python/python-bootstrap.ts`
@@ -669,6 +691,10 @@ When this repo changes, use one of these refresh paths.
    - `src/python/python-scope.ts`
    - `src/python/python-timeline.ts`
    - `src/python/python-inference.ts`
+   - `src/python/python-inference-values.ts`
+   - `src/python/python-inference-effects.ts`
+   - `src/python/python-inference-paths.ts`
+   - `src/python/python-inference-containers.ts`
    - `src/python/python-classifier.ts`
    - `src/python/python-ir.ts`
    - `src/python/python-values.ts`
@@ -694,6 +720,7 @@ When this repo changes, use one of these refresh paths.
 2. Re-copy core files:
    - `src/python.ts` -> `tools/python.ts`
    - `src/python/python-analyze.ts` -> `tools/python/python-analyze.ts`
+   - `src/python/python-replay.ts` -> `tools/python/python-replay.ts`
    - `src/python/python-analyze-types.ts` -> `tools/python/python-analyze-types.ts`
    - `src/python/python-known-methods.ts` -> `tools/python/python-known-methods.ts`
    - `src/python/python-bootstrap.ts` -> `tools/python/python-bootstrap.ts`
@@ -701,6 +728,10 @@ When this repo changes, use one of these refresh paths.
    - `src/python/python-scope.ts` -> `tools/python/python-scope.ts`
    - `src/python/python-timeline.ts` -> `tools/python/python-timeline.ts`
    - `src/python/python-inference.ts` -> `tools/python/python-inference.ts`
+   - `src/python/python-inference-values.ts` -> `tools/python/python-inference-values.ts`
+   - `src/python/python-inference-effects.ts` -> `tools/python/python-inference-effects.ts`
+   - `src/python/python-inference-paths.ts` -> `tools/python/python-inference-paths.ts`
+   - `src/python/python-inference-containers.ts` -> `tools/python/python-inference-containers.ts`
    - `src/python/python-classifier.ts` -> `tools/python/python-classifier.ts`
    - `src/python/python-ir.ts` -> `tools/python/python-ir.ts`
    - `src/python/python-values.ts` -> `tools/python/python-values.ts`
@@ -731,13 +762,18 @@ opencode-python-tool/
     python-session-report.ts     # Saved-session reporting utility
     python/
       python-analyze.ts          # Thin analyzer orchestrator
+      python-replay.ts           # Replay handlers + helper-seed prepass
       python-analyze-types.ts    # Shared analyzer contracts
       python-known-methods.ts    # Static method/HTTP/effect tables
       python-bootstrap.ts        # Rules/frontend loading
       python-events.ts           # Public event/result folding
       python-scope.ts            # Scope + import helpers
       python-timeline.ts         # Timeline collection
-      python-inference.ts        # Value/path/container inference
+      python-inference.ts        # Public inference barrel
+      python-inference-values.ts # Literal/arg parsing
+      python-inference-effects.ts # Builtin purity + effect helpers
+      python-inference-paths.ts  # Path + iterated-path inference
+      python-inference-containers.ts # Container + iterable inference
       python-classifier.ts       # Call/raise classification
       python-ir.ts               # Internal IR + analyzer metadata
       python-values.ts           # Shared PythonValue / PythonArgs types
@@ -772,21 +808,24 @@ opencode-python-tool/
 
 1. Add declarative call, method, or path rules to `src/python/python-rules.json` when the pattern fits the existing rule model.
 2. Use `bun run ../src/python-session-report.ts --update-candidates` from `.opencode/` to gather unknown-call evidence into `candidates.unknown`.
-3. Use `--review-next` and `--decide` to classify candidates in the sidecar review ledger. Exact fingerprint matches replay directly, and cross-snippet reuse only happens when `kind` plus canonical callable context match; then use `--promote-reviewed` to move only safe single-identity call targets into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
-4. Use `--suggest-rules` to preview unanimous reviewed clusters as copy-pasteable rule fragments (`calls.*` today, or bounded `guarded.methods` fragments when receiver evidence is sufficient), and `--compare-rules <file>` to diff review outcomes against an alternate rules file before promoting changes.
-5. Prefer guarded declarative rules before adding new procedural branches. Put classification logic in `src/python/python-classifier.ts`, inference/path/container logic in `src/python/python-inference.ts`, and scope/timeline mechanics in `src/python/python-scope.ts` or `src/python/python-timeline.ts`; the guarded schema lives in `src/python/python-rule-schema.ts` and `src/python/python-guard-eval.ts`.
-6. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.
-7. If the new pattern should be denied by default, add the corresponding
+3. Use `--review-families` or `--review-families-json` to pick the best family-level target before dropping into snippet review. Treat labels as triage only: `rule` means the family shape is stable, `provenance` means receiver/source evidence matters, `manual-split` means one blanket rule is too broad, and `blocked` means you still need modeling or code inspection before a family-level change.
+4. Use selectors when they help: `--module pytest` is a good clean module-backed example, `--family re.Match.group` is a good provenance-backed example, and repeated dotted calls such as `hashlib.sha256` can still stay blocked until the current workflow trusts them enough for module-level action. Selector matching is exact, `--module` only works for trusted module roots, and `--family` / `--module` are mutually exclusive.
+5. Use `--review-next` with selectors when you want representative snippets for one family/module, or use broader `--review-tui` review without selectors when you want the full queue. Exact fingerprint matches replay directly, and cross-snippet reuse only happens when `kind` plus canonical callable context match.
+6. Use `--suggest-rules` to preview unanimous reviewed clusters as copy-pasteable rule fragments (`calls.*` today, or bounded `guarded.methods` fragments when receiver evidence is sufficient), and `--compare-rules <file>` to diff review outcomes against an alternate rules file before promoting changes.
+7. Only after the family looks safe and the representative snippets agree, use `--promote-reviewed` to move single-identity call targets into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
+8. Prefer guarded declarative rules before adding new procedural branches. Put classification logic in `src/python/python-classifier.ts`, replay-state transitions in `src/python/python-replay.ts`, inference/path/container logic in `src/python/python-inference.ts` and its focused submodules, and scope/timeline mechanics in `src/python/python-scope.ts` or `src/python/python-timeline.ts`; the guarded schema lives in `src/python/python-rule-schema.ts` and `src/python/python-guard-eval.ts`.
+9. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.
+10. If the new pattern should be denied by default, add the corresponding
    `exec:<pattern>` deny rule to both `.opencode/opencode.jsonc` and the
    README's recommended configuration.
-8. Run `bun test` from `.opencode/` to validate.
+11. Run `bun test` from `.opencode/` to validate.
 
 ### Adding new SDK coverage
 
 For SDK-specific instance tracking (like ghapi/Atlassian patterns):
 
 1. Define constructor sets and method allowlists in `src/python/python-rules.json` or `src/python/python-known-methods.ts`, depending on whether the surface is declarative or static-data-backed.
-2. Add instance tracking or replay seeding in `src/python/python-analyze.ts` only when it truly belongs to orchestrator-owned replay order; otherwise prefer `src/python/python-scope.ts` or `src/python/python-inference.ts`.
+2. Add instance tracking or replay seeding in `src/python/python-replay.ts` only when it truly belongs to replay order; otherwise prefer `src/python/python-scope.ts` or `src/python/python-inference.ts`.
 3. Resolve call behavior in `src/python/python-classifier.ts`, keeping the orchestrator limited to replay sequencing and event folding.
 4. Add comprehensive tests covering: direct calls, instance method calls,
    reassignment invalidation, alias deferral, and provenance requirements.

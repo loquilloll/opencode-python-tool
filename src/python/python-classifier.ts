@@ -28,7 +28,7 @@ import {
 import type { AtlassianClientFamily, Rules, Scope } from "./python-analyze-types"
 import type { PythonEventEvidence, ReceiverKind, ResolvedEffect } from "./python-ir"
 import { type ContainerKind, trackableReceiverInfo, trackableSelfAttributePath } from "./python-provenance"
-import { atlassianInstance, containerInstance, hasBoundName, hasGhapiInstance, hasHttpResponseInstance, hasTrustedModuleBinding, httpClientInstance, name, resolvedName, trustedExactDirectImportCall, trustedResolvedModuleCall } from "./python-scope"
+import { atlassianInstance, containerInstance, hasBoundName, hasGhapiInstance, hasHttpResponseInstance, httpClientInstance, resolvedName, trustedCallWithPolicy } from "./python-scope"
 import { canonicalPathMethodCall, pathFromPathMethod } from "./python-timeline"
 import type { GuardedCallRule, GuardedMethodRule } from "./python-rule-schema"
 import type { PythonArgs as Args, PythonValue as Value } from "./python-values"
@@ -71,14 +71,6 @@ function classifyBuiltinEffectCall(call: string, node: Node, input: Args, curren
 
 function raiseValue(node: Node) {
   return node.childForFieldName("value") ?? node.childForFieldName("exception") ?? node.namedChildren[0] ?? null
-}
-
-function trustedImportlibMetadataVersionCall(node: Node | null, current: Scope) {
-  const raw = name(node)
-  if (!raw) return false
-  if (raw === "importlib.metadata.version") return trustedResolvedModuleCall(node, "importlib.metadata.version", current)
-  const parts = raw.split(".")
-  return parts.length === 2 && parts[1] === "version" && hasTrustedModuleBinding(current, parts[0] ?? "")
 }
 
 export function classifyRaise(node: Node, current: Scope): ResolvedEffect | undefined {
@@ -232,10 +224,17 @@ function guardedCallEffect(
   canonicalCall?: string,
 ): { effect?: ResolvedEffect; guardFailure?: PythonEventEvidence } {
   const evaluation = evaluateGuardsDetailed(rule.guards, {
+    positionalCount: input.positional.length,
     keywordNames: new Set(Object.keys(input.keyword)),
     hasKwargSplat: hasDictionarySplat(node),
     hasBoundName: (name) => hasBoundName(current, name),
     pickLiteral: (index, names) => pick(input, index, names)?.literal,
+    pickKeywordLiteral: (names) => {
+      for (const name of names) {
+        const literal = input.keyword[name]?.literal
+        if (literal !== undefined) return literal
+      }
+    },
   })
   if (!evaluation.matched) {
     return {
@@ -270,8 +269,15 @@ function guardedMethodEffect(
   const receiverKind = pathMethod ? "path" : trackedReceiverKind === "match" ? "match" : undefined
   const evaluation = evaluateGuardsDetailed(rule.guards, {
     receiverKind,
+    positionalCount: input.positional.length,
     keywordNames: new Set(Object.keys(input.keyword)),
     hasKwargSplat: hasDictionarySplat(node),
+    pickKeywordLiteral: (names) => {
+      for (const name of names) {
+        const literal = input.keyword[name]?.literal
+        if (literal !== undefined) return literal
+      }
+    },
   })
   if (!evaluation.matched) {
     return {
@@ -307,13 +313,7 @@ export function classify(
   const fn = node.childForFieldName("function")
   const call = resolvedName(fn, current)
   if (!call) return effect("unknown", { outwardCall: "dynamic-call" })
-  if (call === "importlib.import_module" && !trustedExactDirectImportCall(fn, call, current)) {
-    return effect("unknown", { resolvedCall: call, outwardCall: `${CALLABLE_UNKNOWN_PREFIX}${call}` })
-  }
-  if (call === "importlib.metadata.version" && !(trustedExactDirectImportCall(fn, call, current) || trustedImportlibMetadataVersionCall(fn, current))) {
-    return effect("unknown", { resolvedCall: call, outwardCall: `${CALLABLE_UNKNOWN_PREFIX}${call}` })
-  }
-  if ((call === "collections.Counter" || call === "collections.defaultdict" || call === "hashlib.sha256" || call === "pytest.main" || call === "re.compile") && !trustedResolvedModuleCall(fn, call, current)) {
+  if (!trustedCallWithPolicy(fn, call, current)) {
     return effect("unknown", { resolvedCall: call, outwardCall: `${CALLABLE_UNKNOWN_PREFIX}${call}` })
   }
 

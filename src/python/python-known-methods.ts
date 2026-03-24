@@ -1,6 +1,8 @@
 import type { PythonEventKind } from "./python-analyze-types"
 import type { ResolvedEffectAtom } from "./python-ir"
 
+export type TrustedCallPolicy = "resolved-module" | "module-qualified-or-exact-direct-import" | "exact-direct-import" | "module-binding-or-direct-import"
+
 export const BODY_SCOPE_TYPES = new Set(["function_definition", "class_definition", "lambda"])
 export const COMPREHENSION_SCOPE_TYPES = new Set(["generator_expression", "list_comprehension", "dictionary_comprehension", "set_comprehension"])
 export const ASSIGNMENT_CONTAINER_TYPES = new Set(["tuple", "list", "pattern_list", "tuple_pattern", "list_pattern"])
@@ -110,6 +112,21 @@ export const OSPATH_INT_CALLS = new Set(["os.path.getsize"])
 export const OSPATH_FLOAT_CALLS = new Set(["os.path.getatime", "os.path.getctime", "os.path.getmtime"])
 export const HASHLIB_HASH_CALLS = new Set(["hashlib.sha256"])
 export const HASHLIB_HASH_PURE_METHODS = new Set(["copy", "digest", "hexdigest"])
+export const ZLIB_BYTES_CALLS = new Set(["zlib.decompress"])
+export const TRUSTED_MODULE_BINDINGS = new Set(["importlib.metadata", "mypy.api"])
+export const TRUSTED_CALL_POLICIES = new Map<string, TrustedCallPolicy>([
+  ["collections.Counter", "resolved-module"],
+  ["collections.defaultdict", "resolved-module"],
+  ["hashlib.sha256", "resolved-module"],
+  ["importlib.import_module", "module-qualified-or-exact-direct-import"],
+  ["importlib.metadata.version", "module-binding-or-direct-import"],
+  ["kiota_abstractions.request_information.RequestInformation", "exact-direct-import"],
+  ["mypy.api.run", "module-binding-or-direct-import"],
+  ["pytest.main", "resolved-module"],
+  ["re.compile", "resolved-module"],
+  ["tabulate.tabulate", "exact-direct-import"],
+  ["zlib.decompress", "resolved-module"],
+])
 export const ZONEINFO_ZONE_CALLS = new Set(["zoneinfo.ZoneInfo", "zoneinfo.ZoneInfo.from_file", "zoneinfo.ZoneInfo.no_cache"])
 export const ZONEINFO_SET_CALLS = new Set(["zoneinfo.available_timezones"])
 export const MOCK_PURE_METHODS = new Set([

@@ -242,6 +242,116 @@ The repo supports snippet-first review (`--review-next`, `--review-tui`) and que
 - Commit: Not committed
 - PR/Jira: None
 
+#### Notes
+
+- Status: In progress (2026-03-23)
+- Summary: Extended Phase 5 provenance so the remaining `e.split` / `e.startswith` bucket is no longer pending in the live review queue. The new bounded path covers same-scope lambda helpers, trusted mutation-built exact receiver-path string lists, and trusted dict-subscript string-list iteration while preserving conservative escapes, alias/base mutation invalidation, and mixed-callsite blocking.
+- Files: `src/python/python-analyze.ts`, `src/python/python-analyze-types.ts`, `src/python/python-scope.ts`, `src/python/python-timeline.ts`, `src/python/python-inference-containers.ts`, `src/python/python-replay.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.split`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.startswith`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: The live queue totals dropped to `67` pending candidates across `57` blocked families with `0` module rollups, and `--review-next --family e.split` / `e.startswith` now report no pending items. A follow-up hardening pass may still tighten the root-scoped dict-value string proof used for dynamic subscript builders before moving on to `tabulate`, `text.count` / `text.endswith`, or the remaining blocked path/Pydantic families.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-23)
+- Summary: Tightened the follow-on hardening pass by making helper exact-path string seeds scope-aware and preserving direct dict-subscript iteration as conservative in the main pass. Same-scope `def`/lambda helper seeding and exact receiver-path helper calls remain bounded, but one direct dict-subscript `e.split` / `e.startswith` snippet is intentionally back in the blocked queue because we did not ship a root-wide dict proof.
+- Files: `src/python/python-analyze.ts`, `src/python/python-analyze-types.ts`, `src/python/python-scope.ts`, `src/python/python-timeline.ts`, `src/python/python-inference-containers.ts`, `src/python/python-replay.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.split`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.startswith`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: The queue is now `73` pending candidates across `59` blocked families / `36` snippets because the remaining direct dict-subscript builder example stays conservative by design. If we want to remove that snippet safely later, we need a persisted exact-path proof for main-pass dict reads rather than any root-wide dict promotion.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-23)
+- Summary: Added an exact-path main-pass proof for direct dict-subscript reads by persisting trusted same-syntax string-list builders into `receiverElementKinds`, then tightened the invalidation surface for escapes, shadowing, alias-root rebinding, alternate-key writes, and raw subscript-to-identifier escapes. Same-syntax reads like `inv[current] -> inv[current]` can now stay pure, while path-mismatched reads like `inv[current] -> inv['literal']` remain conservative.
+- Files: `src/python/python-analyze.ts`, `src/python/python-provenance.ts`, `src/python/python-replay.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.split`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.startswith`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: The original path-mismatch snippet is still blocked, so the remaining gap is value-level key canonicalization rather than exact-path persistence. The refreshed family totals rose to `103` pending candidates across `77` families / `41` snippets after these repo-local exact-path regression additions changed the scanned session snippet outputs.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: Extended the exact-path main-pass proof with bounded value-level key equivalence for exact string keys, so `inv[current]` and `inv['literal']` can share direct-read provenance when the key literal is proven exactly. The invalidation rules now preserve different proven sibling keys while still clearing same-key aliases, alternate-key overwrites, and subscript-to-identifier escapes.
+- Files: `src/python/python-analyze.ts`, `src/python/python-analyze-types.ts`, `src/python/python-key-equivalence.ts`, `src/python/python-provenance.ts`, `src/python/python-replay.ts`, `src/python/python-scope.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.split`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.startswith`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: The remaining blocked session-report snippet no longer needs same-syntax matching, but it still depends on exact value propagation through derived keys like `line.split(...)[1].strip()`. The next safe reduction in this bucket is exact string-value propagation for bounded pure string derivations and exact iterated literals, not broader dict-root promotion.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: Tightened the value-equivalence pass so exact-key proofs survive different proven sibling-key writes but still invalidate on same-key aliases, owner-scope alias-root shadowing, and raw subscript-to-identifier escapes. The final review approved this exact-key boundary; the remaining blocked `e.split` / `e.startswith` session snippet is now specifically about derived-key exact value propagation rather than direct dict-subscript equivalence.
+- Files: `src/python/python-key-equivalence.ts`, `src/python/python-provenance.ts`, `src/python/python-replay.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.split`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.startswith`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: The queue still reports `44` snippets / `106` pending candidates / `79` families because the surviving `e.split` / `e.startswith` exemplar uses `current = line.split(...)[1].strip()` and other derived exact-key flows. The next safe step is bounded exact string-value propagation for iterated literal lines and pure string derivations, not more subscript-root widening.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: Added a bounded exact string-value layer for pure derivations and iterated exact literal lines, then threaded it into the exact-key dict-subscript proof. Exact key equivalence now covers singleton iterated literal-line flows and exact `split`/`rsplit`/`splitlines` plus `strip`-family derivations, while mixed-line or dynamic-origin loops stay conservative without branch narrowing.
+- Files: `src/python/python-analyze-types.ts`, `src/python/python-key-equivalence.ts`, `src/python/python-provenance.ts`, `src/python/python-replay.ts`, `src/python/python-scope.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.split`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.startswith`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: The remaining blocked session-report exemplar still depends on branch-sensitive and dynamic-origin exact values from file-backed `inv_lines`, so the next safe reduction would be explicit control-flow/value narrowing for exact string sets rather than broader key-equivalence widening. Queue totals remain `44` snippets / `106` pending candidates / `79` families after this bounded derivation pass.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: Added bounded `if`/`elif` startswith branch narrowing for exact string sets inside timeline replay, so exact keys can now survive mixed literal-line loops when the narrowing condition proves the active line shape. The saved-session `e.split` / `e.startswith` exemplar remains blocked only because its loop source comes from dynamic file content, not because the branch-sensitive literal case is unsupported.
+- Files: `src/python/python-analyze-types.ts`, `src/python/python-key-equivalence.ts`, `src/python/python-timeline.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.split`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family e.startswith`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: This likely exhausts the safe `e.split` / `e.startswith` reductions inside plan 77 without introducing content-sensitive file reads or broader branch analysis. The remaining exemplar now points at dynamic file-backed exact values, so the next practical work in this bucket would require a larger design change around dynamic-origin data rather than another small provenance patch.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: After exhausting the safe `e.split` / `e.startswith` provenance work, moved automatically to the next blocked string receiver bucket and fixed `text.count` / `text.endswith` by extending iterated path provenance through trusted `sorted(...)` wrappers around identity generator expressions. This keeps the fix on the producer side: `for path in files` now retains `Path` provenance, so `path.read_text()` seeds `text` as a tracked string and the existing pure string-method tables classify both calls without new family-specific rules.
+- Files: `src/python/python-inference-paths.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-inference.test.ts`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family text.count`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family text.endswith`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: `text.count` / `text.endswith` now show no pending review items. The refreshed queue is down to `41` snippets / `90` pending candidates / `70` families, and the next likely blocked family is `zlib.decompress` unless another provenance cluster emerges from the refreshed summary.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: Replaced the growing hardcoded trusted-call OR chains with a centralized `TRUSTED_CALL_POLICIES` registry and shared `trustedCallWithPolicy()` helper, then used that refactor to land the next bounded producer-side reductions for `zlib.decompress`, bytes slice/split decode chains, and parent-derived path joins. This cleared `zlib.decompress`, `data.decode`, `raw.split.decode`, `raw.split.decode.splitlines`, `target.relative_to`, and `target.with_suffix` without widening unrelated families.
+- Files: `src/python/python-known-methods.ts`, `src/python/python-scope.ts`, `src/python/python-classifier.ts`, `src/python/python-inference-containers.ts`, `src/python/python-inference-paths.ts`, `src/python/python-rules.json`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `.opencode/test/python-inline-permissions-inference.test.ts`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family zlib.decompress`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family data.decode`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family raw.split.decode`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family raw.split.decode.splitlines`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family target.relative_to`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family target.with_suffix`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: The queue is now down to `36` snippets / `62` pending candidates / `55` families. The remaining `e.split` / `e.startswith` and `body.decode` / `text.splitlines` exemplars are larger dynamic/interprocedural provenance gaps, so the next genuinely new small buckets are likely `RequestInformation` or `tabulate` unless another producer-side family proves smaller after re-inspection.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: Cleared the next exact-call buckets after the zlib/path work by adding a guarded zero-arg direct-import rule for `kiota_abstractions.request_information.RequestInformation()`, a guarded exact-direct-import rule for `tabulate.tabulate()` with absent-or-literal `tablefmt`, and a conservative `exec` rule for trusted `mypy.api.run()` module bindings/direct imports. These reductions reused the centralized trust registry instead of adding more ad hoc classifier branches.
+- Files: `src/python/python-known-methods.ts`, `src/python/python-scope.ts`, `src/python/python-replay.ts`, `src/python/python-rule-schema.ts`, `src/python/python-guard-eval.ts`, `src/python/python-rules.json`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family RequestInformation`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family tabulate`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family api.run`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: `RequestInformation`, `tabulate`, and `api.run` now show no pending review items, bringing the queue down to `31` snippets / `57` pending candidates / `52` families. The remaining top families are either the already-exhausted dynamic string/provenance cluster (`e.split`, `e.startswith`, `text.splitlines`, `body.decode`) or medium-size container/provenance work, so future reductions are less likely to be one-file exact-call patches.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: Tightened the new exact-call family work so `exact-direct-import` now means exactly that: `RequestInformation()` and `tabulate()` stay limited to exact unaliased direct imports, while `importlib.import_module()` keeps the broader module-qualified-or-direct-import behavior under a distinct trust policy. This leaves the recent RequestInformation/tabulate/api.run reductions intact while keeping the trust-policy naming and behavior aligned.
+- Files: `src/python/python-known-methods.ts`, `src/python/python-scope.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family RequestInformation`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family tabulate`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family api.run`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps(data['totals']))"`
+- Follow-ups: With the exact-call buckets aligned and cleared, the remaining queue is dominated by medium-size provenance clusters rather than more registry/rule-only fixes. The next likely productive work is either a new container/value-provenance slice or a decision to leave the remaining dynamic/interprocedural families queued.
+- Commit: Not committed
+- PR/Jira: None
+
 ## Risks and Guardrails
 
 - grouping by outward call alone is unsafe; batching must prefer canonical/source-aware identities and receiver evidence

@@ -28,8 +28,8 @@ This utility is not an OpenCode tool. Do not install it under `~/.config/opencod
 
 - reads saved tool parts from the OpenCode SQLite database
 - re-analyzes saved inline `state.input.code`
-- reports unknown callables in text or JSON
-- builds a snippet-centric review queue (`unknown` by default, optional `emit` via `--include-emit`, optional `pure` via `--include-pure`) with taxonomy confidence signals (`read`, `write`, `emit`, `exec`, `pure`, `unknown`)
+- reports unknown callables in text or JSON, excluding calls back into definitions declared in the same snippet
+- builds a snippet-centric review queue (`unknown` by default, optional `emit` via `--include-emit`, optional `pure` via `--include-pure`) with taxonomy confidence signals (`read`, `write`, `emit`, `exec`, `pure`, `unknown`), again excluding inline definition call names
 - stores human decisions in a sidecar review ledger with exact fingerprint history plus review identity metadata (`kind` and `sourceCall` when available)
 - can promote consistently reviewed callables into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec` when one outward call maps to one reviewed identity
 - can merge findings into `candidates.unknown` in a rules file
@@ -155,6 +155,65 @@ What this does not do:
 
 ## Review Loop
 
+Recommended sequence:
+
+1. run `--review-families` or `--review-families-json` to find the biggest family-level targets
+2. decide whether the cluster looks like a `rule`, `provenance`, `manual-split`, or `blocked` case
+3. only then drop into `--review-next` for selector-backed representative snippets, or use broader `--review-tui` review without selectors when you want the full queue
+
+### Summarize pending families first
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-families
+```
+
+This prints a read-only summary of pending family clusters before you enter one-snippet-at-a-time review. It is meant for triage only and does not write decisions or promote rules.
+
+You can pivot directly to one target with selectors:
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-families --family re.Match.group
+```
+
+or:
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next --module pytest
+```
+
+Selector matching is exact. `--module` only matches trusted module roots from the family summary, and `--family` / `--module` are mutually exclusive.
+
+Recommendation labels mean:
+
+- `rule`: one stable family with a trusted canonical source and no alias/evidence splits
+- `provenance`: the family looks real, but source or receiver evidence is part of why it is safe
+- `manual-split`: aliases or evidence variants exist, so one blanket family decision would be too broad
+- `blocked`: no safe family-level action is inferred yet
+
+Module rollups only appear when the family carries a trusted canonical module root.
+
+How to use those labels:
+
+- `rule`: inspect a few representative snippets, then test a family-level rule draft
+- `provenance`: keep receiver/source context in view while reviewing snippets and rule drafts
+- `manual-split`: keep drilling into snippet variants; do not collapse the family into one rule yet
+- `blocked`: treat the summary as a signal to inspect analyzer behavior or code context first
+
+Common batchable targets already seen in this repo:
+
+- module-backed families like `pytest.main`
+- trusted stdlib helper families once canonical source is stable
+- recurring library model APIs that stay on one canonical callable surface
+
+Common provenance-heavy buckets:
+
+- regex match or pattern methods such as `re.Match.group`
+- tracked string/container methods whose safety depends on origin
+- alias-heavy outward calls where several contexts share one display name
+
 ### Show the next pending snippet
 
 ```bash
@@ -179,7 +238,7 @@ bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-ca
 This prints:
 
 - one snippet at a time
-- each unresolved candidate in that snippet
+- each unresolved candidate in that snippet, excluding call names that resolve to definitions declared in the same snippet
 - candidate fingerprints
 - taxonomy confidence scores (`read`, `write`, `emit`, `exec`, `pure`, `unknown`)
 - source-call context when available (for example `pathlib.Path.joinpath` under `p.joinpath`)
@@ -225,6 +284,15 @@ bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-j
 ```
 
 Use this when you want to inspect the queue programmatically or feed it into another OpenCode workflow. `--review-json` keeps the stored heuristic scores; `opencode run` scoring is applied by `--review-next`.
+
+### Family summary as JSON
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-families-json
+```
+
+Use this when you want stable machine-readable family/module summaries derived from the pending queue. The JSON output mirrors the internal family cluster model and stays read-only.
 
 ## One-Key Review UI
 
@@ -311,6 +379,14 @@ Current suggestions stay intentionally narrow:
 - output is preview-only; no rules file writes happen
 - do not combine preview modes with `--record-decision`; record decisions first, then rerun preview output
 
+Family-first validation flow:
+
+1. pick the target family or module from `--review-families`
+2. inspect representative snippets with `--review-next` plus `--family` or `--module`
+3. use `--suggest-rules` to see whether the reviewed family now resolves to a safe declarative fragment
+4. use `--compare-rules` against a draft rules file when you want to sanity-check queue impact before promotion
+5. only then use `--promote-reviewed` when the reviewed family collapses to safe single-identity outward calls
+
 Review rendering now surfaces optional analyzer evidence when available, such as receiver kind, dependency signatures, and explicit guard-failure reasons.
 
 ## Compare Alternate Rules
@@ -343,23 +419,36 @@ For each candidate, decide whether it should:
 - move into a live rule bucket
 - be handled by new procedural logic in `src/python/python-analyze.ts`
 
-### 2. Review and classify snippet contexts
+### 2. Summarize candidate families
+
+Before dropping into snippet review, inspect the family summary so you can separate whole-family rule candidates from provenance work:
+
+```bash
+OPENCODE_PYTHON_RULES="$RULES" \
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-families
+```
+
+Use this step to decide whether the family is ready for rule drafting (`rule`), still depends on receiver/source evidence (`provenance`), must stay split (`manual-split`), or needs more modeling/code inspection first (`blocked`).
+
+### 3. Review and classify snippet contexts
 
 Use the review loop until each callable has a reviewed decision and any callable-level conflicts are resolved.
 
 ```bash
 OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next --family re.Match.group
 ```
 
 Then apply your decisions:
 
 ```bash
 OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next --decide 1=read,2=write
+bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next --family re.Match.group --decide 1=read,2=write
 ```
 
-### 3. Promote reviewed entries
+Keep snippet review scoped to the family or module you chose from the summary. The drilldown is still evidence review, not a shortcut around inspecting representative code.
+
+### 4. Promote reviewed entries
 
 If a callable is consistently reviewed and maps cleanly to a live call bucket, promote it with:
 
@@ -380,7 +469,7 @@ Typical destinations:
 - `methods.write`
 - `pathCalls.read`
 
-### 4. Re-run the report
+### 5. Re-run the report
 
 After promotion, run the report again against the same rules file:
 
@@ -391,7 +480,7 @@ bun run ../src/python-session-report.ts --db "$DB"
 
 The promoted callable should stop appearing in the default review queue, and it should also stop appearing as unknown.
 
-### 5. Sync the real change back into the repo
+### 6. Sync the real change back into the repo
 
 The repository is still the canonical source of truth.
 
@@ -403,7 +492,7 @@ $REPO/src/python/python-rules.json
 
 Then validate and commit it in the repo. Otherwise a future refresh can overwrite the global-only change.
 
-### 6. Use TypeScript only when JSON is not enough
+### 7. Use TypeScript only when JSON is not enough
 
 If a candidate needs richer logic than a declarative rule can express, update:
 
@@ -447,9 +536,12 @@ bun -e "import('./tools/python.ts').then(() => console.log('python tool loads ok
 
 1. Run a read-only report.
 2. Run `--update-candidates` if you want to capture evidence in the rules file.
-3. Use `--review-tui` for the fastest one-key classification loop, or `--review-next` / `--decide` if you need a scriptable path.
-4. Apply decisions in the TUI or with `--decide`.
-5. Run `--promote-reviewed` to move consistently reviewed single-identity call targets into live call buckets.
-6. Re-run the report to confirm they are no longer unknown.
-7. Sync vetted rule changes back into `src/python/python-rules.json` in this repo.
-8. Commit the repo change.
+3. Run `--review-families` or `--review-families-json` to pick the best family-level target first.
+4. Use `--family` or `--module` to pivot into representative snippets when you want a narrower drilldown.
+5. Use `--review-next` / `--decide` for selector-backed snippet review, or `--review-tui` when you want the broader queue without selectors.
+6. Apply decisions in the TUI or with `--decide`.
+7. Use `--suggest-rules` or `--compare-rules` to validate the family-level draft before promotion.
+8. Run `--promote-reviewed` to move consistently reviewed single-identity call targets into live call buckets.
+9. Re-run the report to confirm they are no longer unknown.
+10. Sync vetted rule changes back into `src/python/python-rules.json` in this repo.
+11. Commit the repo change.
