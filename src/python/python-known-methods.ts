@@ -110,13 +110,16 @@ export const OSPATH_STRING_CALLS = new Set([
 export const OSPATH_TUPLE_CALLS = new Set(["os.path.split", "os.path.splitdrive", "os.path.splitext", "os.path.splitroot"])
 export const OSPATH_INT_CALLS = new Set(["os.path.getsize"])
 export const OSPATH_FLOAT_CALLS = new Set(["os.path.getatime", "os.path.getctime", "os.path.getmtime"])
-export const HASHLIB_HASH_CALLS = new Set(["hashlib.sha256"])
+export const HASHLIB_HASH_CALLS = new Set(["hashlib.sha1", "hashlib.sha256"])
 export const HASHLIB_HASH_PURE_METHODS = new Set(["copy", "digest", "hexdigest"])
 export const ZLIB_BYTES_CALLS = new Set(["zlib.decompress"])
 export const TRUSTED_MODULE_BINDINGS = new Set(["importlib.metadata", "mypy.api"])
 export const TRUSTED_CALL_POLICIES = new Map<string, TrustedCallPolicy>([
   ["collections.Counter", "resolved-module"],
   ["collections.defaultdict", "resolved-module"],
+  ["difflib.unified_diff", "module-qualified-or-exact-direct-import"],
+  ["github.Github", "exact-direct-import"],
+  ["hashlib.sha1", "resolved-module"],
   ["hashlib.sha256", "resolved-module"],
   ["importlib.import_module", "module-qualified-or-exact-direct-import"],
   ["importlib.metadata.version", "module-binding-or-direct-import"],

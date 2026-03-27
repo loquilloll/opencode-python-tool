@@ -212,7 +212,7 @@ describe("python session report", () => {
         ),
       })
 
-      const report = await scan({ db: tmp.file, samples: 3 })
+      const report = await scan({ db: tmp.file, samples: 3, includePure: true })
       expect(report.totals.unknownEvents).toBe(2)
       expect(report.unknown.map((item) => item.call).sort()).toEqual(["reader.fetch", "writer.save"])
       expect(report.occurrences.map((item) => item.call).sort()).toEqual(["reader.fetch", "writer.save"])
@@ -1679,7 +1679,7 @@ describe("python session report", () => {
         data: data("python", { code: "import hashlib\nhashlib.sha256(blob)" }),
       })
 
-      const report = await scan({ db: tmp.file, samples: 3 })
+      const report = await scan({ db: tmp.file, samples: 3, includePure: true })
       const queue = await review(report, { ledger })
       const family = reviewFamilies(queue).find((item) => item.canonicalSource === "hashlib.sha256")
       expect(family).toEqual(

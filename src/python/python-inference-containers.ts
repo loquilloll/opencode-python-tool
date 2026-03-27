@@ -38,11 +38,18 @@ import {
   ZONEINFO_ZONE_CALLS,
 } from "./python-known-methods"
 import type { Scope } from "./python-analyze-types"
+import { exactIteratedStringSet } from "./python-key-equivalence"
 import {
   containerInstance,
+  directImportTarget,
   hasBoundName,
+  hasTrustedBinding,
+  lookupCallableFactoryContainer,
+  hasTrustedDirectBinding,
   hasHttpResponseInstance,
+  hasTrustedModuleRoot,
   iteratedElementInstance,
+  name,
   resolvedName,
   trustedCallWithPolicy,
 } from "./python-scope"
@@ -67,7 +74,76 @@ function hasJsonCustomizers(node: Node, input: ReturnType<typeof args>) {
   return Array.from(JSON_CONTAINER_CUSTOMIZER_KEYWORDS).some((keyword) => keyword in input.keyword)
 }
 
+const DIRECT_HELPER_RETURN_CONTAINER_KINDS = new Set<ContainerKind>([
+  "datetime-date",
+  "datetime-datetime",
+  "datetime-time",
+  "datetime-timedelta",
+  "datetime-timezone",
+])
+
+function helperReturnContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+  if (!node || node.type !== "call") return
+  const fn = node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const kind = lookupCallableFactoryContainer(current, fn.text)
+  if (kind && DIRECT_HELPER_RETURN_CONTAINER_KINDS.has(kind)) return kind
+}
+
+function trustedDatetimeRoot(node: Node | null, resolvedCall: string | undefined, current: Scope) {
+  if (!resolvedCall?.startsWith("datetime.")) return true
+  const rawRoot = name(node)?.split(".")[0]
+  if (rawRoot !== "datetime") return true
+  return !hasBoundName(current, rawRoot) || hasTrustedModuleRoot(current, rawRoot) || hasTrustedBinding(current, rawRoot) || hasTrustedDirectBinding(current, rawRoot)
+}
+
+function mergeConditionalContainerKinds(left: ContainerKind | undefined, right: ContainerKind | undefined) {
+  if (left && right && left === right) return left
+  if (left === "json" && (right === "dict" || right === "list")) return "json"
+  if (right === "json" && (left === "dict" || left === "list")) return "json"
+  return
+}
+
+function mergeTrackedConditionalContainerKinds(left: ContainerKind | undefined, right: ContainerKind | undefined) {
+  const merged = mergeConditionalContainerKinds(left, right)
+  if (merged) return merged
+  if (left === "string" && right === "string") return "string"
+  return
+}
+
+function binaryOperatorSymbol(node: Node) {
+  const left = node.childForFieldName("left")
+  const right = node.childForFieldName("right")
+  if (!left || !right) return
+  return node.text.slice(left.endIndex - node.startIndex, right.startIndex - node.startIndex).trim()
+}
+
+function binaryOperatorContainerKind(node: Node | null, current: Scope, tracked: boolean): ContainerKind | undefined {
+  node = unwrapParenthesized(node)
+  if (!node || node.type !== "binary_operator") return
+  const left = node.childForFieldName("left")
+  const right = node.childForFieldName("right")
+  const leftKind = tracked
+    ? trackedContainerKind(left, current) ?? returnedTrackedContainerKind(left, current)
+    : containerKind(left, current)
+  const rightKind = tracked
+    ? trackedContainerKind(right, current) ?? returnedTrackedContainerKind(right, current)
+    : containerKind(right, current)
+  const operator = binaryOperatorSymbol(node)
+  if (!operator) return
+  if (leftKind === "counter" && rightKind === "counter" && (operator === "+" || operator === "-" || operator === "&" || operator === "|")) return "counter"
+  if (operator === "-" && ((leftKind === "datetime-datetime" && rightKind === "datetime-datetime") || (leftKind === "datetime-date" && rightKind === "datetime-date"))) {
+    return "datetime-timedelta"
+  }
+}
+
+function conditionalExpressionBranches(node: Node) {
+  const [consequence, _condition, alternative] = node.namedChildren
+  return { consequence: consequence ?? null, alternative: alternative ?? null }
+}
+
 function containerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+  node = unwrapParenthesized(node)
   if (!node) return
   if (node.type === "list") return "list"
   if (node.type === "tuple") return "tuple"
@@ -75,6 +151,7 @@ function containerKind(node: Node | null, current: Scope): ContainerKind | undef
     const valueKind = homogeneousMappingValueKind(node.namedChildren, current)
     if (valueKind === "list") return "dict-list-values"
     if (valueKind === "set") return "dict-set-values"
+    if (valueKind === "counter") return "dict-counter-values"
     return "dict"
   }
   if (node.type === "set") return "set"
@@ -88,6 +165,7 @@ function containerKind(node: Node | null, current: Scope): ContainerKind | undef
     if (base === "json") return "json"
     if (base === "dict-list-values") return "list"
     if (base === "dict-set-values") return "set"
+    if (base === "dict-counter-values") return "counter"
     if (base === "string" && (subscript?.type === "slice" || subscript?.text.includes(":"))) return "string"
     if (base === "bytes" && (subscript?.type === "slice" || subscript?.text.includes(":"))) return "bytes"
     if (base === "bytearray" && (subscript?.type === "slice" || subscript?.text.includes(":"))) return "bytearray"
@@ -100,11 +178,16 @@ function containerKind(node: Node | null, current: Scope): ContainerKind | undef
   if (node.type === "boolean_operator") {
     const left = containerKind(node.childForFieldName("left"), current)
     const right = containerKind(node.childForFieldName("right"), current)
-    if (left && right && left === right) return left
-    if (left === "json" && (right === "dict" || right === "list")) return "json"
-    if (right === "json" && (left === "dict" || left === "list")) return "json"
-    return
+    return mergeConditionalContainerKinds(left, right)
   }
+  if (node.type === "conditional_expression") {
+    const { consequence, alternative } = conditionalExpressionBranches(node)
+    const consequenceKind = containerKind(consequence, current)
+    const alternativeKind = containerKind(alternative, current)
+    return mergeConditionalContainerKinds(consequenceKind, alternativeKind)
+  }
+  const binaryKind = binaryOperatorContainerKind(node, current, false)
+  if (binaryKind) return binaryKind
   if (node.type !== "call") return
   const call = resolvedName(node.childForFieldName("function"), current)
   if (call === "list") return "list"
@@ -147,7 +230,7 @@ function homogeneousMappingValueKind(nodes: readonly Node[], current: Scope): Co
     .filter((node): node is Node => Boolean(node))
   if (values.length === 0) return
   const first = trackedContainerKind(values[0] ?? null, current) ?? returnedTrackedContainerKind(values[0] ?? null, current)
-  if (first !== "list" && first !== "set") return
+  if (first !== "list" && first !== "set" && first !== "counter") return
   if (values.slice(1).every((node) => (trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)) === first)) {
     return first
   }
@@ -172,8 +255,11 @@ function bytesKind(node: Node | null, current: Scope): "bytes" | "bytearray" | "
 
 function matchKind(node: Node | null, current: Scope): "match" | undefined {
   if (!node || node.type !== "call") return
-  const call = resolvedName(node.childForFieldName("function"), current)
-  if (call && MATCH_RESULT_CALLS.has(call)) return "match"
+  const fn = node.childForFieldName("function")
+  const call = resolvedName(fn, current)
+  if (!call || !MATCH_RESULT_CALLS.has(call)) return
+  if (!call.startsWith("re.")) return "match"
+  if (hasTrustedModuleRoot(current, "re") || !hasBoundName(current, "re")) return "match"
 }
 
 function numericKind(node: Node | null): "int" | "float" | "complex" | undefined {
@@ -244,6 +330,38 @@ function defaultdictCallKind(node: Node, call: string, current: Scope): Containe
   const target = resolvedName(first, current)
   if (target === "set" && !hasBoundName(current, "set")) return "dict-set-values"
   if (target === "list" && !hasBoundName(current, "list")) return "dict-list-values"
+  if (target === "collections.Counter" && trustedCallWithPolicy(first, target, current)) return "dict-counter-values"
+}
+
+function itemsValueKind(node: Node | null, current: Scope): ContainerKind | undefined {
+  if (!node || node.type !== "call") return
+  const fn = node.childForFieldName("function")
+  if (fn?.type !== "attribute") return
+  const call = resolvedName(fn, current)
+  const method = call ? tail(call) : undefined
+  if (method !== "items") return
+  const input = args(node)
+  if (input.positional.length !== 0 || Object.keys(input.keyword).length !== 0 || hasDictionarySplat(node)) return
+  const receiver = fn.childForFieldName("object")
+  if (receiver?.type !== "identifier") return
+  const receiverKind = trackedReceiverContainerKind(receiver, current)
+  if (receiverKind === "dict-list-values") return "list"
+  if (receiverKind === "dict-set-values") return "set"
+  if (receiverKind === "dict-counter-values") return "counter"
+}
+
+function itemsKeyKind(node: Node | null, current: Scope): ContainerKind | undefined {
+  if (!node || node.type !== "call") return
+  const fn = node.childForFieldName("function")
+  if (fn?.type !== "attribute") return
+  const call = resolvedName(fn, current)
+  const method = call ? tail(call) : undefined
+  if (method !== "items") return
+  const input = args(node)
+  if (input.positional.length !== 0 || Object.keys(input.keyword).length !== 0 || hasDictionarySplat(node)) return
+  const receiver = fn.childForFieldName("object")
+  const keys = exactIteratedStringSet(current, receiver)
+  return keys ? "string" : undefined
 }
 
 function zoneinfoCallKind(call: string): ContainerKind | undefined {
@@ -259,13 +377,25 @@ function zlibCallKind(call: string): ContainerKind | undefined {
   if (ZLIB_BYTES_CALLS.has(call)) return "bytes"
 }
 
+function trustedImportedClassMroSource(node: Node | null, current: Scope) {
+  node = unwrapParenthesized(node)
+  if (!node || node.type !== "attribute") return false
+  if (node.childForFieldName("attribute")?.text !== "__mro__") return false
+  const object = unwrapParenthesized(node.childForFieldName("object"))
+  if (!object || object.type !== "identifier") return false
+  if (object.text !== "GraphServiceClient" || !hasTrustedDirectBinding(current, object.text)) return false
+  const target = directImportTarget(current, object.text)
+  return target === "msgraph.GraphServiceClient" || target === "msgraph.graph_service_client.GraphServiceClient"
+}
+
 export function directTemporaryContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+  node = unwrapParenthesized(node)
   if (!node) return
 
   const directCall = resolvedName(node, current)
   if (directCall) {
     const directDatetime = datetimeConstantKind(directCall)
-    if (directDatetime) return directDatetime
+    if (directDatetime && trustedDatetimeRoot(node, directCall, current)) return directDatetime
   }
 
   const directMatch = matchKind(node, current)
@@ -277,6 +407,8 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope):
   const directNumeric = numericKind(node)
   if (directNumeric) return directNumeric
   if (node.type !== "call") return
+  const helperReturn = helperReturnContainerKind(node, current)
+  if (helperReturn) return helperReturn
   const call = resolvedName(node.childForFieldName("function"), current)
   if (!call) return
   const input = args(node)
@@ -289,7 +421,10 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope):
   }
 
   const datetimeKind = datetimeCallKind(call)
-  if (datetimeKind) return datetimeKind
+  if (datetimeKind) {
+    if (!trustedDatetimeRoot(node.childForFieldName("function"), call, current)) return
+    return datetimeKind
+  }
   const timeKind = timeCallKind(call)
   if (timeKind) return timeKind
   const calendarKind = calendarCallKind(call)
@@ -357,7 +492,12 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope):
 }
 
 export function trackedContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+  node = unwrapParenthesized(node)
   if (!node) return
+  if (node.type === "identifier") {
+    const local = containerInstance(current, node.text)
+    if (local) return local
+  }
 
   const directMatch = matchKind(node, current)
   if (directMatch) return directMatch
@@ -371,12 +511,18 @@ export function trackedContainerKind(node: Node | null, current: Scope): Contain
   if (node.type === "boolean_operator") {
     const left = trackedContainerKind(node.childForFieldName("left"), current)
     const right = trackedContainerKind(node.childForFieldName("right"), current)
-    if (left && right && left === right) return left
-    if (left === "json" && (right === "dict" || right === "list")) return "json"
-    if (right === "json" && (left === "dict" || left === "list")) return "json"
-    if (left === "string" && right === "string") return "string"
-    return
+    return mergeTrackedConditionalContainerKinds(left, right)
   }
+
+  if (node.type === "conditional_expression") {
+    const { consequence, alternative } = conditionalExpressionBranches(node)
+    const consequenceKind = trackedContainerKind(consequence, current)
+    const alternativeKind = trackedContainerKind(alternative, current)
+    return mergeTrackedConditionalContainerKinds(consequenceKind, alternativeKind)
+  }
+
+  const binaryKind = binaryOperatorContainerKind(node, current, true)
+  if (binaryKind) return binaryKind
 
   if (node.type === "call") {
     const guarded = directTemporaryContainerKind(node, current)
@@ -395,14 +541,11 @@ export function trackedContainerKind(node: Node | null, current: Scope): Contain
 }
 
 export function trackedReceiverContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+  node = unwrapParenthesized(node)
   if (!node) return
 
-  const temporary = directTemporaryContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)
+  const temporary = directTemporaryContainerKind(node, current) ?? trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)
   if (temporary) return temporary
-  if (node.type === "subscript") {
-    const computed = trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)
-    if (computed) return computed
-  }
   return lookupTrackedReceiverContainerKind(current, node)
 }
 
@@ -455,6 +598,12 @@ export function returnedTrackedContainerKind(node: Node | null, current: Scope):
   if (receiverKind === "regex-pattern") {
     if (method === "search" || method === "match" || method === "fullmatch") return "match"
     if (method === "findall" || method === "split") return "list"
+  }
+  if (receiverKind === "match") {
+    const input = args(node)
+    if ((method === "group" || method === "__getitem__") && input.positional.length <= 1 && Object.keys(input.keyword).length === 0 && !hasDictionarySplat(node)) {
+      return "string"
+    }
   }
   if (receiverKind === "string" && STRING_RETURNING_METHODS.has(method)) return "string"
   if (receiverKind === "inspect-signature") {
@@ -590,6 +739,17 @@ export function rebindContainerKinds(target: Node | null, source: Node | null, c
     return [] as Array<{ name: string; kind: ContainerKind }>
   }
 
+  const itemValueKind = itemsValueKind(source, current)
+  const itemKeyKind = itemsKeyKind(source, current)
+  if (itemValueKind || itemKeyKind) {
+    const assignments: Array<{ name: string; kind: ContainerKind }> = []
+    const first = target.namedChildren[0]
+    const second = target.namedChildren[1]
+    if (itemKeyKind && first?.type === "identifier" && first.text !== "_") assignments.push({ name: first.text, kind: itemKeyKind })
+    if (itemValueKind && second?.type === "identifier" && second.text !== "_") assignments.push({ name: second.text, kind: itemValueKind })
+    return assignments
+  }
+
   const kind = enumeratedElementKind(source, current)
   if (!kind) return [] as Array<{ name: string; kind: ContainerKind }>
 
@@ -598,4 +758,14 @@ export function rebindContainerKinds(target: Node | null, source: Node | null, c
   return assignedNames(second)
     .filter((name) => name !== "_")
     .map((name) => ({ name, kind }))
+}
+
+export function rebindReceiverContainerKinds(target: Node | null, source: Node | null, current: Scope) {
+  if (!target || target.type !== "identifier" || target.text === "_") {
+    return [] as Array<{ path: string; kind: ContainerKind; deps: string[] }>
+  }
+  if (!trustedImportedClassMroSource(source, current)) {
+    return [] as Array<{ path: string; kind: ContainerKind; deps: string[] }>
+  }
+  return [{ path: `${target.text}.__module__`, kind: "string" as ContainerKind, deps: [target.text] }]
 }

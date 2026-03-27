@@ -22,6 +22,7 @@ export type ContainerKind =
   | "datetime-timezone"
   | "dict-list-values"
   | "dict-set-values"
+  | "dict-counter-values"
   | "regex-pattern"
   | "counter"
   | "hashlib-hash"

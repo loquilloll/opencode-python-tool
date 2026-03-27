@@ -236,6 +236,15 @@ function sequenceItemsFromNode(current: ValueScope, node: Node | null, guards: G
     return [items.map((item) => item![0])]
   }
 
+  if (node.type === "dictionary") {
+    if (node.namedChildren.some((child) => child.type !== "pair")) return
+    const pairs = node.namedChildren.filter((child) => child.type === "pair")
+    if (pairs.length === 0) return
+    const keys = pairs.map((pair) => stringSetFromNode(current, pair.childForFieldName("key"), guards))
+    if (keys.some((item) => !item || item.length !== 1)) return
+    return [(keys as string[][]).map((item) => item[0]!)]
+  }
+
   if (node.type === "identifier") {
     const exact = exactIteratedStringSetInstance(current, node.text)
     if (!exact) return

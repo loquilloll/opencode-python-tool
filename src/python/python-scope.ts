@@ -33,23 +33,31 @@ export function scope(parent?: Scope): Scope {
   return {
     parent,
     bindings: new Map<string, string>(),
+    directImportTargets: new Map<string, string>(),
     trustedDirectBindings: new Set<string>(),
     trustedBindings: new Set<string>(),
     trustedModuleBindings: new Set<string>(),
     trustedModuleRoots: new Set<string>(),
     localDefinitions: new Set<string>(),
     callableFactories: new Map<string, Node>(),
+    callableFactoryContainers: new Map<string, ContainerKind>(),
     containerInstances: new Map<string, ContainerKind>(),
     valueInstances: new Map<string, Value>(),
     exactStringSets: new Map<string, string[]>(),
     exactIteratedStringSets: new Map<string, string[]>(),
     iteratedElementInstances: new Map<string, ContainerKind>(),
     iteratedPathInstances: new Map<string, Value>(),
+    iteratedPathTupleInstances: new Map<string, Value[]>(),
     receiverContainers: new Map<string, ReceiverContainer>(),
     receiverElementKinds: new Map<string, ReceiverContainer>(),
     receiverSeedableStringLists: new Map<string, string[]>(),
     receiverPaths: new Map<string, ReceiverPath>(),
     pathInstances: new Map<string, Value>(),
+    sqliteConnectionInstances: new Map<string, string>(),
+    sqliteCursorInstances: new Map<string, string>(),
+    sqliteExecutedCursorInstances: new Set<string>(),
+    sqliteClosedCursorInstances: new Set<string>(),
+    trustedModelDumpInstances: new Set<string>(),
     httpClientInstances: new Map<string, string>(),
     httpResponseInstances: new Set<string>(),
     ghapiInstances: new Set<string>(),
@@ -93,6 +101,14 @@ export function hasTrustedDirectBinding(input: Scope, key: string) {
     if (current.bindings.has(key)) return false
   }
   return false
+}
+
+export function directImportTarget(input: Scope, key: string) {
+  for (let current: Scope | undefined = input; current; current = current.parent) {
+    const target = current.directImportTargets.get(key)
+    if (target) return target
+    if (current.bindings.has(key)) return
+  }
 }
 
 export function hasTrustedModuleBinding(input: Scope, key: string) {
@@ -144,6 +160,14 @@ export function trustedExactDirectImportCall(node: Node | null, resolvedCall: st
 }
 
 export function trustedCallWithPolicy(node: Node | null, resolvedCall: string, current: Scope) {
+  if (resolvedCall.startsWith("datetime.")) {
+    const raw = name(node)
+    const rawRoot = raw?.split(".")[0]
+    if (rawRoot === "datetime") {
+      return !hasBoundName(current, rawRoot) || hasTrustedModuleRoot(current, rawRoot) || hasTrustedBinding(current, rawRoot) || hasTrustedDirectBinding(current, rawRoot)
+    }
+  }
+
   const policy = TRUSTED_CALL_POLICIES.get(resolvedCall)
   if (!policy) return true
   if (policy === "resolved-module") return trustedResolvedModuleCall(node, resolvedCall, current)
@@ -179,19 +203,25 @@ export function trustedAliasSource(node: Node | null, current: Scope) {
 
 export function clearTrackedName(current: Scope, name: string) {
   current.bindings.delete(name)
+  current.directImportTargets.delete(name)
   current.trustedDirectBindings.delete(name)
   current.trustedBindings.delete(name)
   current.trustedModuleBindings.delete(name)
   current.trustedModuleRoots.delete(name)
   current.localDefinitions.delete(name)
   current.callableFactories.delete(name)
+  current.callableFactoryContainers.delete(name)
   current.containerInstances.delete(name)
   current.valueInstances.delete(name)
   current.exactStringSets.delete(name)
   current.exactIteratedStringSets.delete(name)
   current.iteratedElementInstances.delete(name)
   current.iteratedPathInstances.delete(name)
+  current.iteratedPathTupleInstances.delete(name)
   current.pathInstances.delete(name)
+  current.sqliteConnectionInstances.delete(name)
+  current.sqliteCursorInstances.delete(name)
+  current.trustedModelDumpInstances.delete(name)
   clearTrackedProvenanceForName(current, name)
   current.httpClientInstances.delete(name)
   current.httpResponseInstances.delete(name)
@@ -272,6 +302,83 @@ export function hasHttpResponseInstance(current: Scope, name: string) {
   return false
 }
 
+export function hasTrustedModelDumpInstance(current: Scope, name: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    if (scope.trustedModelDumpInstances.has(name)) return true
+    if (scope.bindings.has(name)) return false
+  }
+  return false
+}
+
+export function clearTrustedModelDumpInstance(current: Scope, name: string) {
+  const target = resolveQualified(name, current) ?? name
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.trustedModelDumpInstances.delete(name)
+    scope.trustedModelDumpInstances.delete(target)
+    if (scope.bindings.has(name) && target === name) return
+  }
+}
+
+function sqliteTrackedToken(input: Scope, name: string, getter: (scope: Scope, key: string) => string | undefined) {
+  for (let scope: Scope | undefined = input; scope; scope = scope.parent) {
+    const token = getter(scope, name)
+    if (token) return token
+    if (scope.bindings.has(name)) return
+  }
+}
+
+export function sqliteConnectionToken(current: Scope, name: string) {
+  return sqliteTrackedToken(current, name, (scope, key) => scope.sqliteConnectionInstances.get(key))
+}
+
+export function sqliteCursorToken(current: Scope, name: string) {
+  const token = sqliteTrackedToken(current, name, (scope, key) => scope.sqliteCursorInstances.get(key))
+  if (!token) return
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    if (scope.sqliteClosedCursorInstances.has(token)) return
+  }
+  return token
+}
+
+export function hasSqliteConnectionInstance(current: Scope, name: string) {
+  return Boolean(sqliteConnectionToken(current, name))
+}
+
+export function hasSqliteCursorInstance(current: Scope, name: string) {
+  return Boolean(sqliteCursorToken(current, name))
+}
+
+export function hasExecutedSqliteCursorInstance(current: Scope, name: string) {
+  const token = sqliteCursorToken(current, name)
+  if (!token) return false
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    if (scope.sqliteExecutedCursorInstances.has(token)) return true
+  }
+  return false
+}
+
+export function markExecutedSqliteCursorInstance(current: Scope, name: string) {
+  const token = sqliteCursorToken(current, name)
+  if (token) current.sqliteExecutedCursorInstances.add(token)
+}
+
+export function clearExecutedSqliteCursorInstance(current: Scope, name: string) {
+  const token = sqliteCursorToken(current, name)
+  if (!token) return
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.sqliteExecutedCursorInstances.delete(token)
+  }
+}
+
+export function closeSqliteCursorInstance(current: Scope, name: string) {
+  const token = sqliteCursorToken(current, name)
+  if (!token) return
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.sqliteExecutedCursorInstances.delete(token)
+    scope.sqliteClosedCursorInstances.add(token)
+  }
+}
+
 export function containerInstance(current: Scope, name: string) {
   if (name.startsWith("self.")) {
     return current.containerInstances.get(name)
@@ -295,6 +402,14 @@ export function iteratedElementInstance(current: Scope, name: string) {
 export function iteratedPathInstance(current: Scope, name: string) {
   for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
     const value = scope.iteratedPathInstances.get(name)
+    if (value) return value
+    if (scope.bindings.has(name)) return
+  }
+}
+
+export function iteratedPathTupleInstance(current: Scope, name: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const value = scope.iteratedPathTupleInstances.get(name)
     if (value) return value
     if (scope.bindings.has(name)) return
   }
@@ -380,6 +495,14 @@ export function lookupCallableFactory(current: Scope, key: string) {
   for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
     const value = scope.callableFactories.get(key)
     if (value) return value
+  }
+}
+
+export function lookupCallableFactoryContainer(current: Scope, key: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const value = scope.callableFactoryContainers.get(key)
+    if (value) return value
+    if (scope.bindings.has(key)) return
   }
 }
 

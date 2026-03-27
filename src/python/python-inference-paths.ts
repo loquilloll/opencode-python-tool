@@ -4,7 +4,7 @@ import { ASSIGNMENT_CONTAINER_TYPES, PATH_DYNAMIC_RETURNING_METHODS } from "./py
 import type { Scope } from "./python-analyze-types"
 import { lookupTrackedReceiverPathValue } from "./python-provenance"
 import { assignedNames } from "./python-timeline"
-import { callableFactoryReturn, iteratedPathInstance, pathInstanceValue, resolvedName } from "./python-scope"
+import { callableFactoryReturn, iteratedPathInstance, iteratedPathTupleInstance, pathInstanceValue, resolvedName } from "./python-scope"
 import type { PythonValue as Value } from "./python-values"
 import { classifyBuiltinPureCall } from "./python-inference-effects"
 import { args, parseString, pick, tail } from "./python-inference-values"
@@ -155,6 +155,30 @@ export function iteratedPathValue(node: Node | null, current: Scope): Value | un
   }
 }
 
+export function iteratedPathTupleValues(node: Node | null, current: Scope): Value[] | undefined {
+  if (!node) return
+
+  if (node.type === "identifier") {
+    return iteratedPathTupleInstance(current, node.text)
+  }
+
+  if (node.type !== "list" && node.type !== "tuple") return
+  const tuples = node.namedChildren
+  if (tuples.length === 0) return
+  if (!tuples.every((child) => child.type === "list" || child.type === "tuple")) return
+  const width = tuples[0]?.namedChildren.length ?? 0
+  if (width === 0) return
+  if (!tuples.every((child) => child.namedChildren.length === width)) return
+
+  const slots: Value[] = []
+  for (let index = 0; index < width; index += 1) {
+    const values = tuples.map((child) => trackedPathValue(child.namedChildren[index] ?? null, current))
+    if (values.some((value) => !value)) return
+    slots.push({ dynamic: true })
+  }
+  return slots
+}
+
 function enumeratedPathValue(node: Node | null, current: Scope): Value | undefined {
   if (!node || node.type !== "call") return
   const call = resolvedName(node.childForFieldName("function"), current)
@@ -175,6 +199,21 @@ export function rebindPathValues(target: Node | null, source: Node | null, curre
 
   if (!(ASSIGNMENT_CONTAINER_TYPES.has(target.type) || target.type.endsWith("_pattern"))) {
     return [] as Array<{ name: string; value: Value }>
+  }
+
+  const tupleValues = iteratedPathTupleValues(source, current)
+  if (tupleValues) {
+    if (!target.namedChildren.every((child) => child.type === "identifier")) {
+      return [] as Array<{ name: string; value: Value }>
+    }
+    return target.namedChildren
+      .map((child, index) => ({ child, value: tupleValues[index] }))
+      .filter((item): item is { child: Node; value: Value } => Boolean(item.child && item.value))
+      .flatMap(({ child, value }) =>
+        assignedNames(child)
+          .filter((name) => name !== "_")
+          .map((name) => ({ name, value })),
+      )
   }
 
   const value = enumeratedPathValue(source, current)

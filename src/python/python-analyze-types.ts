@@ -30,23 +30,31 @@ export type AtlassianCtor = {
 export type Scope = {
   parent?: Scope
   bindings: Map<string, string>
+  directImportTargets: Map<string, string>
   trustedDirectBindings: Set<string>
   trustedBindings: Set<string>
   trustedModuleBindings: Set<string>
   trustedModuleRoots: Set<string>
   localDefinitions: Set<string>
   callableFactories: Map<string, Node>
+  callableFactoryContainers: Map<string, ContainerKind>
   containerInstances: Map<string, ContainerKind>
   valueInstances: Map<string, Value>
   exactStringSets: Map<string, string[]>
   exactIteratedStringSets: Map<string, string[]>
   iteratedElementInstances: Map<string, ContainerKind>
   iteratedPathInstances: Map<string, Value>
+  iteratedPathTupleInstances: Map<string, Value[]>
   receiverContainers: Map<string, ReceiverContainer>
   receiverElementKinds: Map<string, ReceiverContainer>
   receiverSeedableStringLists: Map<string, string[]>
   receiverPaths: Map<string, ReceiverPath>
   pathInstances: Map<string, Value>
+  sqliteConnectionInstances: Map<string, string>
+  sqliteCursorInstances: Map<string, string>
+  sqliteExecutedCursorInstances: Set<string>
+  sqliteClosedCursorInstances: Set<string>
+  trustedModelDumpInstances: Set<string>
   httpClientInstances: Map<string, string>
   httpResponseInstances: Set<string>
   ghapiInstances: Set<string>

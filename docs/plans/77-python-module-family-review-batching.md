@@ -352,6 +352,176 @@ The repo supports snippet-first review (`--review-next`, `--review-tui`) and que
 - Commit: Not committed
 - PR/Jira: None
 
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: Landed the next bounded container/value-provenance slice by teaching the analyzer to track trusted `defaultdict(Counter)` locals as counter-valued mappings and to seed flat `.items()` destructuring with Counter values. The follow-up keeps the bucket conservative under shadowed factories, nested destructuring, widening `update(...)` / `setdefault(...)`, and direct or `setattr(...)` `default_factory` rebinding, which clears `buckets.items` and `counts.most_common` without widening the separate nested `buckets.most_common` family.
+- Files: `src/python/python-analyze.ts`, `src/python/python-inference-containers.ts`, `src/python/python-inference-effects.ts`, `src/python/python-provenance.ts`, `src/python/python-replay.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family buckets.items`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family counts.most_common`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps({'totals': data['totals'], 'families': [f['canonicalSource'] for f in data['families'][:12]]}, indent=2))"`
+- Follow-ups: `buckets.most_common` remains blocked because it depends on nested dict-field provenance (`buckets[key]['families']`) rather than flat mapping-value tracking. The next small bucket is likely `cls.__module__.startswith`, while `call.startswith` / `call.endswith` stay part of the larger JSON/tuple provenance cluster.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-24)
+- Summary: Cleared the `cls.__module__.startswith` bucket with a deliberately narrow producer proof: only trusted direct imports of `msgraph.GraphServiceClient` / `msgraph.graph_service_client.GraphServiceClient` seed `for cls in GraphServiceClient.__mro__:` so existing string receiver logic can classify `cls.__module__.startswith(...)` as pure. The bucket stays bounded under root shadowing, loop-variable rebinding, wrong-module imports, non-class aliases, direct `cls.__module__ = ...`, alias `alias.__module__ = ...`, and direct or alias `setattr(..., '__module__', ...)` invalidation.
+- Files: `src/python/python-analyze.ts`, `src/python/python-analyze-types.ts`, `src/python/python-inference.ts`, `src/python/python-inference-containers.ts`, `src/python/python-replay.ts`, `src/python/python-scope.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family cls.__module__.startswith`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps({'totals': data['totals'], 'families': [f['canonicalSource'] for f in data['families'][:12]]}, indent=2))"`
+- Follow-ups: The next smallest bounded bucket is no longer `cls.__module__.startswith`; remaining top work is the already-exhausted dynamic string/bytes cluster plus `buckets.most_common` and a few isolated API families. The most likely next small bucket is `CreateClusterDetails.attribute_map.get` / `CreateClusterDetails.swagger_types.get`, while `call.startswith` / `call.endswith` still look like the larger JSON/tuple provenance problem.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-25)
+- Summary: Cleared the exact `CreateClusterDetails.attribute_map.get` / `CreateClusterDetails.swagger_types.get` bucket by seeding those class metadata maps as dict receivers only for the unaliased direct import of `oci.container_engine.models.CreateClusterDetails`, then letting existing dict-method purity classify `.get(...)` as pure. The bucket stays conservative for module-qualified or aliased imports, wrong-module imports, root shadowing, direct or alias attribute assignment, and direct or alias `setattr(...)` invalidation.
+- Files: `src/python/python-analyze.ts`, `src/python/python-replay.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family CreateClusterDetails.attribute_map.get`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family CreateClusterDetails.swagger_types.get`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps({'totals': data['totals'], 'families': [f['canonicalSource'] for f in data['families'][:12]]}, indent=2))"`
+- Follow-ups: With the OCI metadata bucket cleared, the queue is down to `29` snippets / `51` pending candidates / `46` families. The remaining top work is still dominated by the exhausted dynamic string/bytes cluster plus `buckets.most_common`; the next likely small isolated bucket is the `cur.fetchone` / `cur.get` / `cur.pop` cluster rather than `call.startswith` / `call.endswith`.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-25)
+- Summary: Cleared the `cur.get` / `cur.pop` half of the cursor cluster by teaching conditional-expression container inference to merge only already-compatible container kinds, which lets `cur = json.loads(...) if cond else {}` reuse the existing bounded JSON/dict receiver behavior. The bucket stays conservative for customized `json.loads(...)` calls and incompatible ternary branches, so it does not widen unrelated conditional expressions.
+- Files: `src/python/python-inference-containers.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-inference.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family cur.get`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family cur.pop`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps({'totals': data['totals'], 'families': [f['canonicalSource'] for f in data['families'][:12]]}, indent=2))"`
+- Follow-ups: The remaining member of this local cluster is `cur.fetchone`, which is a separate sqlite cursor read-classification problem rather than more JSON/dict provenance. The refreshed queue is now `28` snippets / `49` pending candidates / `44` families; after `cur.fetchone`, the next likely isolated bucket is probably `difflib.unified_diff` rather than the larger `call.startswith` / `call.endswith` cluster.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-25)
+- Summary: Cleared the `cur.fetchone` bucket with narrow sqlite-specific receiver tracking: assignments from `sqlite3.connect(...)` seed exact sqlite connection instances, zero-arg `.cursor()` on those connections seeds exact sqlite cursor instances, `.execute(...)` and `.close()` classify as exec on those tracked cursors, and `.fetchone()` classifies as read only after the same live cursor has already executed a query. The implementation stays conservative for alias/rebinding mixes by tying execute state to the tracked cursor object rather than letting later name rebinding launder the proof.
+- Files: `src/python/python-analyze-types.ts`, `src/python/python-scope.ts`, `src/python/python-replay.ts`, `src/python/python-classifier.ts`, `src/python/python-analyze.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family cur.fetchone`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps({'totals': data['totals'], 'families': [f['canonicalSource'] for f in data['families'][:12]]}, indent=2))"`
+- Follow-ups: The cursor cluster is now exhausted. The refreshed queue remains at `28` snippets / `49` pending candidates / `43` families, and the next likely isolated bucket is `difflib.unified_diff` rather than the larger `call.startswith` / `call.endswith` or dynamic string/bytes clusters.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-25)
+- Summary: Cleared the `difflib.unified_diff` bucket as a narrow trusted-call family: plain `import difflib; difflib.unified_diff(...)` and exact unaliased direct imports now classify as pure via `module-qualified-or-exact-direct-import` trust gating, while aliased module roots, aliased leaf imports, captured callables, and member mutation through either `difflib` or `alias = difflib` stay conservative. The follow-up hardens replay invalidation so assignment or `setattr(...)` on `unified_diff` clears every still-trusted name resolving to `difflib` before later calls are classified.
+- Files: `src/python/python-known-methods.ts`, `src/python/python-rules.json`, `src/python/python-replay.ts`, `src/python/python-analyze.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun run ../src/python-session-report.ts --review-next --family difflib.unified_diff`; `cd .opencode && bun run ../src/python-session-report.ts --review-families-json | python3 -c "import json,sys; data=json.load(sys.stdin); print(json.dumps({'totals': data['totals'], 'families': [f['canonicalSource'] for f in data['families'][:12]]}, indent=2))"`
+- Follow-ups: With `difflib.unified_diff` drained, the queue is `27` snippets / `48` pending candidates / `42` families. The largest remaining work is still the dynamic string/bytes cluster plus `buckets.most_common`; the next likely isolated bucket is `elements` or the small string-local `item.lower` / `f.lower` family rather than `call.startswith` / `call.endswith`.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Added a workspace-scoped OpenCode skill at `.opencode/skills/python-family-batching/` plus supporting scripts that package the live review workflow we have been following in plan 77. The new helpers standardize point-in-time family snapshots, representative snippet extraction, and focused bucket verification while explicitly treating the review DB as live and totals as unstable.
+- Files: `.opencode/skills/python-family-batching/SKILL.md`, `.opencode/skills/python-family-batching/scripts/common.sh`, `.opencode/skills/python-family-batching/scripts/queue_snapshot.py`, `.opencode/skills/python-family-batching/scripts/queue_snapshot.sh`, `.opencode/skills/python-family-batching/scripts/review_snippets.py`, `.opencode/skills/python-family-batching/scripts/review_snippets.sh`, `.opencode/skills/python-family-batching/scripts/verify_bucket.sh`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `python3 -m py_compile .opencode/skills/python-family-batching/scripts/queue_snapshot.py .opencode/skills/python-family-batching/scripts/review_snippets.py`; `bash -n .opencode/skills/python-family-batching/scripts/common.sh`; `bash -n .opencode/skills/python-family-batching/scripts/queue_snapshot.sh`; `bash -n .opencode/skills/python-family-batching/scripts/review_snippets.sh`; `bash -n .opencode/skills/python-family-batching/scripts/verify_bucket.sh`; `.opencode/skills/python-family-batching/scripts/queue_snapshot.sh --family item.lower --include-representatives`; `.opencode/skills/python-family-batching/scripts/review_snippets.sh --call item.lower`; `.opencode/skills/python-family-batching/scripts/verify_bucket.sh --family item.lower --snapshot`
+- Follow-ups: If this skill becomes the default workflow for draining plan 77, the next useful addition is a helper for bounded datetime/helper-return family snapshots or script-level canned report filters for common isolated buckets.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Updated `.opencode/opencode.jsonc` so the workspace explicitly allows running the new `python-family-batching` skill scripts through bash permission rules, both by workspace-relative path and by the repo's absolute path. This keeps the skill operational without relying on permissive defaults.
+- Files: `.opencode/opencode.jsonc`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: Read back `.opencode/opencode.jsonc` after patching to verify the new bash allow patterns for `.opencode/skills/python-family-batching/scripts/*` and `/home/alvins/Documents/pgit/opencode-python-tool/.opencode/skills/python-family-batching/scripts/*`
+- Follow-ups: If the skill later adds helper binaries outside this folder, extend the explicit bash allow list rather than widening bash permissions globally.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Tightened the workspace skill guidance so `python-family-batching` now explicitly encourages the `task` tool for scheduling `explore` and `general` subagents, running them in parallel when the work is independent, and using `code-reviewer` / `agentic-reflect` at bucket closeout. This makes the written workflow match the orchestration pattern we have been using in plan 77.
+- Files: `.opencode/skills/python-family-batching/SKILL.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: Read back `.opencode/skills/python-family-batching/SKILL.md` after patching to verify the new `Task Tool Workflow` section and the explicit `task`/subagent guidance.
+- Follow-ups: If we add more helper scripts later, consider a small example subsection that pairs each script with the recommended `task`-tool delegation pattern.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Broadened the workspace bash permission rules for the `python-family-batching` skill so script execution is allowed by path-specific wildcard patterns, including generic `*python-family-batching/scripts/*` coverage plus explicit `.py`/`.sh` helper invocations. This should make the skill usable immediately after an OpenCode restart without prompting for each script command.
+- Files: `.opencode/opencode.jsonc`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: Read back `.opencode/opencode.jsonc` after patching to confirm the new bash allow rules for `*python-family-batching/scripts/*`, `python3 *python-family-batching/scripts/*.py*`, and `bash *python-family-batching/scripts/*.sh*`
+- Follow-ups: Restart OpenCode to pick up the updated permission config, then re-run one of the skill script commands to confirm prompts are gone.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Cleared the `Github` bucket as a narrow exact-call family: exact unaliased direct imports of `github.Github` now classify as `exec`, while module-qualified calls, aliased imports, captured callables, and shadowed locals stay conservative. Inline permissions still surface the direct-import constructor as an `exec` ask, which matches the repo's current policy that remote client construction is operationally significant rather than pure.
+- Files: `src/python/python-known-methods.ts`, `src/python/python-rules.json`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `.opencode/skills/python-family-batching/scripts/verify_bucket.sh --family Github --snapshot`
+- Follow-ups: With `Github` drained, the next best remaining buckets are still provenance-heavy (`total_seconds`, `ts.isoformat`, `item.lower`) plus a few isolated exact-call/model families such as `obj.model_dump`. If we want another small exact-call win before tackling more provenance work, `obj.model_dump` is likely next.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Cleared the `label.strip` bucket by extending exact-string-key dict handling just far enough for `for label, obj in samples.items(): label.strip()` on literal string-key mappings, without widening generic `.items()` key trust. The follow-up hardens invalidation across mixed-key literals, splat-built dicts, direct subscript mutation, `update(...)`, `setdefault(...)`, `dict.update(...)`, and bound mutator aliases before later `.items()` destructuring is trusted.
+- Files: `src/python/python-key-equivalence.ts`, `src/python/python-inference-containers.ts`, `src/python/python-replay.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `.opencode/skills/python-family-batching/scripts/verify_bucket.sh --family label.strip --snapshot`
+- Follow-ups: The queue is now down to `37` snippets / `71` pending candidates / `48` families in the latest live snapshot. Remaining work is still dominated by provenance-heavy string/datetime buckets plus isolated exact-call/model families like `obj.model_dump`; `label.strip` no longer blocks choosing among those next paths.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Cleared the `obj.model_dump` bucket with a dedicated tracked-instance seam instead of a broad Pydantic rule: exact unaliased direct imports of `OrganizationMembershipListOptions` now seed trusted local instances only from `.model_validate(...)`, and direct local `.model_dump(...)` on those instances classifies as pure while `model_validate(...)` itself remains conservative. The hardening pass closes direct/setattr class mutation, alias-mediated factory mutation, class-level `model_dump`, and instance-level `model_dump` rebinding without widening generic model APIs.
+- Files: `src/python/python-analyze-types.ts`, `src/python/python-scope.ts`, `src/python/python-replay.ts`, `src/python/python-classifier.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `.opencode/skills/python-family-batching/scripts/verify_bucket.sh --family obj.model_dump --snapshot`
+- Follow-ups: With `obj.model_dump` drained, the queue is `37` snippets / `70` pending candidates / `47` families in the latest live snapshot. The remaining large work is still the datetime/helper cluster (`total_seconds`, `ts.isoformat`, `a.isoformat`, `found.isoformat`) plus the older dynamic string/bytes buckets, so the next safest step is likely another tiny provenance bucket or a deliberate bounded datetime-helper design.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Cleared the `old_path.exists` / `old_path.rename` bucket by extending iterated Path provenance just far enough for explicit tuple/list Path-pair destructuring like `for old_path, new_path in renames:`. The follow-up keeps that proof bounded to flat identifier destructuring and hardens invalidation for subscript mutation plus alias-linked tuple reuse, so generic tuple iteration and non-flat destructuring stay conservative.
+- Files: `src/python/python-analyze-types.ts`, `src/python/python-scope.ts`, `src/python/python-inference.ts`, `src/python/python-inference-paths.ts`, `src/python/python-replay.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-inference.test.ts`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `.opencode/skills/python-family-batching/scripts/verify_bucket.sh --family old_path.exists --family old_path.rename --snapshot`
+- Follow-ups: With the explicit Path-pair loop drained, the queue is `37` snippets / `68` pending candidates / `45` families in the latest live snapshot. The remaining backlog is now even more dominated by the bounded-but-broader datetime/helper cluster and the long-standing dynamic string/bytes families.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Cleared the `m.group.endswith` / `m.group.replace` bucket by teaching bounded regex match receivers that single-selector `group(...)` / `__getitem__()` returns a string, which lets existing string purity classify downstream `.endswith()` and `.replace()` chains. The change keeps shadowed `re`, multi-selector `group(1, 2)`, and arbitrary `obj.group(...)` receivers conservative, so this stays a producer-return fix rather than a broad string-method widening.
+- Files: `src/python/python-inference-containers.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-inference.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `.opencode/skills/python-family-batching/scripts/verify_bucket.sh --family m.group.endswith --family m.group.replace --snapshot`
+- Follow-ups: The latest live snapshot after draining this bucket is `37` snippets / `64` pending candidates / `43` families. The remaining top work is now even more concentrated in the helper-return datetime cluster (`total_seconds`, `ts.isoformat`, `a.isoformat`, `found.isoformat`) plus the older dynamic string/bytes families (`e.split`, `e.startswith`, `raw.split`, `text.splitlines`).
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-26)
+- Summary: Added an iterative helper-provenance pass for bounded datetime families: direct helper calls can now reuse unanimous helper-param seeds plus homogeneous datetime-like helper returns, and tracked identifier containers now participate in helper-param arithmetic inference. The follow-up hardens the seam so optional fallthrough, mixed seeds, helper alias escapes, and shadowed raw `datetime.*` roots stay conservative; the live queue dropped to `36` snippets / `56` pending candidates / `40` families, but the remaining datetime blockers still need tuple-slot or exact-key provenance (`ts.isoformat`, `a.isoformat`, `found.isoformat`, and most `total_seconds`).
+- Files: `src/python/python-analyze.ts`, `src/python/python-analyze-types.ts`, `src/python/python-inference-containers.ts`, `src/python/python-replay.ts`, `src/python/python-scope.ts`, `.opencode/test/python-analyze.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `.opencode/skills/python-family-batching/scripts/verify_bucket.sh --family ts.isoformat --family a.isoformat --family total_seconds --family found.isoformat --snapshot`; `.opencode/skills/python-family-batching/scripts/queue_snapshot.sh --limit 20 --include-representatives`
+- Follow-ups: Extend this helper path only if we can keep it bounded for tuple/list slot provenance (`ts.isoformat` / `a.isoformat`) or exact-key helper-param value tracking (`found.isoformat` / `total_seconds`); otherwise pivot to the next smaller blocked bucket such as `item.lower` or the pending bytes helper families.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-27)
+- Summary: Restored the full Bun suite by fixing a stale session-report test assumption rather than changing batching behavior: the `hashlib.sha256` family-cluster test now opts into `includePure: true`, which matches the current contract that `scan()` excludes pure events unless explicitly requested. `reviewFamilies()` and the analyzer/runtime code stay unchanged.
+- Files: `.opencode/test/python-session-report.test.ts`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts -t "counts merged snippet occurrences separately from snippet count in family clusters"`; `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test`
+- Follow-ups: Keep pure-family session-report expectations explicit about `includePure` in future tests. With the stale test fixed, plan 78 Phase 2 can resume against a fully green `cd .opencode && bun test` baseline.
+- Commit: Not committed
+- PR/Jira: None
+
 ## Risks and Guardrails
 
 - grouping by outward call alone is unsafe; batching must prefer canonical/source-aware identities and receiver evidence

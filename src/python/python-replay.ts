@@ -4,8 +4,10 @@ import {
   args,
   hasDictionarySplat,
   iteratedContainerKind,
+  iteratedPathTupleValues,
   iteratedPathValue,
   rebindContainerKinds,
+  rebindReceiverContainerKinds,
   rebindPathValues,
   rebindSource,
   returnedTrackedContainerKind,
@@ -28,17 +30,27 @@ import {
   aliasTarget,
   callableFactory,
   callableFactoryTarget,
+  clearTrustedModelDumpInstance,
   clearExactIteratedStringSetProvenance,
   clearExactStringSetProvenance,
   clearIteratedElementProvenance,
+  closeSqliteCursorInstance,
   containerInstance,
+  directImportTarget,
+  hasExecutedSqliteCursorInstance,
+  hasSqliteConnectionInstance,
+  hasSqliteCursorInstance,
+  hasTrustedDirectBinding,
   importBindings,
   invalidateTrackedName,
+  iteratedElementInstance,
+  markExecutedSqliteCursorInstance,
   resolveQualified,
   resolvedName,
   shouldBindDirectImport,
   trustedAliasSource,
 } from "./python-scope"
+import { unwrapParenthesized } from "./python-inference-values"
 import {
   assignedNames,
   assignmentLeft,
@@ -55,8 +67,18 @@ export type HelperParamSeed = {
 }
 
 export type HelperSeeds = Map<number, Map<string, HelperParamSeed>>
+export type HelperReturnKinds = Map<number, ContainerKind>
 
 type HelperReceiverElementKinds = Map<Scope, Map<string, ReceiverContainer>>
+
+type HelperReturnCandidate = {
+  definitionStart: number
+  name: string
+  bodyScope: Scope
+  returnValues: Array<Node | null>
+  requiresSeeds: boolean
+  blocked: boolean
+}
 
 type ActiveHelper = {
   definitionStart: number
@@ -68,9 +90,203 @@ type ActiveHelper = {
 }
 
 const ITERATED_ELEMENT_INVALIDATING_METHODS = new Set(["append", "extend", "insert"])
+const TRACKED_MAPPING_VALUE_KINDS = new Set<ContainerKind>(["dict-list-values", "dict-set-values", "dict-counter-values"])
+const TRACKED_MAPPING_VALUE_INVALIDATING_METHODS = new Set(["setdefault", "update"])
+const OCI_MODEL_METADATA_ATTRIBUTES = new Set(["attribute_map", "swagger_types"])
+const OCI_CREATE_CLUSTER_DETAILS_TARGETS = new Set([
+  "oci.container_engine.models.CreateClusterDetails",
+])
+const TABULATE_FORMATS_TARGET = "tabulate.tabulate_formats"
+const DIFFLIB_MUTABLE_TRUSTED_ATTRIBUTES = new Set(["unified_diff"])
+const HASHLIB_MUTABLE_TRUSTED_ATTRIBUTES = new Set(["sha1", "sha256"])
+const TRUSTED_MODELDUMP_TARGET = "pytfe.models.organization_membership.OrganizationMembershipListOptions"
+const SQLITE_CURSOR_READ_METHODS = new Set(["fetchone", "fetchall"])
+const HELPER_PARAM_CONTAINER_KINDS = new Set<ContainerKind>([
+  "string",
+  "datetime-date",
+  "datetime-datetime",
+  "datetime-time",
+  "datetime-timedelta",
+  "datetime-timezone",
+])
+const HELPER_RETURN_CONTAINER_KINDS = new Set<ContainerKind>([
+  "datetime-date",
+  "datetime-datetime",
+  "datetime-time",
+  "datetime-timedelta",
+  "datetime-timezone",
+])
 
 function shouldTrustModuleBinding(target: string | undefined) {
   return Boolean(target && TRUSTED_MODULE_BINDINGS.has(target))
+}
+
+function seedTrustedOciModelMetadataMaps(current: Scope, name: string, target: string | undefined) {
+  if (name !== "CreateClusterDetails" || !target || !OCI_CREATE_CLUSTER_DETAILS_TARGETS.has(target)) return
+  for (const attribute of OCI_MODEL_METADATA_ATTRIBUTES) {
+    current.receiverContainers.set(`${name}.${attribute}`, { kind: "dict", deps: [name] })
+  }
+}
+
+function seedTrustedTabulateFormatsElements(current: Scope, name: string, target: string | undefined) {
+  if (name !== "tabulate_formats" || target !== TABULATE_FORMATS_TARGET) return
+  current.iteratedElementInstances.set(name, "string")
+}
+
+function seedTrustedModelDumpInstance(current: Scope, name: string, node: Node) {
+  const fn = node.childForFieldName("function")
+  if (fn?.type !== "attribute") return
+  if (fn.childForFieldName("attribute")?.text !== "model_validate") return
+  const receiver = fn.childForFieldName("object")
+  if (receiver?.type !== "identifier" || receiver.text !== "OrganizationMembershipListOptions") return
+  if (!hasTrustedDirectBinding(current, receiver.text)) return
+  if (directImportTarget(current, receiver.text) !== TRUSTED_MODELDUMP_TARGET) return
+  current.trustedModelDumpInstances.add(name)
+}
+
+function trustedModelDumpFactoryRoot(current: Scope, receiver: Node | null) {
+  if (receiver?.type !== "identifier") return
+  if (directImportTarget(current, receiver.text) === TRUSTED_MODELDUMP_TARGET) return receiver.text
+  const resolved = resolvedName(receiver, current)
+  if (resolved && directImportTarget(current, resolved) === TRUSTED_MODELDUMP_TARGET) return resolved
+}
+
+function clearAllTrustedModelDumpInstances(current: Scope) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.trustedModelDumpInstances.clear()
+  }
+}
+
+function clearTrustedModelDumpFactory(current: Scope, receiver: Node | null) {
+  const rootName = trustedModelDumpFactoryRoot(current, receiver)
+  if (!rootName) return
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const names = new Set<string>([rootName, TRUSTED_MODELDUMP_TARGET])
+    if (receiver?.type === "identifier") names.add(receiver.text)
+    for (const key of scope.bindings.keys()) {
+      if (resolveQualified(key, current) === rootName || resolveQualified(key, current) === TRUSTED_MODELDUMP_TARGET) names.add(key)
+    }
+    for (const name of names) invalidateTrackedName(scope, name)
+  }
+}
+
+function seedSqliteCursorInstance(current: Scope, name: string, node: Node) {
+  const fn = node.childForFieldName("function")
+  if (fn?.type !== "attribute") return
+  if (fn.childForFieldName("attribute")?.text !== "cursor") return
+  const receiver = fn.childForFieldName("object")
+  if (receiver?.type !== "identifier" || !hasSqliteConnectionInstance(current, receiver.text)) return
+  const input = args(node)
+  if (input.positional.length !== 0 || Object.keys(input.keyword).length !== 0 || hasDictionarySplat(node)) return
+  current.sqliteCursorInstances.set(name, `sqlite-cursor:${node.startIndex}`)
+}
+
+function clearSqliteCursorInstance(current: Scope, name: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.sqliteCursorInstances.delete(name)
+    if (scope.bindings.has(name)) return
+  }
+}
+
+function clearExactStringIterableProvenance(current: Scope, name: string) {
+  clearExactStringSetProvenance(current, name)
+  clearExactIteratedStringSetProvenance(current, name)
+  const resolved = resolveQualified(name, current)
+  if (resolved && resolved !== name) {
+    clearExactStringSetProvenance(current, resolved)
+    clearExactIteratedStringSetProvenance(current, resolved)
+  }
+}
+
+function clearIteratedPathTupleProvenance(current: Scope, name: string) {
+  const resolved = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const toDelete = new Set<string>([name])
+    if (resolved && resolved !== name) toDelete.add(resolved)
+    for (const key of scope.iteratedPathTupleInstances.keys()) {
+      if (resolveQualified(key, current) === resolved) toDelete.add(key)
+    }
+    for (const key of toDelete) scope.iteratedPathTupleInstances.delete(key)
+  }
+}
+
+export function clearIndirectMappingMutations(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  const resolved = resolvedName(fn, entry.scope)
+  if (!resolved) return
+
+  let receiverName: string | undefined
+  if (resolved === "dict.update" || resolved === "dict.setdefault") {
+    const receiver = entry.node.childForFieldName("arguments")?.namedChildren[0]
+    if (receiver?.type === "identifier") receiverName = receiver.text
+  } else {
+    if (fn?.type !== "identifier") return
+    const parts = resolved.split(".")
+    const method = parts[parts.length - 1]
+    if (!method || !TRACKED_MAPPING_VALUE_INVALIDATING_METHODS.has(method)) return
+    receiverName = parts.slice(0, -1).join(".") || undefined
+  }
+
+  if (!receiverName) return
+  clearTrackedMappingValueContainerKind(entry.scope, receiverName)
+  clearExactStringIterableProvenance(entry.scope, receiverName)
+}
+
+function clearTrustedModuleRoot(current: Scope, receiver: Node | null, target: string) {
+  if (receiver?.type !== "identifier") return
+  const resolvedTarget = resolvedName(receiver, current)
+  if (resolvedTarget !== target) return
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const names = new Set<string>([receiver.text, target])
+    for (const key of scope.bindings.keys()) {
+      if (resolveQualified(key, current) === target) names.add(key)
+    }
+    for (const key of scope.trustedModuleRoots) {
+      if (key === target || resolveQualified(key, current) === target) names.add(key)
+    }
+    for (const name of names) invalidateTrackedName(scope, name)
+  }
+}
+
+function clearTrustedDifflibRoot(current: Scope, receiver: Node | null) {
+  clearTrustedModuleRoot(current, receiver, "difflib")
+}
+
+function clearTrustedHashlibRoot(current: Scope, receiver: Node | null) {
+  clearTrustedModuleRoot(current, receiver, "hashlib")
+}
+
+function clearTrustedOciModelMetadataMaps(current: Scope, receiver: Node | null) {
+  if (receiver?.type !== "identifier") return
+  const rawRoot = receiver.text
+  const resolvedRoot = resolvedName(receiver, current) ?? rawRoot
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    for (const key of [...scope.receiverContainers.keys()]) {
+      const root = key.split(".")[0]
+      const attribute = key.split(".").pop()
+      if (!root || !attribute || !OCI_MODEL_METADATA_ATTRIBUTES.has(attribute)) continue
+      const resolvedKeyRoot = resolveQualified(root, current) ?? root
+      if (root === rawRoot || resolvedKeyRoot === resolvedRoot) scope.receiverContainers.delete(key)
+    }
+  }
+}
+
+function clearTrackedMappingValueContainerKind(current: Scope, name: string) {
+  const target = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const keys = new Set<string>([name])
+    if (target) {
+      keys.add(target)
+      for (const key of scope.containerInstances.keys()) {
+        if (resolveQualified(key, current) === target) keys.add(key)
+      }
+    }
+    for (const key of keys) {
+      const kind = scope.containerInstances.get(key)
+      if (kind && TRACKED_MAPPING_VALUE_KINDS.has(kind)) scope.containerInstances.delete(key)
+    }
+  }
 }
 
 function canonicalReceiverPath(node: Node | null, current: Scope) {
@@ -134,6 +350,21 @@ function clearReceiverSeedableStringListPath(current: Scope, path: string | unde
     if (path) scope.receiverSeedableStringLists.delete(path)
     if (canonicalPath) scope.receiverSeedableStringLists.delete(canonicalPath)
   }
+}
+
+function clearReceiverContainerPath(current: Scope, path: string | undefined, canonicalPath?: string) {
+  if (!path && !canonicalPath) return
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    if (path) scope.receiverContainers.delete(path)
+    if (canonicalPath) scope.receiverContainers.delete(canonicalPath)
+  }
+}
+
+function clearClassModuleReceiverContainer(current: Scope, receiver: Node | null) {
+  if (receiver?.type !== "identifier") return
+  clearReceiverContainerPath(current, `${receiver.text}.__module__`)
+  const resolved = resolvedName(receiver, current)
+  if (resolved && resolved !== receiver.text) clearReceiverContainerPath(current, `${resolved}.__module__`)
 }
 
 function clearSiblingSubscriptReceiverPaths(current: Scope, path: string | undefined, canonicalPath?: string, equivalentPath?: string) {
@@ -346,6 +577,9 @@ export function replayImportEntry(entry: TimelineEntry, rules: Rules) {
     invalidateTrackedName(entry.scope, binding.name)
     entry.scope.trustedBindings.add(binding.name)
     if (binding.direct) entry.scope.trustedDirectBindings.add(binding.name)
+    if (binding.direct && binding.target) entry.scope.directImportTargets.set(binding.name, binding.target)
+    if (binding.direct) seedTrustedOciModelMetadataMaps(entry.scope, binding.name, binding.target)
+    if (binding.direct) seedTrustedTabulateFormatsElements(entry.scope, binding.name, binding.target)
     if (shouldTrustModuleBinding(binding.target)) entry.scope.trustedModuleBindings.add(binding.name)
     if (binding.moduleRoot) entry.scope.trustedModuleRoots.add(binding.name)
     if (binding.target && (!binding.direct || shouldBindDirectImport(binding.target, rules))) {
@@ -392,13 +626,17 @@ function registerActiveHelper(
   allHelpers.push(helper)
 }
 
-export function replayDefinitionEntry(entry: TimelineEntry, helperSeeds?: HelperSeeds) {
+export function replayDefinitionEntry(entry: TimelineEntry, helperSeeds?: HelperSeeds, helperReturnKinds?: HelperReturnKinds) {
   const name = definitionName(entry.node)
   if (name) {
     invalidateTrackedName(entry.scope, name)
     entry.scope.localDefinitions.add(name)
   }
   if (helperSeeds) applyHelperSeeds(entry, helperSeeds)
+  if (name) {
+    const helperReturnKind = helperReturnKinds?.get(entry.startIndex)
+    if (helperReturnKind) entry.scope.callableFactoryContainers.set(name, helperReturnKind)
+  }
   const summary = callableFactory(entry.node)
   if (summary) entry.scope.callableFactories.set(summary.name, summary.returned)
 }
@@ -412,6 +650,9 @@ export function replayRebindEntry(entry: TimelineEntry) {
   }
   for (const seeded of rebindContainerKinds(target ?? null, rebindSource(entry.node) ?? null, entry.scope)) {
     entry.scope.containerInstances.set(seeded.name, seeded.kind)
+  }
+  for (const seeded of rebindReceiverContainerKinds(target ?? null, rebindSource(entry.node) ?? null, entry.scope)) {
+    entry.scope.receiverContainers.set(seeded.path, { kind: seeded.kind, deps: seeded.deps })
   }
   const exactStrings = exactIteratedStringSet(entry.scope, rebindSource(entry.node) ?? null)
   if (exactStrings) {
@@ -434,6 +675,7 @@ export function replayAssignmentEntry(
   hasAtlassianImportProvenance: boolean,
   helperSeeds?: HelperSeeds,
   helperReceiverElementKinds?: HelperReceiverElementKinds,
+  helperReturnKinds?: HelperReturnKinds,
 ) {
   const left = assignmentLeft(entry.node)
   const right = assignmentRight(entry.node)
@@ -444,9 +686,11 @@ export function replayAssignmentEntry(
   const localExactStrings = exactStringSet(entry.scope, right, entry.guards)
   const localExactIteratedStrings = exactIteratedStringSet(entry.scope, right, entry.guards)
   const iteratedPath = iteratedPathValue(right, entry.scope)
+  const iteratedPathTuple = iteratedPathTupleValues(right, entry.scope)
   const localContainer = trackedContainerKind(right, entry.scope) ?? returnedTrackedContainerKind(right, entry.scope)
   const iteratedElement = iteratedContainerKind(right, entry.scope)
   const target = aliasTarget(right, entry.scope)
+  const leftResolved = left?.type === "identifier" ? resolvedName(left, entry.scope) : undefined
   const escapedReceiverInfoPath = left?.type === "identifier" && right?.type === "subscript" ? trackableReceiverInfo(right)?.path : undefined
   const escapedReceiverPath = left?.type === "identifier" && right?.type === "subscript" ? canonicalReceiverPath(right, entry.scope) : undefined
   const escapedEquivalentPath = left?.type === "identifier" && right?.type === "subscript" ? receiverEquivalentPath(entry.scope, right) : undefined
@@ -463,23 +707,9 @@ export function replayAssignmentEntry(
     if (leftCanonicalPath) clearIteratedElementProvenance(entry.scope, leftCanonicalPath)
     if (base?.type === "identifier") {
       clearIteratedElementProvenance(entry.scope, base.text)
+      clearIteratedPathTupleProvenance(entry.scope, base.text)
       clearExactIteratedStringSetProvenance(entry.scope, base.text)
-      const resolvedBase = resolvedName(base, entry.scope)
-      for (let scope: Scope | undefined = entry.scope; scope; scope = scope.parent) {
-        const keys = new Set<string>([base.text])
-        if (resolvedBase) {
-          keys.add(resolvedBase)
-          for (const key of scope.containerInstances.keys()) {
-            if (resolveQualified(key, entry.scope) === resolvedBase) keys.add(key)
-          }
-        }
-        for (const key of keys) {
-          const kind = scope.containerInstances.get(key)
-          if (kind === "dict-list-values" || kind === "dict-set-values") {
-            scope.containerInstances.delete(key)
-          }
-        }
-      }
+      clearTrackedMappingValueContainerKind(entry.scope, base.text)
     }
     clearReceiverElementKindPath(entry.scope, leftInfo?.path, leftCanonicalPath)
     clearReceiverSeedableStringListPath(entry.scope, leftInfo?.path, leftCanonicalPath)
@@ -508,6 +738,36 @@ export function replayAssignmentEntry(
     clearReceiverSeedableStringListPath(entry.scope, escapedEquivalentPath)
     clearHelperReceiverElementKindPath(helperReceiverElementKinds, escapedEquivalentPath)
   }
+  if (left?.type === "attribute" && left.childForFieldName("attribute")?.text === "default_factory") {
+    const receiver = left.childForFieldName("object")
+    if (receiver?.type === "identifier") clearTrackedMappingValueContainerKind(entry.scope, receiver.text)
+  }
+  if (left?.type === "attribute") {
+    const attribute = left.childForFieldName("attribute")?.text
+    if (attribute && OCI_MODEL_METADATA_ATTRIBUTES.has(attribute)) {
+      clearTrustedOciModelMetadataMaps(entry.scope, left.childForFieldName("object"))
+    }
+    if (attribute && DIFFLIB_MUTABLE_TRUSTED_ATTRIBUTES.has(attribute)) {
+      clearTrustedDifflibRoot(entry.scope, left.childForFieldName("object"))
+    }
+    if (attribute && HASHLIB_MUTABLE_TRUSTED_ATTRIBUTES.has(attribute)) {
+      clearTrustedHashlibRoot(entry.scope, left.childForFieldName("object"))
+    }
+    if (attribute === "model_validate") {
+      clearTrustedModelDumpFactory(entry.scope, left.childForFieldName("object"))
+    }
+    if (attribute === "model_dump") {
+      const receiver = left.childForFieldName("object")
+      if (trustedModelDumpFactoryRoot(entry.scope, receiver)) {
+        clearTrustedModelDumpFactory(entry.scope, receiver)
+        clearAllTrustedModelDumpInstances(entry.scope)
+      }
+      if (receiver?.type === "identifier") clearTrustedModelDumpInstance(entry.scope, receiver.text)
+    }
+  }
+  if (left?.type === "attribute" && left.childForFieldName("attribute")?.text === "__module__") {
+    clearClassModuleReceiverContainer(entry.scope, left.childForFieldName("object"))
+  }
   if (applyAssignmentProvenance(entry.scope, left, localContainer, localPath)) {
     if (left?.type === "subscript" && right?.type === "list" && right.namedChildren.length === 0) {
       markReceiverSeedableStringList(entry.scope, left)
@@ -516,11 +776,25 @@ export function replayAssignmentEntry(
   }
   if (!left || left.type !== "identifier") return
 
-  if (entry.node.type !== "assignment") return
+  if (right?.type === "lambda") {
+    const helperReturnKind = helperReturnKinds?.get(entry.startIndex)
+    if (helperReturnKind) entry.scope.callableFactoryContainers.set(left.text, helperReturnKind)
+  }
+
+  if (entry.node.type !== "assignment") {
+    clearIteratedElementProvenance(entry.scope, left.text)
+    clearExactIteratedStringSetProvenance(entry.scope, left.text)
+    if (leftResolved && leftResolved !== left.text) {
+      clearIteratedElementProvenance(entry.scope, leftResolved)
+      clearExactIteratedStringSetProvenance(entry.scope, leftResolved)
+    }
+    return
+  }
 
   if (localValue) entry.scope.valueInstances.set(left.text, localValue)
   if (localExactStrings) entry.scope.exactStringSets.set(left.text, localExactStrings)
   if (localExactIteratedStrings) entry.scope.exactIteratedStringSets.set(left.text, localExactIteratedStrings)
+  if (iteratedPathTuple) entry.scope.iteratedPathTupleInstances.set(left.text, iteratedPathTuple)
 
   if (factoryTarget) {
     entry.scope.bindings.set(left.text, factoryTarget)
@@ -565,6 +839,13 @@ export function replayAssignmentEntry(
     return
   }
 
+  if (assignedCall === "sqlite3.connect") {
+    entry.scope.sqliteConnectionInstances.set(left.text, `sqlite-connection:${right.startIndex}`)
+  }
+
+  seedSqliteCursorInstance(entry.scope, left.text, right)
+  seedTrustedModelDumpInstance(entry.scope, left.text, right)
+
   if (isHttpResponseCall(assignedCall, right, entry.scope, rules)) {
     entry.scope.httpResponseInstances.add(left.text)
   }
@@ -584,10 +865,12 @@ export function replayAssignmentEntry(
 }
 
 function helperSeedFromArgument(node: Node | null, current: Scope, helperReceiverElementKinds?: HelperReceiverElementKinds): HelperParamSeed | undefined {
-  const containerKind = trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)
-  const iteratedElementKind = iteratedContainerKind(node, current) ?? helperReceiverElementKind(helperReceiverElementKinds, node, current)
+  const directContainerKind = node?.type === "identifier" ? containerInstance(current, node.text) : undefined
+  const directIteratedElementKind = node?.type === "identifier" ? iteratedElementInstance(current, node.text) : undefined
+  const containerKind = trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current) ?? directContainerKind
+  const iteratedElementKind = iteratedContainerKind(node, current) ?? helperReceiverElementKind(helperReceiverElementKinds, node, current) ?? directIteratedElementKind
   const seed: HelperParamSeed = {}
-  if (containerKind === "string") seed.containerKind = "string"
+  if (containerKind && HELPER_PARAM_CONTAINER_KINDS.has(containerKind)) seed.containerKind = containerKind
   if (iteratedElementKind === "string") seed.iteratedElementKind = "string"
   return seed.containerKind || seed.iteratedElementKind ? seed : undefined
 }
@@ -603,6 +886,71 @@ function directHelperCallName(entry: TimelineEntry) {
   return fn.text
 }
 
+function collectHelperReturnValues(node: Node | null, returnValues: Array<Node | null>) {
+  if (!node) return
+  if (node.type === "function_definition" || node.type === "lambda" || node.type === "class_definition" || node.type === "decorated_definition") {
+    return
+  }
+  if (node.type === "return_statement") {
+    returnValues.push(node.childForFieldName("value") ?? node.namedChildren[0] ?? null)
+    return
+  }
+  for (const child of node.namedChildren) collectHelperReturnValues(child, returnValues)
+}
+
+function helperReturnValues(node: Node) {
+  if (node.type === "lambda") return [node.childForFieldName("body")]
+  const def = definitionNode(node)
+  if (def?.type !== "function_definition") return [] as Array<Node | null>
+  const body = def.childForFieldName("body")
+  const returnValues: Array<Node | null> = []
+  collectHelperReturnValues(body, returnValues)
+  const tail = body?.namedChildren[body.namedChildren.length - 1]
+  if (tail?.type !== "return_statement") returnValues.push(null)
+  return returnValues
+}
+
+function helperReturnContainerKind(returnValues: Array<Node | null>, current: Scope) {
+  if (returnValues.length === 0) return
+  let merged: ContainerKind | undefined
+  for (const value of returnValues) {
+    const kind = trackedContainerKind(value, current) ?? returnedTrackedContainerKind(value, current)
+    if (!kind || !HELPER_RETURN_CONTAINER_KINDS.has(kind)) return
+    if (!merged) {
+      merged = kind
+      continue
+    }
+    if (merged !== kind) return
+  }
+  return merged
+}
+
+function helperRequiresSeeds(node: Node) {
+  return parameterNames(node.childForFieldName("parameters")).length > 0
+}
+
+function registerHelperReturnCandidate(candidates: HelperReturnCandidate[], entry: TimelineEntry, name: string | undefined, node: Node | null) {
+  if (!name || !node || !entry.bodyScope) return
+  const returnValues = helperReturnValues(node)
+  if (returnValues.length === 0) return
+  candidates.push({ definitionStart: entry.startIndex, name, bodyScope: entry.bodyScope, returnValues, requiresSeeds: helperRequiresSeeds(node), blocked: false })
+}
+
+function escapeHelperByAlias(activeByScope: Map<Scope, Map<string, ActiveHelper>>, current: Scope, left: Node | null, right: Node | null) {
+  const source = unwrapParenthesized(right)
+  if (left?.type !== "identifier" || source?.type !== "identifier" || left.text === source.text) return
+  const helper = activeByScope.get(current)?.get(source.text)
+  if (helper) helper.blocked = true
+}
+
+function escapeHelperReturnByAlias(candidates: HelperReturnCandidate[], entry: TimelineEntry, left: Node | null, right: Node | null) {
+  const source = unwrapParenthesized(right)
+  if (left?.type !== "identifier" || source?.type !== "identifier" || left.text === source.text) return
+  for (const candidate of candidates) {
+    if (candidate.bodyScope.parent === entry.scope && candidate.name === source.text) candidate.blocked = true
+  }
+}
+
 export function clearMutatedIteratedElementInstance(entry: TimelineEntry) {
   if (entry.kind !== "call") return
   const fn = entry.node.childForFieldName("function")
@@ -613,8 +961,119 @@ export function clearMutatedIteratedElementInstance(entry: TimelineEntry) {
   const method = parts && parts.length > 0 ? parts[parts.length - 1] : undefined
   if (receiver?.type !== "identifier" || !method || !ITERATED_ELEMENT_INVALIDATING_METHODS.has(method)) return
   clearIteratedElementProvenance(entry.scope, receiver.text)
+  clearIteratedPathTupleProvenance(entry.scope, receiver.text)
   clearExactStringSetProvenance(entry.scope, receiver.text)
   clearExactIteratedStringSetProvenance(entry.scope, receiver.text)
+}
+
+export function clearMutatedMappingValueContainerKind(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const resolved = resolvedName(fn, entry.scope)
+  if (resolved !== "setattr") return
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const receiver = argNodes[0] ?? null
+  const attribute = exactNodeValue(entry.scope, argNodes[1] ?? null, entry.guards)
+  if (receiver?.type !== "identifier" || !attribute || attribute.dynamic || attribute.literal !== "default_factory") return
+  clearTrackedMappingValueContainerKind(entry.scope, receiver.text)
+}
+
+export function clearMutatedClassModuleReceiverContainer(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const resolved = resolvedName(fn, entry.scope)
+  if (resolved !== "setattr") return
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const receiver = argNodes[0] ?? null
+  const attribute = exactNodeValue(entry.scope, argNodes[1] ?? null, entry.guards)
+  if (receiver?.type !== "identifier" || !attribute || attribute.dynamic || attribute.literal !== "__module__") return
+  clearClassModuleReceiverContainer(entry.scope, receiver)
+}
+
+export function clearMutatedTrustedOciModelMetadataMaps(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const resolved = resolvedName(fn, entry.scope)
+  if (resolved !== "setattr") return
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const receiver = argNodes[0] ?? null
+  const attribute = exactNodeValue(entry.scope, argNodes[1] ?? null, entry.guards)
+  if (receiver?.type !== "identifier" || !attribute || attribute.dynamic || attribute.literal === undefined) return
+  if (!OCI_MODEL_METADATA_ATTRIBUTES.has(attribute.literal)) return
+  clearTrustedOciModelMetadataMaps(entry.scope, receiver)
+}
+
+export function clearMutatedTrustedDifflibCalls(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const resolved = resolvedName(fn, entry.scope)
+  if (resolved !== "setattr") return
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const receiver = argNodes[0] ?? null
+  const attribute = exactNodeValue(entry.scope, argNodes[1] ?? null, entry.guards)
+  if (receiver?.type !== "identifier" || !attribute || attribute.dynamic || attribute.literal === undefined) return
+  if (!DIFFLIB_MUTABLE_TRUSTED_ATTRIBUTES.has(attribute.literal)) return
+  clearTrustedDifflibRoot(entry.scope, receiver)
+}
+
+export function clearMutatedTrustedHashlibCalls(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const resolved = resolvedName(fn, entry.scope)
+  if (resolved !== "setattr") return
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const receiver = argNodes[0] ?? null
+  const attribute = exactNodeValue(entry.scope, argNodes[1] ?? null, entry.guards)
+  if (receiver?.type !== "identifier" || !attribute || attribute.dynamic || attribute.literal === undefined) return
+  if (!HASHLIB_MUTABLE_TRUSTED_ATTRIBUTES.has(attribute.literal)) return
+  clearTrustedHashlibRoot(entry.scope, receiver)
+}
+
+export function clearMutatedTrustedModelDumpPaths(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const resolved = resolvedName(fn, entry.scope)
+  if (resolved !== "setattr") return
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const receiver = argNodes[0] ?? null
+  const attribute = exactNodeValue(entry.scope, argNodes[1] ?? null, entry.guards)
+  if (receiver?.type !== "identifier" || !attribute || attribute.dynamic || attribute.literal === undefined) return
+  if (attribute.literal === "model_validate") {
+    clearTrustedModelDumpFactory(entry.scope, receiver)
+  }
+  if (attribute.literal === "model_dump") {
+    if (trustedModelDumpFactoryRoot(entry.scope, receiver)) {
+      clearTrustedModelDumpFactory(entry.scope, receiver)
+      clearAllTrustedModelDumpInstances(entry.scope)
+    }
+    clearTrustedModelDumpInstance(entry.scope, receiver.text)
+  }
+}
+
+export function updateSqliteCursorExecution(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "attribute") return
+  const method = fn.childForFieldName("attribute")?.text
+  const receiver = fn.childForFieldName("object")
+  if (receiver?.type !== "identifier" || !method || !hasSqliteCursorInstance(entry.scope, receiver.text)) return
+  if (method === "execute") {
+    markExecutedSqliteCursorInstance(entry.scope, receiver.text)
+    return
+  }
+  if (method === "close") {
+    closeSqliteCursorInstance(entry.scope, receiver.text)
+    return
+  }
+  if (SQLITE_CURSOR_READ_METHODS.has(method) && !hasExecutedSqliteCursorInstance(entry.scope, receiver.text)) {
+    clearSqliteCursorInstance(entry.scope, receiver.text)
+  }
 }
 
 function updateMutatedReceiverElementKindWithHelper(
@@ -711,6 +1170,17 @@ export function updateMutatedReceiverElementKind(entry: TimelineEntry, helperRec
     clearHelperSiblingSubscriptReceiverPaths(entry.scope, helperReceiverElementKinds, info?.path, canonicalPath, equivalentPath)
   }
   const receiverKind = trackedReceiverContainerKind(receiver, entry.scope)
+  const resolvedReceiverKind = receiver?.type === "identifier" ? containerInstance(entry.scope, resolvedName(receiver, entry.scope) ?? receiver.text) : undefined
+  if (
+    receiver?.type === "identifier" &&
+    (receiverKind && TRACKED_MAPPING_VALUE_KINDS.has(receiverKind) || (resolvedReceiverKind && TRACKED_MAPPING_VALUE_KINDS.has(resolvedReceiverKind))) &&
+    TRACKED_MAPPING_VALUE_INVALIDATING_METHODS.has(method)
+  ) {
+    clearTrackedMappingValueContainerKind(entry.scope, receiver.text)
+  }
+  if (receiver?.type === "identifier" && TRACKED_MAPPING_VALUE_INVALIDATING_METHODS.has(method)) {
+    clearExactStringIterableProvenance(entry.scope, receiver.text)
+  }
   if (receiverKind !== "list") return
   updateMutatedReceiverElementKindWithHelper(entry, helperReceiverElementKinds, receiver?.type === "identifier", info?.path, canonicalPath, method, receiver)
 }
@@ -750,6 +1220,7 @@ export function discoverHelperParamSeeds(
   timeline: TimelineEntry[],
   rules: Rules,
   hasAtlassianImportProvenance: boolean,
+  helperReturnKinds?: HelperReturnKinds,
 ) {
   const activeByScope = new Map<Scope, Map<string, ActiveHelper>>()
   const allHelpers: ActiveHelper[] = []
@@ -761,7 +1232,7 @@ export function discoverHelperParamSeeds(
       replayImportEntry(entry, rules)
     } else if (entry.kind === "definition") {
       clearHelperReceiverDeps(helperReceiverElementKinds, helperInvalidationNames(entry))
-      replayDefinitionEntry(entry)
+      replayDefinitionEntry(entry, undefined, helperReturnKinds)
       const def = definitionNode(entry.node)
       const params = def?.type === "function_definition" ? parameterNames(def.childForFieldName("parameters")) : []
       registerActiveHelper(activeByScope, allHelpers, entry.scope, definitionName(entry.node), params, entry.bodyScope, entry.startIndex)
@@ -770,7 +1241,8 @@ export function discoverHelperParamSeeds(
       replayRebindEntry(entry)
     } else if (entry.kind === "assignment") {
       for (const name of helperInvalidationNames(entry)) activeByScope.get(entry.scope)?.delete(name)
-      replayAssignmentEntry(entry, rules, hasAtlassianImportProvenance, undefined, helperReceiverElementKinds)
+      escapeHelperByAlias(activeByScope, entry.scope, assignmentLeft(entry.node), assignmentRight(entry.node))
+      replayAssignmentEntry(entry, rules, hasAtlassianImportProvenance, undefined, helperReceiverElementKinds, helperReturnKinds)
       const left = assignmentLeft(entry.node)
       const right = assignmentRight(entry.node)
       const params = right?.type === "lambda" ? parameterNames(right.childForFieldName("parameters")) : []
@@ -799,6 +1271,14 @@ export function discoverHelperParamSeeds(
         clearEscapedReceiverPaths(entry, helperReceiverElementKinds)
       }
       clearMutatedIteratedElementInstance(entry)
+      clearMutatedMappingValueContainerKind(entry)
+      clearMutatedClassModuleReceiverContainer(entry)
+      clearMutatedTrustedOciModelMetadataMaps(entry)
+      clearMutatedTrustedDifflibCalls(entry)
+      clearMutatedTrustedHashlibCalls(entry)
+      clearMutatedTrustedModelDumpPaths(entry)
+      clearIndirectMappingMutations(entry)
+      updateSqliteCursorExecution(entry)
       updateMutatedReceiverElementKind(entry, helperReceiverElementKinds)
     }
   }
@@ -812,6 +1292,63 @@ export function discoverHelperParamSeeds(
       if (seed) seeded.set(name, seed)
     })
     if (seeded.size > 0) results.set(helper.definitionStart, seeded)
+  }
+  return results
+}
+
+export function discoverHelperReturnKinds(
+  timeline: TimelineEntry[],
+  helperSeeds: HelperSeeds,
+  rules: Rules,
+  hasAtlassianImportProvenance: boolean,
+) {
+  const candidates: HelperReturnCandidate[] = []
+
+  for (const entry of timeline) {
+    if (entry.kind === "import") {
+      replayImportEntry(entry, rules)
+      continue
+    }
+
+    if (entry.kind === "definition") {
+      replayDefinitionEntry(entry, helperSeeds)
+      registerHelperReturnCandidate(candidates, entry, definitionName(entry.node), definitionNode(entry.node) ?? null)
+      continue
+    }
+
+    if (entry.kind === "rebind") {
+      replayRebindEntry(entry)
+      continue
+    }
+
+    if (entry.kind === "assignment") {
+      escapeHelperReturnByAlias(candidates, entry, assignmentLeft(entry.node), assignmentRight(entry.node))
+      replayAssignmentEntry(entry, rules, hasAtlassianImportProvenance, helperSeeds)
+      const left = assignmentLeft(entry.node)
+      const right = assignmentRight(entry.node)
+      registerHelperReturnCandidate(candidates, entry, left?.type === "identifier" ? left.text : undefined, right?.type === "lambda" ? right : null)
+      continue
+    }
+
+    clearEscapedReceiverPaths(entry)
+    clearMutatedIteratedElementInstance(entry)
+    clearMutatedMappingValueContainerKind(entry)
+    clearMutatedClassModuleReceiverContainer(entry)
+    clearMutatedTrustedHashlibCalls(entry)
+    clearMutatedTrustedModelDumpPaths(entry)
+    clearMutatedTrustedDifflibCalls(entry)
+    clearMutatedTrustedOciModelMetadataMaps(entry)
+    clearIndirectMappingMutations(entry)
+    updateSqliteCursorExecution(entry)
+    updateMutatedReceiverElementKind(entry)
+  }
+
+  const results: HelperReturnKinds = new Map()
+  for (const candidate of candidates) {
+    if (candidate.blocked) continue
+    if (candidate.requiresSeeds && !helperSeeds.has(candidate.definitionStart)) continue
+    const kind = helperReturnContainerKind(candidate.returnValues, candidate.bodyScope)
+    if (kind) results.set(candidate.definitionStart, kind)
   }
   return results
 }

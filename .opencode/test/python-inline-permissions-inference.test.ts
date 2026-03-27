@@ -35,6 +35,8 @@ describe("python tool runtime", () => {
               "join('c', 'd')",
               "match = re.search('a+', text)",
               "match.group(1)",
+              "match.group(1).endswith('a')",
+              "match.group(1).replace('a', 'b')",
               "match.span()",
               "re.match('a+', text).group(0)",
             ].join("\n"),
@@ -57,6 +59,8 @@ describe("python tool runtime", () => {
             "unknown:callable:src.read_text",
             "unknown:callable:os.path.join",
             "unknown:callable:match.group",
+            "unknown:callable:match.group.endswith",
+            "unknown:callable:match.group.replace",
             "unknown:callable:match.span",
           ]),
         )
@@ -76,6 +80,8 @@ describe("python tool runtime", () => {
             expect.objectContaining({ kind: "pure", call: "os.path.join", pattern: "pure:os.path.join" }),
             expect.objectContaining({ kind: "pure", call: "re.search", pattern: "pure:re.search" }),
             expect.objectContaining({ kind: "pure", call: "match.group", pattern: "pure:match.group" }),
+            expect.objectContaining({ kind: "pure", call: "match.group.endswith", pattern: "pure:match.group.endswith" }),
+            expect.objectContaining({ kind: "pure", call: "match.group.replace", pattern: "pure:match.group.replace" }),
             expect.objectContaining({ kind: "pure", call: "match.span", pattern: "pure:match.span" }),
             expect.objectContaining({ kind: "pure", call: "re.match.group", pattern: "pure:re.match.group" }),
           ]),
@@ -119,6 +125,46 @@ describe("python tool runtime", () => {
             }),
           ]),
         )
+      })
+    })
+
+    it("keeps shadowed regex group string-return chains and multi-group selectors on unknown permission patterns", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "re = object()",
+              "m = re.match(r'(foo)', text)",
+              "m.group(1).endswith('oo')",
+              "m.group(1).replace('f', 'b')",
+            ].join("\n"),
+            args: [],
+            description: "shadowed regex group string chains",
+          },
+          shadowedContext,
+        )
+
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:m.group.endswith", "unknown:callable:m.group.replace"]))
+
+        const multiGroupContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "m = re.match(r'(foo)(bar)', text)",
+              "m.group(1, 2).endswith('oo')",
+            ].join("\n"),
+            args: [],
+            description: "multi-group regex chain",
+          },
+          multiGroupContext,
+        )
+
+        expect(getAsk(multiGroupContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:m.group.endswith"]))
       })
     })
 
@@ -376,6 +422,103 @@ describe("python tool runtime", () => {
             expect.objectContaining({ kind: "read", call: "p.exists", pattern: "read:<dynamic>" }),
           ]),
         )
+      })
+    })
+
+    it("skips python review noise for bounded iterated Path tuple destructuring and keeps mutated pairs conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const positiveContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "repo = Path('.').resolve()",
+              "renames = [(repo / 'a.py', repo / 'b.py'), (repo / 'c.py', repo / 'd.py')]",
+              "for old_path, new_path in renames:",
+              "    if old_path.exists():",
+              "        old_path.rename(new_path)",
+            ].join("\n"),
+            args: [],
+            description: "iterated path tuple pairs",
+          },
+          positiveContext,
+        )
+
+        const ask = getAsk(positiveContext, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["read:<dynamic>", "write:<dynamic>"]))
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:old_path.exists", "unknown:callable:old_path.rename"]))
+
+        const metadata = getAskMetadata(positiveContext, "python")
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "old_path.exists", pattern: "read:<dynamic>" }),
+            expect.objectContaining({ kind: "write", call: "old_path.rename", pattern: "write:<dynamic>" }),
+          ]),
+        )
+
+        const mutatedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "repo = Path('.').resolve()",
+              "renames = [(repo / 'a.py', repo / 'b.py')]",
+              "renames[0] = ('x', 'y')",
+              "for old_path, new_path in renames:",
+              "    if old_path.exists():",
+              "        old_path.rename(new_path)",
+            ].join("\n"),
+            args: [],
+            description: "mutated iterated path tuple pairs",
+          },
+          mutatedContext,
+        )
+
+        expect(getAsk(mutatedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:old_path.exists", "unknown:callable:old_path.rename"]))
+
+        const aliasMutatedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "repo = Path('.').resolve()",
+              "renames = [(repo / 'a.py', repo / 'b.py')]",
+              "alias = renames",
+              "other = alias",
+              "other[0] = ('x', 'y')",
+              "for old_path, new_path in alias:",
+              "    if old_path.exists():",
+              "        old_path.rename(new_path)",
+            ].join("\n"),
+            args: [],
+            description: "aliased mutated iterated path tuple pairs",
+          },
+          aliasMutatedContext,
+        )
+
+        expect(getAsk(aliasMutatedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:old_path.exists", "unknown:callable:old_path.rename"]))
+
+        const nonFlatContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "repo = Path('.').resolve()",
+              "renames = [(repo / 'a.py', repo / 'b.py', repo / 'c.py')]",
+              "for old_path, *rest in renames:",
+              "    old_path.exists()",
+            ].join("\n"),
+            args: [],
+            description: "non-flat iterated path tuple pairs",
+          },
+          nonFlatContext,
+        )
+
+        expect(getAsk(nonFlatContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:old_path.exists"]))
       })
     })
 
@@ -2097,6 +2240,75 @@ describe("python tool runtime", () => {
             expect.objectContaining({ kind: "pure", call: "item.get", pattern: "pure:item.get" }),
           ]),
         )
+      })
+    })
+
+    it("skips python ask for conditional json fallback locals and keeps incompatible ternaries conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const positiveContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import json",
+              "store = json.loads(text)",
+              "cur = json.loads(store.get('settings.v3', '{}')) if store.get('settings.v3') else {}",
+              "cur.get('keybinds')",
+              "cur.pop('keybinds', None)",
+            ].join("\n"),
+            args: [],
+            description: "conditional json fallback",
+          },
+          positiveContext,
+        )
+
+        expect(getAsk(positiveContext, "python")).toBeUndefined()
+        const positiveMetadata = positiveContext.metadatas[0]?.metadata
+        expect(positiveMetadata?.permissionPatterns).toEqual([])
+        expect(positiveMetadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "json.loads", pattern: "pure:json.loads" }),
+            expect.objectContaining({ kind: "pure", call: "store.get", pattern: "pure:store.get" }),
+            expect.objectContaining({ kind: "pure", call: "cur.get", pattern: "pure:cur.get" }),
+            expect.objectContaining({ kind: "pure", call: "cur.pop", pattern: "pure:cur.pop" }),
+          ]),
+        )
+
+        const negativePrograms = [
+          {
+            description: "conditional json fallback customizer",
+            code: [
+              "import json",
+              "cur = json.loads(text, object_hook=hook) if enabled else {}",
+              "cur.get('keybinds')",
+              "cur.pop('keybinds', None)",
+            ].join("\n"),
+          },
+          {
+            description: "conditional json fallback incompatible branch",
+            code: [
+              "import json",
+              "cur = json.loads(text) if enabled else object()",
+              "cur.get('keybinds')",
+              "cur.pop('keybinds', None)",
+            ].join("\n"),
+          },
+        ]
+
+        for (const program of negativePrograms) {
+          const context = createMockContext({ worktree, directory: worktree })
+          await executeExpectingEnoent(
+            {
+              code: program.code,
+              args: [],
+              description: program.description,
+            },
+            context,
+          )
+
+          const ask = getAsk(context, "python")
+          expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cur.get", "unknown:callable:cur.pop"]))
+        }
       })
     })
 

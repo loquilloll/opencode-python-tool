@@ -1,6 +1,25 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "permission": {
+    "read": {
+      "/tmp/*": "allow",
+    },
+    "edit": {
+      "/tmp/*": "allow",
+    },
+    "bash": {
+      "OPENCODE_PYTHON_RULES=\"/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json\" bun run ../src/python-session-report.ts*": "allow",
+      "OPENCODE_PYTHON_RULES*bun run ../src/python-session-report.ts*": "allow",
+      "DB=\"${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db\"; LEDGER=\"${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-review.json\"; bun run ../src/python-session-report.ts --db \"$DB\" --ledger \"$LEDGER\" --review-families-json": "allow",
+      "*python-family-batching/scripts/*": "allow",
+      ".opencode/skills/python-family-batching/scripts/*": "allow",
+      "/home/alvins/Documents/pgit/opencode-python-tool/.opencode/skills/python-family-batching/scripts/*": "allow",
+      "python3 *python-family-batching/scripts/*.py*": "allow",
+      "bash *python-family-batching/scripts/*.sh*": "allow",
+      "bun run src/python-session-report.ts*": "allow",
+      "bun run ../src/python-session-report.ts*": "allow",
+      "bun test*": "allow",
+    },
     "python": {
       "*": "ask",
       "exec:eval": "deny",

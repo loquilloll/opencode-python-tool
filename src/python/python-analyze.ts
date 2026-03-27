@@ -12,13 +12,22 @@ import {
   scope,
 } from "./python-scope"
 import {
+  clearMutatedClassModuleReceiverContainer,
+  clearIndirectMappingMutations,
+  clearMutatedTrustedHashlibCalls,
+  clearMutatedTrustedModelDumpPaths,
+  clearMutatedTrustedDifflibCalls,
+  clearMutatedMappingValueContainerKind,
+  clearMutatedTrustedOciModelMetadataMaps,
   clearEscapedReceiverPaths,
   clearMutatedIteratedElementInstance,
+  discoverHelperReturnKinds,
   discoverHelperParamSeeds,
   replayAssignmentEntry,
   replayDefinitionEntry,
   replayImportEntry,
   replayRebindEntry,
+  updateSqliteCursorExecution,
   updateMutatedReceiverElementKind,
 } from "./python-replay"
 import { buildTimeline } from "./python-timeline"
@@ -50,7 +59,16 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
 
   const seedScope = scope()
   const seedTimeline = buildTimeline(tree.rootNode, seedScope, { scope, invalidateTrackedName })
-  const helperSeeds = discoverHelperParamSeeds(seedTimeline, rules, hasAtlassianImportProvenance)
+  const initialHelperSeeds = discoverHelperParamSeeds(seedTimeline, rules, hasAtlassianImportProvenance)
+  const helperScope = scope()
+  const helperTimeline = buildTimeline(tree.rootNode, helperScope, { scope, invalidateTrackedName })
+  const initialHelperReturnKinds = discoverHelperReturnKinds(helperTimeline, initialHelperSeeds, rules, hasAtlassianImportProvenance)
+  const enrichedSeedScope = scope()
+  const enrichedSeedTimeline = buildTimeline(tree.rootNode, enrichedSeedScope, { scope, invalidateTrackedName })
+  const helperSeeds = discoverHelperParamSeeds(enrichedSeedTimeline, rules, hasAtlassianImportProvenance, initialHelperReturnKinds)
+  const enrichedHelperScope = scope()
+  const enrichedHelperTimeline = buildTimeline(tree.rootNode, enrichedHelperScope, { scope, invalidateTrackedName })
+  const helperReturnKinds = discoverHelperReturnKinds(enrichedHelperTimeline, helperSeeds, rules, hasAtlassianImportProvenance)
 
   const rootScope = scope()
   const timeline = buildTimeline(tree.rootNode, rootScope, { scope, invalidateTrackedName })
@@ -63,7 +81,7 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
     }
 
     if (entry.kind === "definition") {
-      replayDefinitionEntry(entry, helperSeeds)
+      replayDefinitionEntry(entry, helperSeeds, helperReturnKinds)
       continue
     }
 
@@ -73,7 +91,7 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
     }
 
     if (entry.kind === "assignment") {
-      replayAssignmentEntry(entry, rules, hasAtlassianImportProvenance, helperSeeds)
+      replayAssignmentEntry(entry, rules, hasAtlassianImportProvenance, helperSeeds, undefined, helperReturnKinds)
       continue
     }
 
@@ -87,6 +105,14 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
     if (resolved) events.push(foldResolvedEffect(resolved))
     clearEscapedReceiverPaths(entry)
     clearMutatedIteratedElementInstance(entry)
+    clearMutatedMappingValueContainerKind(entry)
+    clearMutatedClassModuleReceiverContainer(entry)
+    clearMutatedTrustedHashlibCalls(entry)
+    clearMutatedTrustedModelDumpPaths(entry)
+    clearMutatedTrustedDifflibCalls(entry)
+    clearMutatedTrustedOciModelMetadataMaps(entry)
+    clearIndirectMappingMutations(entry)
+    updateSqliteCursorExecution(entry)
     updateMutatedReceiverElementKind(entry)
   }
 

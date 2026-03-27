@@ -47,7 +47,7 @@ export function pureContainerMethod(kind: ContainerKind, method: string) {
   if (kind === "tuple") return TUPLE_PURE_METHODS.has(method)
   if (kind === "range") return RANGE_PURE_METHODS.has(method)
   if (kind === "dict") return DICT_PURE_METHODS.has(method)
-  if (kind === "dict-list-values" || kind === "dict-set-values") return DICT_PURE_METHODS.has(method)
+  if (kind === "dict-list-values" || kind === "dict-set-values" || kind === "dict-counter-values") return DICT_PURE_METHODS.has(method)
   if (kind === "counter") return COUNTER_PURE_METHODS.has(method)
   if (kind === "json") return JSON_PURE_METHODS.has(method)
   if (kind === "datetime-date") return DATETIME_DATE_PURE_METHODS.has(method)

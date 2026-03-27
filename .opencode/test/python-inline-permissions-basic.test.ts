@@ -1734,6 +1734,429 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("skips python ask for exact string-key dict items destructuring and keeps mixed keys conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const positiveContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import datetime as dt",
+              "samples = {",
+              "    ' date': dt.date(2024, 1, 2),",
+              "    ' datetime': dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc),",
+              "}",
+              "for label, obj in samples.items():",
+              "    print(label.strip())",
+            ].join("\n"),
+            args: [],
+            description: "string-key dict items label strip",
+          },
+          positiveContext,
+        )
+
+        expect(getAsk(positiveContext, "python")).toBeUndefined()
+        const positiveMetadata = positiveContext.metadatas[0]?.metadata
+        expect(positiveMetadata?.permissionPatterns).toEqual([])
+        expect(positiveMetadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "label.strip", pattern: "pure:label.strip" }),
+            expect.objectContaining({ kind: "emit", call: "print", pattern: "emit:print" }),
+          ]),
+        )
+
+        const mixedKeyContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "samples = {' date': 1, 2: 3}\nfor label, obj in samples.items():\n    label.strip()",
+            args: [],
+            description: "mixed-key dict items label strip",
+          },
+          mixedKeyContext,
+        )
+        expect(getAsk(mixedKeyContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:label.strip"]))
+
+        const mutatedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "samples = {' date': 1, ' datetime': 2}\nsamples[1] = 3\nfor label, obj in samples.items():\n    label.strip()",
+            args: [],
+            description: "mutated dict items label strip",
+          },
+          mutatedContext,
+        )
+        expect(getAsk(mutatedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:label.strip"]))
+
+        const updatedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "samples = {' date': 1, ' datetime': 2}\nsamples.update({1: 3})\nfor label, obj in samples.items():\n    label.strip()",
+            args: [],
+            description: "updated dict items label strip",
+          },
+          updatedContext,
+        )
+        expect(getAsk(updatedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:label.strip"]))
+
+        const setdefaultContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "samples = {' date': 1, ' datetime': 2}\nsamples.setdefault(1, 3)\nfor label, obj in samples.items():\n    label.strip()",
+            args: [],
+            description: "setdefault dict items label strip",
+          },
+          setdefaultContext,
+        )
+        expect(getAsk(setdefaultContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:label.strip"]))
+
+        const splatContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "samples = {**other, ' date': 1}\nfor label, obj in samples.items():\n    label.strip()",
+            args: [],
+            description: "splat dict items label strip",
+          },
+          splatContext,
+        )
+        expect(getAsk(splatContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:label.strip"]))
+
+        const dictUpdateContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "samples = {' date': 1, ' datetime': 2}\ndict.update(samples, {1: 3})\nfor label, obj in samples.items():\n    label.strip()",
+            args: [],
+            description: "dict.update label strip",
+          },
+          dictUpdateContext,
+        )
+        expect(getAsk(dictUpdateContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:label.strip"]))
+
+        const boundUpdateContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "samples = {' date': 1, ' datetime': 2}\nupd = samples.update\nupd({1: 3})\nfor label, obj in samples.items():\n    label.strip()",
+            args: [],
+            description: "bound update label strip",
+          },
+          boundUpdateContext,
+        )
+        expect(getAsk(boundUpdateContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:label.strip"]))
+      })
+    })
+
+    it("skips python ask for trusted direct-imported client __mro__ module metadata and keeps negatives conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const positiveContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from msgraph import GraphServiceClient",
+              "for cls in GraphServiceClient.__mro__:",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "class mro module metadata",
+          },
+          positiveContext,
+        )
+
+        expect(getAsk(positiveContext, "python")).toBeUndefined()
+        const positiveMetadata = positiveContext.metadatas[0]?.metadata
+        expect(positiveMetadata?.permissionPatterns).toEqual([])
+        expect(positiveMetadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "cls.__module__.startswith", pattern: "pure:cls.__module__.startswith" }),
+          ]),
+        )
+
+        const negativeContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from msgraph import GraphServiceClient",
+              "GraphServiceClient = object()",
+              "for cls in GraphServiceClient.__mro__:",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "shadowed class mro module metadata",
+          },
+          negativeContext,
+        )
+
+        const ask = getAsk(negativeContext, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cls.__module__.startswith"]))
+
+        const reboundLoopContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from msgraph import GraphServiceClient",
+              "for cls in GraphServiceClient.__mro__:",
+              "    cls = object()",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "rebound loop class metadata",
+          },
+          reboundLoopContext,
+        )
+
+        expect(getAsk(reboundLoopContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cls.__module__.startswith"]))
+
+        const nonClassContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from typing import TypeGuard as GraphServiceClient",
+              "for cls in GraphServiceClient.__mro__:",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "non-class class-like alias mro metadata",
+          },
+          nonClassContext,
+        )
+
+        expect(getAsk(nonClassContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cls.__module__.startswith"]))
+
+        const uppercaseConstantContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from unittest.mock import ANY as GraphServiceClient",
+              "for cls in GraphServiceClient.__mro__:",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "uppercase non-class alias mro metadata",
+          },
+          uppercaseConstantContext,
+        )
+
+        expect(getAsk(uppercaseConstantContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cls.__module__.startswith"]))
+
+        const wrongModuleContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from fake_sdk import GraphServiceClient",
+              "for cls in GraphServiceClient.__mro__:",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "wrong-module client mro metadata",
+          },
+          wrongModuleContext,
+        )
+
+        expect(getAsk(wrongModuleContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cls.__module__.startswith"]))
+
+        const directAssignmentContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from msgraph import GraphServiceClient",
+              "for cls in GraphServiceClient.__mro__:",
+              "    cls.__module__ = 0",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "assigned class module metadata",
+          },
+          directAssignmentContext,
+        )
+
+        expect(getAsk(directAssignmentContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cls.__module__.startswith"]))
+
+        const setattrContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from msgraph import GraphServiceClient",
+              "for cls in GraphServiceClient.__mro__:",
+              "    setattr(cls, '__module__', 0)",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "rebound class module metadata",
+          },
+          setattrContext,
+        )
+
+        expect(getAsk(setattrContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cls.__module__.startswith"]))
+
+        const aliasAssignmentContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from msgraph import GraphServiceClient",
+              "for cls in GraphServiceClient.__mro__:",
+              "    alias = cls",
+              "    alias.__module__ = 0",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "aliased assigned class module metadata",
+          },
+          aliasAssignmentContext,
+        )
+
+        expect(getAsk(aliasAssignmentContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cls.__module__.startswith"]))
+
+        const aliasSetattrContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from msgraph import GraphServiceClient",
+              "for cls in GraphServiceClient.__mro__:",
+              "    alias = cls",
+              "    setattr(alias, '__module__', 0)",
+              "    cls.__module__.startswith('msgraph')",
+            ].join("\n"),
+            args: [],
+            description: "aliased rebound class module metadata",
+          },
+          aliasSetattrContext,
+        )
+
+        expect(getAsk(aliasSetattrContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cls.__module__.startswith"]))
+      })
+    })
+
+    it("skips python ask for exact imported CreateClusterDetails metadata lookups and keeps negatives conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const positiveContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from oci.container_engine.models import CreateClusterDetails",
+              "print(CreateClusterDetails.swagger_types.get('cluster_pod_network_options'))",
+              "print(CreateClusterDetails.attribute_map.get('cluster_pod_network_options'))",
+            ].join("\n"),
+            args: [],
+            description: "oci metadata lookup",
+          },
+          positiveContext,
+        )
+
+        expect(getAsk(positiveContext, "python")).toBeUndefined()
+        const positiveMetadata = positiveContext.metadatas[0]?.metadata
+        expect(positiveMetadata?.permissionPatterns).toEqual([])
+        expect(positiveMetadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "CreateClusterDetails.swagger_types.get", pattern: "pure:CreateClusterDetails.swagger_types.get" }),
+            expect.objectContaining({ kind: "pure", call: "CreateClusterDetails.attribute_map.get", pattern: "pure:CreateClusterDetails.attribute_map.get" }),
+            expect.objectContaining({ kind: "emit", call: "print", pattern: "emit:print" }),
+          ]),
+        )
+
+        const negativePrograms = [
+          {
+            description: "module-qualified oci metadata lookup",
+            code: [
+              "import oci",
+              "oci.container_engine.models.CreateClusterDetails.swagger_types.get('cluster_pod_network_options')",
+              "oci.container_engine.models.CreateClusterDetails.attribute_map.get('cluster_pod_network_options')",
+            ].join("\n"),
+          },
+          {
+            description: "aliased oci metadata lookup",
+            code: [
+              "from oci.container_engine.models import CreateClusterDetails as ClusterDetails",
+              "ClusterDetails.swagger_types.get('cluster_pod_network_options')",
+              "ClusterDetails.attribute_map.get('cluster_pod_network_options')",
+            ].join("\n"),
+          },
+          {
+            description: "wrong-module oci metadata lookup",
+            code: [
+              "from fake_sdk import CreateClusterDetails",
+              "CreateClusterDetails.swagger_types.get('cluster_pod_network_options')",
+              "CreateClusterDetails.attribute_map.get('cluster_pod_network_options')",
+            ].join("\n"),
+          },
+          {
+            description: "shadowed oci metadata lookup",
+            code: [
+              "from oci.container_engine.models import CreateClusterDetails",
+              "CreateClusterDetails = object()",
+              "CreateClusterDetails.swagger_types.get('cluster_pod_network_options')",
+              "CreateClusterDetails.attribute_map.get('cluster_pod_network_options')",
+            ].join("\n"),
+          },
+          {
+            description: "assigned oci metadata lookup",
+            code: [
+              "from oci.container_engine.models import CreateClusterDetails",
+              "CreateClusterDetails.attribute_map = 0",
+              "CreateClusterDetails.swagger_types = 0",
+              "CreateClusterDetails.swagger_types.get('cluster_pod_network_options')",
+              "CreateClusterDetails.attribute_map.get('cluster_pod_network_options')",
+            ].join("\n"),
+          },
+          {
+            description: "aliased assigned oci metadata lookup",
+            code: [
+              "from oci.container_engine.models import CreateClusterDetails",
+              "alias = CreateClusterDetails",
+              "alias.attribute_map = 0",
+              "alias.swagger_types = 0",
+              "CreateClusterDetails.swagger_types.get('cluster_pod_network_options')",
+              "CreateClusterDetails.attribute_map.get('cluster_pod_network_options')",
+            ].join("\n"),
+          },
+          {
+            description: "setattr oci metadata lookup",
+            code: [
+              "from oci.container_engine.models import CreateClusterDetails",
+              "setattr(CreateClusterDetails, 'attribute_map', 0)",
+              "setattr(CreateClusterDetails, 'swagger_types', 0)",
+              "CreateClusterDetails.swagger_types.get('cluster_pod_network_options')",
+              "CreateClusterDetails.attribute_map.get('cluster_pod_network_options')",
+            ].join("\n"),
+          },
+          {
+            description: "aliased setattr oci metadata lookup",
+            code: [
+              "from oci.container_engine.models import CreateClusterDetails",
+              "alias = CreateClusterDetails",
+              "setattr(alias, 'attribute_map', 0)",
+              "setattr(alias, 'swagger_types', 0)",
+              "CreateClusterDetails.swagger_types.get('cluster_pod_network_options')",
+              "CreateClusterDetails.attribute_map.get('cluster_pod_network_options')",
+            ].join("\n"),
+          },
+        ]
+
+        for (const program of negativePrograms) {
+          const context = createMockContext({ worktree, directory: worktree })
+          await executeExpectingEnoent(
+            {
+              code: program.code,
+              args: [],
+              description: program.description,
+            },
+            context,
+          )
+          const patterns = getAsk(context, "python")?.patterns ?? []
+          expect(patterns.some((pattern) => pattern.endsWith("CreateClusterDetails.swagger_types.get"))).toBe(true)
+          expect(patterns.some((pattern) => pattern.endsWith("CreateClusterDetails.attribute_map.get"))).toBe(true)
+        }
+      })
+    })
+
     it("keeps dir-derived string origins conservative after mutating list methods", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -1809,6 +2232,145 @@ describe("python tool runtime", () => {
             expect.objectContaining({ kind: "pure", call: "inv.pop", pattern: "pure:inv.pop" }),
           ]),
         )
+      })
+    })
+
+    it("skips python ask for defaultdict Counter items destructuring", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from collections import Counter, defaultdict",
+              "buckets = defaultdict(Counter)",
+              "buckets['pytest']['pytest.main'] += 1",
+              "for bucket, counts in buckets.items():",
+              "    print(bucket, counts.most_common())",
+            ].join("\n"),
+            args: [],
+            description: "defaultdict counter items",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "collections.defaultdict", pattern: "pure:collections.defaultdict" }),
+            expect.objectContaining({ kind: "pure", call: "buckets.items", pattern: "pure:buckets.items" }),
+            expect.objectContaining({ kind: "pure", call: "counts.most_common", pattern: "pure:counts.most_common" }),
+            expect.objectContaining({ kind: "emit", call: "print", pattern: "emit:print" }),
+          ]),
+        )
+      })
+    })
+
+    it("skips python ask for aliased Counter defaultdict items destructuring", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from collections import Counter as Tally, defaultdict",
+              "buckets = defaultdict(Tally)",
+              "for bucket, counts in buckets.items():",
+              "    counts.most_common()",
+            ].join("\n"),
+            args: [],
+            description: "defaultdict aliased counter items",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "collections.defaultdict", pattern: "pure:collections.defaultdict" }),
+            expect.objectContaining({ kind: "pure", call: "buckets.items", pattern: "pure:buckets.items" }),
+            expect.objectContaining({ kind: "pure", call: "counts.most_common", pattern: "pure:counts.most_common" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps defaultdict Counter items destructuring on the ask path after widening update", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from collections import Counter, defaultdict",
+              "buckets = defaultdict(Counter)",
+              "buckets.update({'other': value})",
+              "for bucket, counts in buckets.items():",
+              "    counts.most_common()",
+            ].join("\n"),
+            args: [],
+            description: "defaultdict counter items widened",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:buckets.items", "unknown:callable:counts.most_common"]))
+      })
+    })
+
+    it("keeps defaultdict Counter items destructuring on the ask path after default_factory rebinding", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from collections import Counter, defaultdict",
+              "buckets = defaultdict(Counter)",
+              "setattr(buckets, 'default_factory', dict)",
+              "buckets['other']",
+              "for bucket, counts in buckets.items():",
+              "    counts.most_common()",
+            ].join("\n"),
+            args: [],
+            description: "defaultdict counter factory rebound",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:buckets.items", "unknown:callable:counts.most_common"]))
+      })
+    })
+
+    it("keeps aliased defaultdict Counter factory rebinding on the ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from collections import Counter, defaultdict",
+              "buckets = defaultdict(Counter)",
+              "alias = buckets",
+              "setattr(alias, 'default_factory', dict)",
+              "buckets['other']",
+              "for bucket, counts in buckets.items():",
+              "    counts.most_common()",
+            ].join("\n"),
+            args: [],
+            description: "defaultdict aliased factory rebound",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:buckets.items", "unknown:callable:counts.most_common"]))
       })
     })
 
@@ -1954,6 +2516,82 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("projects helper-tracked datetime chains without extra downstream unknown noise", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "def parse(raw):",
+              "    return datetime.fromisoformat(raw.replace('Z', '+00:00'))",
+              "def secs(a, b):",
+              "    gap = b - a",
+              "    return gap.total_seconds()",
+              "start = parse('2024-01-02T03:04:05Z')",
+              "end = parse('2024-01-02T03:04:35Z')",
+              "start.isoformat()",
+              "secs(start, end)",
+            ].join("\n"),
+            args: [],
+            description: "helper datetime provenance",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:parse", "unknown:callable:secs"]))
+        expect(ask?.patterns).not.toEqual(
+          expect.arrayContaining(["unknown:callable:raw.replace", "unknown:callable:start.isoformat", "unknown:callable:gap.total_seconds"]),
+        )
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "raw.replace", pattern: "pure:raw.replace" }),
+            expect.objectContaining({ kind: "pure", call: "datetime.datetime.fromisoformat", pattern: "pure:datetime.datetime.fromisoformat" }),
+            expect.objectContaining({ kind: "pure", call: "start.isoformat", pattern: "pure:start.isoformat" }),
+            expect.objectContaining({ kind: "pure", call: "gap.total_seconds", pattern: "pure:gap.total_seconds" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:parse", pattern: "unknown:callable:parse" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:secs", pattern: "unknown:callable:secs" }),
+          ]),
+        )
+      })
+    })
+
+    it("keeps shadowed datetime roots as unknown runtime operations", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import datetime",
+              "datetime = object()",
+              "datetime.UTC.tzname(None)",
+              "datetime.datetime.fromisoformat('2024-01-02T03:04:05+00:00')",
+            ].join("\n"),
+            args: [],
+            description: "shadowed datetime roots",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(
+          expect.arrayContaining(["unknown:callable:datetime.UTC.tzname", "unknown:callable:datetime.datetime.fromisoformat"]),
+        )
+
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "unknown", call: "callable:datetime.UTC.tzname", pattern: "unknown:callable:datetime.UTC.tzname" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:datetime.datetime.fromisoformat", pattern: "unknown:callable:datetime.datetime.fromisoformat" }),
+          ]),
+        )
+      })
+    })
+
     it("skips python ask for pure-only hashlib helpers and keeps tracked pure metadata", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -1962,6 +2600,7 @@ describe("python tool runtime", () => {
           {
             code: [
               "import hashlib",
+              "hashlib.sha1(b'w').hexdigest()",
               "hashlib.sha256(b'x')",
               "digest = hashlib.sha256(b'y')",
               "digest.hexdigest()",
@@ -1979,6 +2618,7 @@ describe("python tool runtime", () => {
         expect(metadata?.permissionPatterns).toEqual([])
         expect(metadata?.operations).toEqual(
           expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "hashlib.sha1.hexdigest", pattern: "pure:hashlib.sha1.hexdigest" }),
             expect.objectContaining({ kind: "pure", call: "hashlib.sha256", pattern: "pure:hashlib.sha256" }),
             expect.objectContaining({ kind: "pure", call: "digest.hexdigest", pattern: "pure:digest.hexdigest" }),
             expect.objectContaining({ kind: "pure", call: "hashlib.sha256.digest", pattern: "pure:hashlib.sha256.digest" }),
@@ -2002,6 +2642,36 @@ describe("python tool runtime", () => {
 
         const ask = getAsk(context, "python")
         expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:hashlib.sha256", "unknown:callable:hashlib.sha256.hexdigest"]))
+      })
+    })
+
+    it("keeps hashlib.sha1 member mutation on the unknown ask path", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const assignedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import hashlib\nhashlib.sha1 = custom\nhashlib.sha1(b'x').hexdigest()",
+            args: [],
+            description: "assigned hashlib sha1 member",
+          },
+          assignedContext,
+        )
+
+        expect(getAsk(assignedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:hashlib.sha1", "unknown:callable:hashlib.sha1.hexdigest"]))
+
+        const setattrContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import hashlib\nsetattr(hashlib, 'sha1', custom)\nhashlib.sha1(b'x').hexdigest()",
+            args: [],
+            description: "setattr hashlib sha1 member",
+          },
+          setattrContext,
+        )
+
+        expect(getAsk(setattrContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:hashlib.sha1", "unknown:callable:hashlib.sha1.hexdigest"]))
       })
     })
 
@@ -2085,6 +2755,533 @@ describe("python tool runtime", () => {
         )
 
         expect(getAsk(directImportContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:decompress"]))
+      })
+    })
+
+    it("skips python ask for trusted difflib.unified_diff calls and keeps aliased forms conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const moduleContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import difflib",
+              "for line in difflib.unified_diff(before, after):",
+              "    print(line)",
+            ].join("\n"),
+            args: [],
+            description: "module difflib unified diff",
+          },
+          moduleContext,
+        )
+
+        expect(getAsk(moduleContext, "python")).toBeUndefined()
+        expect(moduleContext.metadatas[0]?.metadata?.permissionPatterns).toEqual([])
+        expect(moduleContext.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "difflib.unified_diff", pattern: "pure:difflib.unified_diff" }),
+            expect.objectContaining({ kind: "emit", call: "print", pattern: "emit:print" }),
+          ]),
+        )
+
+        const directImportContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from difflib import unified_diff",
+              "for line in unified_diff(before, after):",
+              "    print(line)",
+            ].join("\n"),
+            args: [],
+            description: "direct-import difflib unified diff",
+          },
+          directImportContext,
+        )
+
+        expect(getAsk(directImportContext, "python")).toBeUndefined()
+        expect(directImportContext.metadatas[0]?.metadata?.permissionPatterns).toEqual([])
+
+        const reboundContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import difflib\ndifflib = object()\ndifflib.unified_diff(before, after)",
+            args: [],
+            description: "rebound difflib unified diff",
+          },
+          reboundContext,
+        )
+
+        expect(getAsk(reboundContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:difflib.unified_diff"]))
+
+        const aliasedModuleContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import difflib as df\ndf.unified_diff(before, after)",
+            args: [],
+            description: "aliased difflib unified diff",
+          },
+          aliasedModuleContext,
+        )
+
+        expect(getAsk(aliasedModuleContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:difflib.unified_diff"]))
+
+        const aliasedLeafContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "from difflib import unified_diff as diff_lines\ndiff_lines(before, after)",
+            args: [],
+            description: "aliased leaf difflib unified diff",
+          },
+          aliasedLeafContext,
+        )
+
+        expect(getAsk(aliasedLeafContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:difflib.unified_diff"]))
+
+        const capturedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import difflib\nfn = difflib.unified_diff\nfn(before, after)",
+            args: [],
+            description: "captured difflib unified diff",
+          },
+          capturedContext,
+        )
+
+        expect(getAsk(capturedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:difflib.unified_diff"]))
+
+        const assignedMemberContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import difflib\ndifflib.unified_diff = custom\ndifflib.unified_diff(before, after)",
+            args: [],
+            description: "assigned difflib unified diff member",
+          },
+          assignedMemberContext,
+        )
+
+        expect(getAsk(assignedMemberContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:difflib.unified_diff"]))
+
+        const setattrMemberContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import difflib\nsetattr(difflib, 'unified_diff', custom)\ndifflib.unified_diff(before, after)",
+            args: [],
+            description: "setattr difflib unified diff member",
+          },
+          setattrMemberContext,
+        )
+
+        expect(getAsk(setattrMemberContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:difflib.unified_diff"]))
+
+        const aliasAssignedMemberContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import difflib\nalias = difflib\nalias.unified_diff = custom\ndifflib.unified_diff(before, after)",
+            args: [],
+            description: "assigned alias difflib unified diff member",
+          },
+          aliasAssignedMemberContext,
+        )
+
+        expect(getAsk(aliasAssignedMemberContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:difflib.unified_diff"]))
+
+        const aliasSetattrMemberContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "import difflib\nalias = difflib\nsetattr(alias, 'unified_diff', custom)\ndifflib.unified_diff(before, after)",
+            args: [],
+            description: "setattr alias difflib unified diff member",
+          },
+          aliasSetattrMemberContext,
+        )
+
+        expect(getAsk(aliasSetattrMemberContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:difflib.unified_diff"]))
+      })
+    })
+
+    it("skips python ask for exact direct-imported Github constructors and keeps other forms conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const directContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: "from github import Github\nGithub(login_or_token='x')",
+            args: [],
+            description: "direct github constructor",
+          },
+          directContext,
+        )
+
+        expect(getAsk(directContext, "python")?.patterns).toEqual(expect.arrayContaining(["exec:github.Github"]))
+        expect(directContext.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "exec", call: "github.Github", pattern: "exec:github.Github" }),
+          ]),
+        )
+
+        const moduleContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "import github\ngithub.Github(login_or_token='x')",
+            args: [],
+            description: "module github constructor",
+          },
+          moduleContext,
+        )
+        expect(getAsk(moduleContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:github.Github"]))
+
+        const aliasContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from github import Github as GH\nGH(login_or_token='x')",
+            args: [],
+            description: "aliased github constructor",
+          },
+          aliasContext,
+        )
+        expect(getAsk(aliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:github.Github"]))
+
+        const capturedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from github import Github\nCtor = Github\nCtor(login_or_token='x')",
+            args: [],
+            description: "captured github constructor",
+          },
+          capturedContext,
+        )
+        expect(getAsk(capturedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:github.Github"]))
+
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from github import Github",
+              "def Github(*args, **kwargs):",
+              "    return object()",
+              "Github(login_or_token='x')",
+            ].join("\n"),
+            args: [],
+            description: "shadowed github constructor",
+          },
+          shadowedContext,
+        )
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:Github"]))
+      })
+    })
+
+    it("keeps model_validate on the ask path while classifying exact OrganizationMembershipListOptions model_dump as pure", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const directContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytfe.models.organization_membership import OrganizationMembershipListOptions",
+              "obj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})",
+              "print(obj.model_dump(by_alias=True, exclude_none=True))",
+            ].join("\n"),
+            args: [],
+            description: "direct model_dump",
+          },
+          directContext,
+        )
+
+        expect(getAsk(directContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:OrganizationMembershipListOptions.model_validate"]))
+        expect(getAsk(directContext, "python")?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+        expect(directContext.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "pytfe.models.organization_membership.OrganizationMembershipListOptions.model_dump", pattern: "pure:pytfe.models.organization_membership.OrganizationMembershipListOptions.model_dump" }),
+            expect.objectContaining({ kind: "emit", call: "print", pattern: "emit:print" }),
+          ]),
+        )
+
+        const moduleContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "import pytfe.models.organization_membership as om\nobj = om.OrganizationMembershipListOptions.model_validate({'page[size]': 100})\nobj.model_dump(by_alias=True, exclude_none=True)",
+            args: [],
+            description: "module-qualified model_dump",
+          },
+          moduleContext,
+        )
+        expect(getAsk(moduleContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const aliasContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from pytfe.models.organization_membership import OrganizationMembershipListOptions as Options\nobj = Options.model_validate({'page[size]': 100})\nobj.model_dump(by_alias=True, exclude_none=True)",
+            args: [],
+            description: "aliased model_dump",
+          },
+          aliasContext,
+        )
+        expect(getAsk(aliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const capturedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from pytfe.models.organization_membership import OrganizationMembershipListOptions\nobj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})\nalias = obj\nalias.model_dump(by_alias=True, exclude_none=True)",
+            args: [],
+            description: "captured model_dump",
+          },
+          capturedContext,
+        )
+        expect(getAsk(capturedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytfe.models.organization_membership import OrganizationMembershipListOptions",
+              "OrganizationMembershipListOptions = object()",
+              "obj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})",
+              "obj.model_dump(by_alias=True, exclude_none=True)",
+            ].join("\n"),
+            args: [],
+            description: "shadowed model_dump",
+          },
+          shadowedContext,
+        )
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const assignedFactoryContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytfe.models.organization_membership import OrganizationMembershipListOptions",
+              "OrganizationMembershipListOptions.model_validate = evil",
+              "obj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})",
+              "obj.model_dump(by_alias=True, exclude_none=True)",
+            ].join("\n"),
+            args: [],
+            description: "assigned model_validate model_dump",
+          },
+          assignedFactoryContext,
+        )
+        expect(getAsk(assignedFactoryContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const setattrFactoryContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytfe.models.organization_membership import OrganizationMembershipListOptions",
+              "setattr(OrganizationMembershipListOptions, 'model_validate', evil)",
+              "obj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})",
+              "obj.model_dump(by_alias=True, exclude_none=True)",
+            ].join("\n"),
+            args: [],
+            description: "setattr model_validate model_dump",
+          },
+          setattrFactoryContext,
+        )
+        expect(getAsk(setattrFactoryContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const assignedMethodContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytfe.models.organization_membership import OrganizationMembershipListOptions",
+              "obj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})",
+              "obj.model_dump = evil",
+              "obj.model_dump(by_alias=True, exclude_none=True)",
+            ].join("\n"),
+            args: [],
+            description: "assigned model_dump method",
+          },
+          assignedMethodContext,
+        )
+        expect(getAsk(assignedMethodContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const setattrMethodContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytfe.models.organization_membership import OrganizationMembershipListOptions",
+              "obj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})",
+              "setattr(obj, 'model_dump', evil)",
+              "obj.model_dump(by_alias=True, exclude_none=True)",
+            ].join("\n"),
+            args: [],
+            description: "setattr model_dump method",
+          },
+          setattrMethodContext,
+        )
+        expect(getAsk(setattrMethodContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const assignedClassMethodContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytfe.models.organization_membership import OrganizationMembershipListOptions",
+              "OrganizationMembershipListOptions.model_dump = evil",
+              "obj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})",
+              "obj.model_dump(by_alias=True, exclude_none=True)",
+            ].join("\n"),
+            args: [],
+            description: "assigned class model_dump",
+          },
+          assignedClassMethodContext,
+        )
+        expect(getAsk(assignedClassMethodContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const setattrClassMethodContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytfe.models.organization_membership import OrganizationMembershipListOptions",
+              "setattr(OrganizationMembershipListOptions, 'model_dump', evil)",
+              "obj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})",
+              "obj.model_dump(by_alias=True, exclude_none=True)",
+            ].join("\n"),
+            args: [],
+            description: "setattr class model_dump",
+          },
+          setattrClassMethodContext,
+        )
+        expect(getAsk(setattrClassMethodContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+
+        const aliasFactoryContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pytfe.models.organization_membership import OrganizationMembershipListOptions",
+              "alias = OrganizationMembershipListOptions",
+              "alias.model_validate = evil",
+              "obj = OrganizationMembershipListOptions.model_validate({'page[size]': 100})",
+              "obj.model_dump(by_alias=True, exclude_none=True)",
+            ].join("\n"),
+            args: [],
+            description: "aliased model_validate model_dump",
+          },
+          aliasFactoryContext,
+        )
+        expect(getAsk(aliasFactoryContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:obj.model_dump"]))
+      })
+    })
+
+    it("skips python ask for exact direct-imported tabulate_formats iteration and keeps other forms conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const directContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from tabulate import tabulate_formats",
+              "for f in tabulate_formats:",
+              "    print(f.lower())",
+            ].join("\n"),
+            args: [],
+            description: "tabulate formats iteration",
+          },
+          directContext,
+        )
+
+        expect(getAsk(directContext, "python")).toBeUndefined()
+        expect(directContext.metadatas[0]?.metadata?.permissionPatterns).toEqual([])
+        expect(directContext.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "f.lower", pattern: "pure:f.lower" }),
+            expect.objectContaining({ kind: "emit", call: "print", pattern: "emit:print" }),
+          ]),
+        )
+
+        const aliasedImportContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from tabulate import tabulate_formats as formats\nfor f in formats:\n    f.lower()",
+            args: [],
+            description: "aliased tabulate formats",
+          },
+          aliasedImportContext,
+        )
+        expect(getAsk(aliasedImportContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:f.lower"]))
+
+        const reboundContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from tabulate import tabulate_formats\ntabulate_formats = []\nfor f in tabulate_formats:\n    f.lower()",
+            args: [],
+            description: "rebound tabulate formats",
+          },
+          reboundContext,
+        )
+        expect(getAsk(reboundContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:f.lower"]))
+
+        const moduleQualifiedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "import tabulate\nfor f in tabulate.tabulate_formats:\n    f.lower()",
+            args: [],
+            description: "module-qualified tabulate formats",
+          },
+          moduleQualifiedContext,
+        )
+        expect(getAsk(moduleQualifiedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:f.lower"]))
+
+        const appendedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from tabulate import tabulate_formats\ntabulate_formats.append(obj)\nfor f in tabulate_formats:\n    f.lower()",
+            args: [],
+            description: "mutated tabulate formats append",
+          },
+          appendedContext,
+        )
+        expect(getAsk(appendedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:f.lower"]))
+
+        const subscriptContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from tabulate import tabulate_formats\ntabulate_formats[0] = obj\nfor f in tabulate_formats:\n    f.lower()",
+            args: [],
+            description: "mutated tabulate formats subscript",
+          },
+          subscriptContext,
+        )
+        expect(getAsk(subscriptContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:f.lower"]))
+
+        const aliasSubscriptContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from tabulate import tabulate_formats\nalias = tabulate_formats\nalias[0] = obj\nfor f in tabulate_formats:\n    f.lower()",
+            args: [],
+            description: "aliased mutated tabulate formats",
+          },
+          aliasSubscriptContext,
+        )
+        expect(getAsk(aliasSubscriptContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:f.lower"]))
+
+        const augmentedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from tabulate import tabulate_formats\ntabulate_formats += [obj]\nfor f in tabulate_formats:\n    f.lower()",
+            args: [],
+            description: "augmented tabulate formats",
+          },
+          augmentedContext,
+        )
+        expect(getAsk(augmentedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:f.lower"]))
+
+        const aliasAugmentedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: "from tabulate import tabulate_formats\nalias = tabulate_formats\nalias += other\nfor f in tabulate_formats:\n    f.lower()",
+            args: [],
+            description: "aliased augmented tabulate formats",
+          },
+          aliasAugmentedContext,
+        )
+        expect(getAsk(aliasAugmentedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:f.lower"]))
       })
     })
 
@@ -2376,6 +3573,36 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("skips python ask for counter arithmetic temporaries before elements", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import collections",
+              "print(sorted((collections.Counter(expected_inline) - collections.Counter(cur_inline)).elements()))",
+            ].join("\n"),
+            args: [],
+            description: "counter arithmetic elements",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "collections.Counter", pattern: "pure:collections.Counter" }),
+            expect.objectContaining({ kind: "pure", call: "elements", pattern: "pure:elements" }),
+            expect.objectContaining({ kind: "pure", call: "sorted", pattern: "pure:sorted" }),
+            expect.objectContaining({ kind: "emit", call: "print", pattern: "emit:print" }),
+          ]),
+        )
+      })
+    })
+
     it("keeps shadowed Counter module helpers on the unknown ask path", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -2638,6 +3865,107 @@ describe("python tool runtime", () => {
             canonicalSource: "callable:obj.get",
           },
         ])
+      })
+
+      it("preserves exact sqlite cursor projection", async () => {
+        const result = await collectInlinePermissionParity(
+          [
+            "import sqlite3",
+            "conn = sqlite3.connect('app.db')",
+            "cur = conn.cursor()",
+            "cur.execute('select 1')",
+            "cur.fetchone()",
+          ].join("\n"),
+        )
+
+        expect(result.ask?.patterns).toEqual(expect.arrayContaining(["exec:sqlite3.connect", "exec:sqlite3.Connection.cursor", "exec:sqlite3.Cursor.execute", "read:sqlite3.Cursor.fetchone"]))
+        expect(result.ask?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:cur.execute", "unknown:callable:cur.fetchone"]))
+        expect(result.metadata?.permissionPatterns).toEqual(expect.arrayContaining(["exec:sqlite3.connect", "exec:sqlite3.Connection.cursor", "exec:sqlite3.Cursor.execute", "read:sqlite3.Cursor.fetchone"]))
+        expect(result.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "exec", call: "sqlite3.connect", canonicalSource: "sqlite3.connect" }),
+            expect.objectContaining({ kind: "exec", call: "sqlite3.Connection.cursor", pattern: "exec:sqlite3.Connection.cursor", canonicalSource: "sqlite3.Connection.cursor" }),
+            expect.objectContaining({ kind: "exec", call: "sqlite3.Cursor.execute", pattern: "exec:sqlite3.Cursor.execute", canonicalSource: "sqlite3.Cursor.execute" }),
+            expect.objectContaining({ kind: "read", call: "sqlite3.Cursor.fetchone", pattern: "read:sqlite3.Cursor.fetchone", canonicalSource: "sqlite3.Cursor.fetchone" }),
+          ]),
+        )
+      })
+
+      it("preserves sqlite execute.fetchall projection and keeps fetchall without execute unknown", async () => {
+        const chainResult = await collectInlinePermissionParity(
+          [
+            "import sqlite3",
+            "conn = sqlite3.connect('app.db')",
+            "cur = conn.cursor()",
+            "cur.execute('select 1').fetchall()",
+          ].join("\n"),
+        )
+
+        expect(chainResult.ask?.patterns).toEqual(expect.arrayContaining(["exec:sqlite3.connect", "exec:sqlite3.Connection.cursor", "exec:sqlite3.Cursor.execute", "read:sqlite3.Cursor.fetchall"]))
+        expect(chainResult.ask?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:cur.fetchall"]))
+        expect(chainResult.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "sqlite3.Cursor.fetchall", pattern: "read:sqlite3.Cursor.fetchall", canonicalSource: "sqlite3.Cursor.fetchall" }),
+          ]),
+        )
+
+        const noExecuteResult = await collectInlinePermissionParity(
+          [
+            "import sqlite3",
+            "conn = sqlite3.connect('app.db')",
+            "cur = conn.cursor()",
+            "cur.fetchall()",
+          ].join("\n"),
+        )
+
+        expect(noExecuteResult.ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cur.fetchall"]))
+        expect(noExecuteResult.ask?.patterns).not.toEqual(expect.arrayContaining(["read:sqlite3.Cursor.fetchall"]))
+      })
+
+      it("preserves sqlite cursor object identity and close invalidation", async () => {
+        const reboundResult = await collectInlinePermissionParity(
+          [
+            "import sqlite3",
+            "conn = sqlite3.connect('app.db')",
+            "cur = conn.cursor()",
+            "saved = cur",
+            "cur = conn.cursor()",
+            "saved.execute('select 1')",
+            "cur.fetchone()",
+          ].join("\n"),
+        )
+
+        expect(reboundResult.ask?.patterns).toEqual(expect.arrayContaining(["exec:sqlite3.connect", "exec:sqlite3.Connection.cursor", "unknown:callable:cur.execute", "unknown:callable:cur.fetchone"]))
+        expect(reboundResult.ask?.patterns).not.toEqual(expect.arrayContaining(["read:sqlite3.Cursor.fetchone"]))
+
+        const mirroredReboundResult = await collectInlinePermissionParity(
+          [
+            "import sqlite3",
+            "conn = sqlite3.connect('app.db')",
+            "cur = conn.cursor()",
+            "saved = cur",
+            "cur = conn.cursor()",
+            "cur.execute('select 1')",
+            "saved.fetchone()",
+          ].join("\n"),
+        )
+
+        expect(mirroredReboundResult.ask?.patterns).toEqual(expect.arrayContaining(["exec:sqlite3.connect", "exec:sqlite3.Connection.cursor", "exec:sqlite3.Cursor.execute", "unknown:callable:cur.fetchone"]))
+        expect(mirroredReboundResult.ask?.patterns).not.toEqual(expect.arrayContaining(["read:sqlite3.Cursor.fetchone"]))
+
+        const closeResult = await collectInlinePermissionParity(
+          [
+            "import sqlite3",
+            "conn = sqlite3.connect('app.db')",
+            "cur = conn.cursor()",
+            "cur.execute('select 1')",
+            "cur.close()",
+            "cur.fetchone()",
+          ].join("\n"),
+        )
+
+        expect(closeResult.ask?.patterns).toEqual(expect.arrayContaining(["exec:sqlite3.connect", "exec:sqlite3.Connection.cursor", "exec:sqlite3.Cursor.execute", "unknown:callable:cur.fetchone"]))
+        expect(closeResult.ask?.patterns).not.toEqual(expect.arrayContaining(["read:sqlite3.Cursor.fetchone"]))
       })
 
       it("preserves parse-error projection", async () => {

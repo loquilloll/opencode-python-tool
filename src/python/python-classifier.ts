@@ -28,7 +28,20 @@ import {
 import type { AtlassianClientFamily, Rules, Scope } from "./python-analyze-types"
 import type { PythonEventEvidence, ReceiverKind, ResolvedEffect } from "./python-ir"
 import { type ContainerKind, trackableReceiverInfo, trackableSelfAttributePath } from "./python-provenance"
-import { atlassianInstance, containerInstance, hasBoundName, hasGhapiInstance, hasHttpResponseInstance, httpClientInstance, resolvedName, trustedCallWithPolicy } from "./python-scope"
+import {
+  atlassianInstance,
+  containerInstance,
+  hasBoundName,
+  hasExecutedSqliteCursorInstance,
+  hasGhapiInstance,
+  hasHttpResponseInstance,
+  hasSqliteConnectionInstance,
+  hasSqliteCursorInstance,
+  hasTrustedModelDumpInstance,
+  httpClientInstance,
+  resolvedName,
+  trustedCallWithPolicy,
+} from "./python-scope"
 import { canonicalPathMethodCall, pathFromPathMethod } from "./python-timeline"
 import type { GuardedCallRule, GuardedMethodRule } from "./python-rule-schema"
 import type { PythonArgs as Args, PythonValue as Value } from "./python-values"
@@ -144,6 +157,20 @@ function classifyHttpRequestFallback(call: string, input: Args): ResolvedEffect 
   if (method === "post" || method === "put" || method === "patch" || method === "delete") {
     return effect("network.write", { resolvedCall: call })
   }
+}
+
+function sqliteCursorReceiverInfo(node: Node | null, current: Scope) {
+  if (node?.type === "identifier" && hasSqliteCursorInstance(current, node.text)) {
+    return { name: node.text, justExecuted: false }
+  }
+  if (node?.type !== "call") return
+  const fn = node.childForFieldName("function")
+  if (fn?.type !== "attribute") return
+  const call = resolvedName(fn, current)
+  if (!call || !call.endsWith(".execute")) return
+  const receiver = fn.childForFieldName("object")
+  if (receiver?.type !== "identifier" || !hasSqliteCursorInstance(current, receiver.text)) return
+  return { name: receiver.text, justExecuted: true }
 }
 
 function classifyGuardedHttpRequest(
@@ -389,6 +416,34 @@ export function classify(
 
   const parts = call.split(".")
   const instance = parts[0]
+  const sqliteInfo = sqliteCursorReceiverInfo(temporaryReceiver, current)
+  const sqliteReceiver = sqliteInfo?.name
+  const trackedSqliteConnection = temporaryReceiver?.type === "identifier" && hasSqliteConnectionInstance(current, temporaryReceiver.text)
+  if (trackedSqliteConnection && parts.length === 2 && method === "cursor" && input.positional.length === 0 && Object.keys(input.keyword).length === 0 && !hasDictionarySplat(node)) {
+    return effect("db.exec", { resolvedCall: call, canonicalCall: "sqlite3.Connection.cursor" })
+  }
+  const trackedSqliteCursor = sqliteReceiver ? hasSqliteCursorInstance(current, sqliteReceiver) : false
+  if (trackedSqliteCursor) {
+    const canonicalCall = `sqlite3.Cursor.${method}`
+    if (method === "execute" && temporaryReceiver?.type === "identifier") {
+      return effect("db.exec", { resolvedCall: call, canonicalCall })
+    }
+    if (method === "close" && temporaryReceiver?.type === "identifier") {
+      return effect("db.exec", { resolvedCall: call, canonicalCall })
+    }
+    if ((method === "fetchone" || method === "fetchall") && sqliteReceiver && (sqliteInfo?.justExecuted || hasExecutedSqliteCursorInstance(current, sqliteReceiver))) {
+      return effect("fs.read", { resolvedCall: call, canonicalCall })
+    }
+  }
+  if (
+    instance &&
+    method === "model_dump" &&
+    temporaryReceiver?.type === "identifier" &&
+    resolvedName(temporaryReceiver, current) === temporaryReceiver.text &&
+    hasTrustedModelDumpInstance(current, instance)
+  ) {
+    return effect("pure.compute", { resolvedCall: call, canonicalCall: "pytfe.models.organization_membership.OrganizationMembershipListOptions.model_dump" })
+  }
   const localContainerName =
     trackableSelfAttributePath(temporaryReceiver) ??
     (temporaryReceiver?.type === "identifier" ? temporaryReceiver.text : instance && parts.length === 1 ? instance : undefined)
