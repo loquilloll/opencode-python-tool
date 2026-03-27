@@ -283,7 +283,7 @@ This keeps the classifier useful without drifting into unsafe overgeneralization
 - `src/python/python-rules.json`: exact rule inventory
 - `src/python.ts`: runtime permission planning
 - `src/python-session-report.ts`: historical review and TUI workflow
-- `.opencode/test/python-analyze.test.ts`: analyzer regressions
+- `.opencode/test/python-analyze-*.test.ts`: focused analyzer regressions split by behavior area (parity, rules-loading, paths-io, pure, exec/network, integrations, fallbacks)
 - `.opencode/test/python-inline-permissions-basic.test.ts`: inline runtime permission regressions for common analyzer flows
 - `.opencode/test/python-inline-permissions-inference.test.ts`: inline runtime permission regressions for inference-heavy analyzer flows
 - `.opencode/test/python-session-report.test.ts`: review and TUI regressions

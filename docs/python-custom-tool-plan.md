@@ -40,7 +40,7 @@ src/
     ├── fixtures/              # shared test helpers, mock context, temp dirs
     │   ├── context.ts         # mock ToolContext factory
     │   └── python-runtime.ts  # shared runtime test helpers/constants
-    ├── python-analyze.test.ts # unit tests for the analyzer
+    ├── python-analyze-*.test.ts # split analyzer unit tests by behavior area
     ├── python-validation.test.ts # runtime guard coverage
     ├── python-runtime-execution.test.ts # execution/workdir runtime coverage
     ├── python-external-directory.test.ts # external-directory/boundary runtime coverage
@@ -48,7 +48,7 @@ src/
     └── python-inline-permissions-inference.test.ts # inference-heavy inline runtime coverage
 ```
 
-Note: historical pre-split references below may still mention the original `.opencode/test/python.test.ts` monolith. The current runtime coverage lives in the split files listed above.
+Note: historical pre-split references below may still mention the original `.opencode/test/python.test.ts` and `.opencode/test/python-analyze.test.ts` monoliths. The current runtime and analyzer coverage lives in the split files listed above.
 
 ---
 
@@ -405,7 +405,7 @@ to a single global unknown marker.
 
 **Verification:**
 ```bash
-cd .opencode && bun test test/python-analyze.test.ts
+cd .opencode && bun test test/python-analyze-fallbacks.test.ts
 ```
 
 **Commit:**
@@ -507,9 +507,9 @@ rule, edge case, and fallback.
 
 **Status:** DONE (implemented and validated).
 
-**Files created:**
+**Current files carrying analyzer coverage:**
 - `.opencode/test/fixtures/context.ts` — mock `ToolContext` factory
-- `.opencode/test/python-analyze.test.ts`
+- `.opencode/test/python-analyze-*.test.ts` — split analyzer tests by behavior area
 
 **Test mock context:**
 ```typescript
@@ -535,7 +535,9 @@ export function createMockContext(overrides?: Partial<ToolContext>): ToolContext
 }
 ```
 
-**Test categories for python-analyze.test.ts:**
+**Test categories across the split analyzer test files:**
+
+Current analyzer coverage is distributed across `.opencode/test/python-analyze-parity.test.ts`, `.opencode/test/python-analyze-rules-loading.test.ts`, `.opencode/test/python-analyze-paths-io.test.ts`, `.opencode/test/python-analyze-pure-core.test.ts`, `.opencode/test/python-analyze-library-pure.test.ts`, `.opencode/test/python-analyze-exec-network.test.ts`, `.opencode/test/python-analyze-integrations.test.ts`, and `.opencode/test/python-analyze-fallbacks.test.ts`.
 
 1. **open() classification**
    - `open("f")` → read (default mode)
@@ -624,7 +626,7 @@ export function createMockContext(overrides?: Partial<ToolContext>): ToolContext
 
 **Verification:**
 ```bash
-cd .opencode && bun test test/python-analyze.test.ts
+cd .opencode && bun test test/python-analyze-*.test.ts
 ```
 
 **Commit:**
@@ -826,7 +828,7 @@ generic callable fallback.
 
 **Files changed:**
 - `.opencode/tool/python-analyze.ts`
-- `.opencode/test/python-analyze.test.ts`
+- `.opencode/test/python-analyze-integrations.test.ts`
 
 **Changes to `.opencode/tool/python-analyze.ts`:**
 
@@ -871,7 +873,7 @@ Alias resolution remains out of scope in this phase. Example:
 `import oci as cloud; cloud.object_storage.ObjectStorageClient(...)` stays
 callable-fallback unknown unless full alias tracking is implemented later.
 
-**Changes to `.opencode/test/python-analyze.test.ts`:**
+**Changes to `.opencode/test/python-analyze-integrations.test.ts`:**
 - Add OCI tests for:
   - known client constructors (exec)
   - `oci.config.from_file("~/.oci/config")` (read)
@@ -880,7 +882,7 @@ callable-fallback unknown unless full alias tracking is implemented later.
 
 **Verification:**
 ```bash
-cd .opencode && bun test test/python-analyze.test.ts
+cd .opencode && bun test test/python-analyze-integrations.test.ts
 ```
 
 **Commit:**
@@ -903,7 +905,7 @@ execution, not only through generic callable fallback.
 
 **Files changed:**
 - `.opencode/tool/python-analyze.ts`
-- `.opencode/test/python-analyze.test.ts`
+- `.opencode/test/python-analyze-integrations.test.ts`
 
 **Changes to `.opencode/tool/python-analyze.ts`:**
 
@@ -965,7 +967,7 @@ Full alias/scope resolution remains out of scope. Example:
 `import ghapi.all as ga; ga.GhApi()` may remain callable-fallback unknown unless
 covered by explicit direct-name matching.
 
-**Changes to `.opencode/test/python-analyze.test.ts`:**
+**Changes to `.opencode/test/python-analyze-integrations.test.ts`:**
 - Add tests for:
   - direct module calls (`ghapi.graphql.gh_query`, `ghapi.page.paged` -> `exec`)
   - convenience methods (`GhApi().create_release(...)` -> `exec`)
@@ -975,7 +977,7 @@ covered by explicit direct-name matching.
 
 **Verification:**
 ```bash
-cd .opencode && bun test test/python-analyze.test.ts
+cd .opencode && bun test test/python-analyze-integrations.test.ts
 ```
 
 **Commit:**
@@ -1003,7 +1005,7 @@ callable fallback.
 
 **Files changed:**
 - `.opencode/tool/python-analyze.ts`
-- `.opencode/test/python-analyze.test.ts`
+- `.opencode/test/python-analyze-integrations.test.ts`
 
 **Changes to `.opencode/tool/python-analyze.ts`:**
 
@@ -1063,7 +1065,7 @@ Full alias and scope graph resolution remains out of scope. For example,
 `import atlassian as atl; atl.Jira(...)` may still use callable-fallback unknown
 unless covered by direct-name matching in this phase.
 
-**Changes to `.opencode/test/python-analyze.test.ts`:**
+**Changes to `.opencode/test/python-analyze-integrations.test.ts`:**
 - Add tests for:
   - constructor coverage (`Jira`, `Confluence`, `Bitbucket`, `ServiceDesk` -> `exec`)
   - tracked-instance method coverage with normalized call IDs
@@ -1072,7 +1074,7 @@ unless covered by direct-name matching in this phase.
 
 **Verification:**
 ```bash
-cd .opencode && bun test test/python-analyze.test.ts
+cd .opencode && bun test test/python-analyze-integrations.test.ts
 ```
 
 **Commit:**
@@ -1096,7 +1098,7 @@ false negatives in permission prompts.
 
 **Files changed:**
 - `.opencode/tool/python-analyze.ts`
-- `.opencode/test/python-analyze.test.ts`
+- `.opencode/test/python-analyze-integrations.test.ts`
 - relevant split runtime tests under `.opencode/test/` (only if runtime permission-plan assertions are added; today this is usually `.opencode/test/python-inline-permissions-inference.test.ts`)
 
 **Changes to `.opencode/tool/python-analyze.ts`:**
@@ -1128,7 +1130,7 @@ Harden constructor matching consistency:
 - Preserve explicit, bounded matching (no broad wildcard that upgrades unknown
   modules).
 
-**Changes to `.opencode/test/python-analyze.test.ts`:**
+**Changes to `.opencode/test/python-analyze-integrations.test.ts`:**
 
 Add regression guards for review findings:
 - call before assignment does not normalize to `atlassian.*`
@@ -1144,7 +1146,7 @@ Add regression guards for review findings:
 
 **Verification:**
 ```bash
-cd .opencode && bun test test/python-analyze.test.ts
+cd .opencode && bun test test/python-analyze-integrations.test.ts
 cd .opencode && bun test
 ```
 

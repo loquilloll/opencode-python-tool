@@ -124,7 +124,14 @@ Thin re-export wrappers so OpenCode discovers the tool:
 |------|---------|
 | `.opencode/opencode.jsonc` | Restrictive default permission policy. |
 | `.opencode/package.json` | Dependencies: `@opencode-ai/plugin`, `tree-sitter-python`, `web-tree-sitter`. |
-| `.opencode/test/python-analyze.test.ts` | Analyzer unit tests (13 describe blocks, comprehensive classification coverage). |
+| `.opencode/test/python-analyze-parity.test.ts` | Analyzer parity/evidence tests and fixture-preservation regressions. |
+| `.opencode/test/python-analyze-rules-loading.test.ts` | Analyzer rules-loader env/temp-file tests. |
+| `.opencode/test/python-analyze-paths-io.test.ts` | Path/IO analyzer tests. |
+| `.opencode/test/python-analyze-pure-core.test.ts` | Core pure/emit analyzer tests. |
+| `.opencode/test/python-analyze-library-pure.test.ts` | Library-focused pure analyzer tests. |
+| `.opencode/test/python-analyze-exec-network.test.ts` | Exec/network/db/tempfile/deserialization analyzer tests. |
+| `.opencode/test/python-analyze-integrations.test.ts` | SDK/integration analyzer tests. |
+| `.opencode/test/python-analyze-fallbacks.test.ts` | Fallback/context analyzer tests. |
 | `.opencode/test/python-validation.test.ts` | Runtime guard tests (arg validation, subprocess hard-fail, ENOENT handling). |
 | `.opencode/test/python-runtime-execution.test.ts` | Runtime execution tests (workdir semantics, timeout, abort, streaming). |
 | `.opencode/test/python-external-directory.test.ts` | Boundary/runtime tests (scriptPath, external-directory, symlink fallback, always patterns). |
@@ -133,6 +140,8 @@ Thin re-export wrappers so OpenCode discovers the tool:
 | `.opencode/test/python-session-report.test.ts` | Saved-session report regression tests (scan, filtering, malformed-row handling, candidate updates). |
 | `.opencode/test/fixtures/context.ts` | Mock `ToolContext` fixture for tests. |
 | `.opencode/test/fixtures/python-runtime.ts` | Shared runtime test helpers/constants for the split runtime suites. |
+
+The analyzer split did not add a shared analyzer-specific fixture; helper logic stays local to the focused `python-analyze-*.test.ts` files.
 
 ## Requirements
 
@@ -237,7 +246,7 @@ In addition to Option 1, copy test files and run validation:
 
 ```bash
 mkdir -p "$DST/.opencode/test/fixtures"
-cp "$SRC/.opencode/test/python-analyze.test.ts" "$DST/.opencode/test/python-analyze.test.ts"
+cp "$SRC"/.opencode/test/python-analyze-*.test.ts "$DST/.opencode/test/"
 cp "$SRC/.opencode/test/python-validation.test.ts" "$DST/.opencode/test/python-validation.test.ts"
 cp "$SRC/.opencode/test/python-runtime-execution.test.ts" "$DST/.opencode/test/python-runtime-execution.test.ts"
 cp "$SRC/.opencode/test/python-external-directory.test.ts" "$DST/.opencode/test/python-external-directory.test.ts"
@@ -248,7 +257,7 @@ cp "$SRC/.opencode/test/fixtures/context.ts" "$DST/.opencode/test/fixtures/conte
 cp "$SRC/.opencode/test/fixtures/python-runtime.ts" "$DST/.opencode/test/fixtures/python-runtime.ts"
 
 cd "$DST/.opencode"
-bun test test/python-analyze.test.ts
+bun test test/python-analyze-*.test.ts
 bun test \
   test/python-validation.test.ts \
   test/python-runtime-execution.test.ts \
@@ -614,7 +623,7 @@ Run from `.opencode/`:
 
 ```bash
 # analyzer-focused tests
-bun test test/python-analyze.test.ts
+bun test test/python-analyze-*.test.ts
 
 # report utility tests
 bun test test/python-session-report.test.ts
@@ -788,7 +797,14 @@ opencode-python-tool/
       python.ts                  # Re-export wrapper
       python-analyze.ts          # Re-export wrapper
     test/
-      python-analyze.test.ts     # Analyzer tests
+      python-analyze-parity.test.ts # Analyzer parity/evidence tests
+      python-analyze-rules-loading.test.ts # Analyzer rules-loader tests
+      python-analyze-paths-io.test.ts # Path/IO analyzer tests
+      python-analyze-pure-core.test.ts # Core pure/emit analyzer tests
+      python-analyze-library-pure.test.ts # Library-focused pure analyzer tests
+      python-analyze-exec-network.test.ts # Exec/network/db/tempfile/deserialization analyzer tests
+      python-analyze-integrations.test.ts # SDK/integration analyzer tests
+      python-analyze-fallbacks.test.ts # Fallback/context analyzer tests
       python-session-report.test.ts # Report utility tests
       python-validation.test.ts  # Runtime guard tests
       python-runtime-execution.test.ts # Runtime execution/workdir tests
@@ -814,7 +830,7 @@ opencode-python-tool/
 6. Use `--suggest-rules` to preview unanimous reviewed clusters as copy-pasteable rule fragments (`calls.*` today, or bounded `guarded.methods` fragments when receiver evidence is sufficient), and `--compare-rules <file>` to diff review outcomes against an alternate rules file before promoting changes.
 7. Only after the family looks safe and the representative snippets agree, use `--promote-reviewed` to move single-identity call targets into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`.
 8. Prefer guarded declarative rules before adding new procedural branches. Put classification logic in `src/python/python-classifier.ts`, replay-state transitions in `src/python/python-replay.ts`, inference/path/container logic in `src/python/python-inference.ts` and its focused submodules, and scope/timeline mechanics in `src/python/python-scope.ts` or `src/python/python-timeline.ts`; the guarded schema lives in `src/python/python-rule-schema.ts` and `src/python/python-guard-eval.ts`.
-9. Add test cases in `.opencode/test/python-analyze.test.ts` and `.opencode/test/python-session-report.test.ts` as needed.
+9. Add analyzer cases in the relevant `.opencode/test/python-analyze-*.test.ts` file and update `.opencode/test/python-session-report.test.ts` when review/report behavior changes.
 10. If the new pattern should be denied by default, add the corresponding
    `exec:<pattern>` deny rule to both `.opencode/opencode.jsonc` and the
    README's recommended configuration.
