@@ -471,6 +471,180 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("skips python ask for iterated regex match result methods and keeps iterator receivers conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "for m in re.finditer('a+', text):",
+              "    m.start()",
+              "    m.end()",
+              "pat = re.compile('a+')",
+              "matches = pat.finditer(text)",
+              "for m in matches:",
+              "    m.start()",
+              "    m.end()",
+              "matches.start()",
+            ].join("\n"),
+            args: [],
+            description: "iterated regex match results",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:matches.start"]))
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:m.start", "unknown:callable:m.end"]))
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "re.finditer", pattern: "pure:re.finditer" }),
+            expect.objectContaining({ kind: "pure", call: "m.start", pattern: "pure:m.start" }),
+            expect.objectContaining({ kind: "pure", call: "m.end", pattern: "pure:m.end" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:matches.start", pattern: "unknown:callable:matches.start" }),
+          ]),
+        )
+      })
+    })
+
+    it("skips python ask for direct regex list locals and keeps shadowed roots conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "names = re.findall('describe', text)",
+              "names.count('describe')",
+              "parts = re.split(':', text)",
+              "parts.count('')",
+            ].join("\n"),
+            args: [],
+            description: "direct regex list locals",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "re.findall", pattern: "pure:re.findall" }),
+            expect.objectContaining({ kind: "pure", call: "names.count", pattern: "pure:names.count" }),
+            expect.objectContaining({ kind: "pure", call: "re.split", pattern: "pure:re.split" }),
+            expect.objectContaining({ kind: "pure", call: "parts.count", pattern: "pure:parts.count" }),
+          ]),
+        )
+
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "re = fake",
+              "names = re.findall('describe', text)",
+              "names.count('describe')",
+            ].join("\n"),
+            args: [],
+            description: "shadowed direct regex list locals",
+          },
+          shadowedContext,
+        )
+
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:names.count"]))
+      })
+    })
+
+    it("keeps re.sub itself unknown by default but tracks non-callable replacement string results", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "text = 'aaTITLEbb'",
+              "re.sub('a+', '-', text)",
+              "sec = re.sub('a+', '-', text)",
+              "sec.split('TITLE').count('')",
+              "re.sub('a+', '-', text).split('TITLE').count('')",
+            ].join("\n"),
+            args: [],
+            description: "re.sub string producer",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:re.sub"]))
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:sec.split", "unknown:callable:re.sub.split"]))
+
+        const callableContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "text = 'aaTITLEbb'",
+              "def repl(m):",
+              "    return '-'",
+              "sec = re.sub('a+', repl, text)",
+              "sec.split('TITLE').count('')",
+            ].join("\n"),
+            args: [],
+            description: "re.sub callable replacement",
+          },
+          callableContext,
+        )
+
+        expect(getAsk(callableContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:sec.split"]))
+      })
+    })
+
+    it("skips python ask for direct regex split iterated string locals and keeps shadowed roots conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "sections = re.split('TITLE', text)",
+              "for sec in sections[1:]:",
+              "    sec.split(')').count('')",
+            ].join("\n"),
+            args: [],
+            description: "direct regex split iterated strings",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import re",
+              "re = fake",
+              "sections = re.split('TITLE', text)",
+              "for sec in sections[1:]:",
+              "    sec.split(')').count('')",
+            ].join("\n"),
+            args: [],
+            description: "shadowed direct regex split iterated strings",
+          },
+          shadowedContext,
+        )
+
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:sec.split"]))
+      })
+    })
+
     it("skips python ask for tracked string split locals and keeps pure metadata", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -914,6 +1088,33 @@ describe("python tool runtime", () => {
         )
 
         expect(getAsk(context, "python")?.patterns).toBeUndefined()
+      })
+    })
+
+    it("skips python ask for keys derived from exact variable prefixes under startswith branch narrowing", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "inv = {}",
+              "prefix = 'FILE '",
+              "for line in ['FILE python.test.ts', '- x -> title']:",
+              "    if line.startswith(prefix):",
+              "        current = line.split(prefix, 1)[1].strip()",
+              "        inv[current] = []",
+              "    elif current and line.startswith('- '):",
+              "        inv[current].append(line[2:])",
+              "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+            ].join("\n"),
+            args: [],
+            description: "startswith variable prefix narrowing",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
       })
     })
 
@@ -2441,6 +2642,138 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("projects guarded item.lower receivers from exact membership and keeps unguarded literal_eval loops conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const guardedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import ast",
+              "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+              "items = ast.literal_eval(raw)",
+              "li_depts = ['Health Benefit Analytic Sol', 'D&DS Product', 'ITPMA', 'Core Services', 'Enterprise Data Mgmt', 'DHP IT', 'Transformation & Integrations', 'Claims', 'HST IT']",
+              "for item in items:",
+              "    normalized = item.lower() if item in li_depts else item",
+            ].join("\n"),
+            args: [],
+            description: "guarded item.lower membership narrowing",
+          },
+          guardedContext,
+        )
+
+        expect(getAsk(guardedContext, "python")).toBeUndefined()
+        const guardedMetadata = guardedContext.metadatas[0]?.metadata
+        expect(guardedMetadata?.permissionPatterns).toEqual([])
+        expect(guardedMetadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "ast.literal_eval", pattern: "pure:ast.literal_eval" }),
+            expect.objectContaining({ kind: "pure", call: "item.lower", pattern: "pure:item.lower" }),
+          ]),
+        )
+
+        const unguardedContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import ast",
+              "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+              "items = ast.literal_eval(raw)",
+              "for item in items:",
+              "    item.lower()",
+            ].join("\n"),
+            args: [],
+            description: "unguarded item.lower literal_eval",
+          },
+          unguardedContext,
+        )
+
+        expect(getAsk(unguardedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.lower"]))
+
+        const negativeGuardContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import ast",
+              "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+              "items = ast.literal_eval(raw)",
+              "li_depts = ['Health Benefit Analytic Sol', 'D&DS Product', 'ITPMA', 'Core Services', 'Enterprise Data Mgmt', 'DHP IT', 'Transformation & Integrations', 'Claims', 'HST IT']",
+              "flag = False",
+              "for item in items:",
+              "    lowered = item.lower() if item not in li_depts else item",
+              "    maybe = item.lower() if flag or item in li_depts else item",
+            ].join("\n"),
+            args: [],
+            description: "negative guarded item.lower membership narrowing",
+          },
+          negativeGuardContext,
+        )
+
+        expect(getAsk(negativeGuardContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.lower"]))
+
+        const outerGuardShadowContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import ast",
+              "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+              "items = ast.literal_eval(raw)",
+              "li_depts = ['Health Benefit Analytic Sol', 'D&DS Product', 'ITPMA', 'Core Services', 'Enterprise Data Mgmt', 'DHP IT', 'Transformation & Integrations', 'Claims', 'HST IT']",
+              "item = 'Health Benefit Analytic Sol'",
+              "if item in li_depts:",
+              "    lowered = [item.lower() for item in items]",
+            ].join("\n"),
+            args: [],
+            description: "outer guard shadowed item.lower",
+          },
+          outerGuardShadowContext,
+        )
+
+        expect(getAsk(outerGuardShadowContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.lower"]))
+
+        const booleanGuardRebindContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import ast",
+              "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+              "items = ast.literal_eval(raw)",
+              "li_depts = ['Health Benefit Analytic Sol', 'D&DS Product', 'ITPMA', 'Core Services', 'Enterprise Data Mgmt', 'DHP IT', 'Transformation & Integrations', 'Claims', 'HST IT']",
+              "ok = True",
+              "for item in items:",
+              "    if ok and item in li_depts:",
+              "        li_depts = ['Other']",
+              "        item.lower()",
+            ].join("\n"),
+            args: [],
+            description: "boolean guard item.lower rebinding",
+          },
+          booleanGuardRebindContext,
+        )
+
+        expect(getAsk(booleanGuardRebindContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.lower"]))
+
+        const scalarMembershipContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import ast",
+              "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+              "items = ast.literal_eval(raw)",
+              "allowed = 'Health Benefit Analytic Sol'",
+              "for item in items:",
+              "    normalized = item.lower() if item in allowed else item",
+            ].join("\n"),
+            args: [],
+            description: "scalar membership item.lower narrowing",
+          },
+          scalarMembershipContext,
+        )
+
+        expect(getAsk(scalarMembershipContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.lower"]))
+      })
+    })
+
     it("skips python ask for pure-only unittest.mock helpers and keeps pure metadata", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -2589,6 +2922,379 @@ describe("python tool runtime", () => {
             expect.objectContaining({ kind: "unknown", call: "callable:datetime.datetime.fromisoformat", pattern: "unknown:callable:datetime.datetime.fromisoformat" }),
           ]),
         )
+      })
+    })
+
+    it("skips python ask for direct datetime tuple-slot and exact-key receiver operations", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "attempts = []",
+              "for idx, raw in enumerate(['2024-01-02T03:04:05+00:00'], start=1):",
+              "    ts = datetime.fromisoformat(raw)",
+              "    attempts.append((idx, ts, 2))",
+              "for idx, ts, count in attempts:",
+              "    ts.isoformat()",
+              "for i, attempt in enumerate(attempts):",
+              "    attempt[1].isoformat()",
+              "for i, (slot, ts, count) in enumerate(attempts):",
+              "    ts.isoformat()",
+              "patterns = {'start': '2024-01-02T03:04:05+00:00', 'end': '2024-01-02T03:05:05+00:00'}",
+              "found = {}",
+              "for key, raw in patterns.items():",
+              "    found[key] = datetime.fromisoformat(raw)",
+              "found['start'].isoformat()",
+              "for k in patterns:",
+              "    found[k].isoformat()",
+              "pairs = [('start', 'end')]",
+              "for left, right in pairs:",
+              "    (found[right] - found[left]).total_seconds()",
+              "(found['end'] - found['start']).total_seconds()",
+            ].join("\n"),
+            args: [],
+            description: "tuple-slot and exact-key datetime receivers",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.permissionPatterns).toEqual([])
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "ts.isoformat", pattern: "pure:ts.isoformat" }),
+            expect.objectContaining({ kind: "pure", call: "attempt.isoformat", pattern: "pure:attempt.isoformat" }),
+            expect.objectContaining({ kind: "pure", call: "found.isoformat", pattern: "pure:found.isoformat" }),
+            expect.objectContaining({ kind: "pure", call: "total_seconds", pattern: "pure:total_seconds" }),
+          ]),
+        )
+      })
+    })
+
+    it("projects exact-key datetime helper args without extra downstream unknown noise", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "patterns = {'start': '2024-01-02T03:04:05+00:00', 'end': '2024-01-02T03:05:05+00:00'}",
+              "found = {}",
+              "for key, raw in patterns.items():",
+              "    found[key] = datetime.fromisoformat(raw)",
+              "def show(ts):",
+              "    return ts.isoformat()",
+              "def secs(a, b):",
+              "    gap = b - a",
+              "    return gap.total_seconds()",
+              "def measure(left, right):",
+              "    return round((found[right] - found[left]).total_seconds(), 3)",
+              "show(found['start'])",
+              "secs(found['start'], found['end'])",
+              "measure('start', 'end')",
+            ].join("\n"),
+            args: [],
+            description: "exact-key datetime helper args",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:show", "unknown:callable:secs"]))
+        expect(ask?.patterns).not.toEqual(
+          expect.arrayContaining(["unknown:callable:ts.isoformat", "unknown:callable:gap.total_seconds"]),
+        )
+
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "ts.isoformat", pattern: "pure:ts.isoformat" }),
+            expect.objectContaining({ kind: "pure", call: "gap.total_seconds", pattern: "pure:gap.total_seconds" }),
+            expect.objectContaining({ kind: "pure", call: "round", pattern: "pure:round" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:show", pattern: "unknown:callable:show" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:secs", pattern: "unknown:callable:secs" }),
+          ]),
+        )
+      })
+    })
+
+    it("projects typed helper-backed exact-key datetime reads and helper-key total_seconds from matched timestamps", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime, timezone",
+              "import re",
+              "def parse_ts(raw: str) -> datetime:",
+              "    body = raw[:-1]",
+              "    if '.' in body:",
+              "        prefix, frac = body.split('.', 1)",
+              "        frac = (frac + '000000')[:6]",
+              "        body = prefix + '.' + frac",
+              "        return datetime.strptime(body, '%Y-%m-%dT%H:%M:%S.%f').replace(tzinfo=timezone.utc)",
+              "    return datetime.strptime(body, '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)",
+              "patterns = {'start': r'start', 'end': r'end'}",
+              "found = {}",
+              "for line in ['2024-01-02T03:04:05.000Z start', '2024-01-02T03:05:05.000Z end']:",
+              "    m = re.match(r'^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)', line)",
+              "    if not m:",
+              "        continue",
+              "    ts = parse_ts(m.group(1))",
+              "    for key, pat in patterns.items():",
+              "        if key in found:",
+              "            continue",
+              "        if re.search(pat, line):",
+              "            found[key] = ts",
+              "for k in patterns:",
+              "    found[k].isoformat()",
+              "def measure(left, right):",
+              "    return round((found[right] - found[left]).total_seconds(), 3)",
+              "measure('start', 'end')",
+            ].join("\n"),
+            args: [],
+            description: "typed helper exact-key datetime reads",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:parse_ts", "unknown:callable:measure"]))
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:body.split", "unknown:callable:found.isoformat", "unknown:callable:total_seconds"]))
+      })
+    })
+
+    it("skips python ask for helper-backed datetime tuple slots from list comprehensions", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "def parse_ts(line):",
+              "    raw = line.split('Z', 1)[0].lstrip('\\ufeff') + 'Z'",
+              "    return datetime.fromisoformat(raw.replace('Z', '+00:00'))",
+              "lines = ['2024-01-02T03:04:05.000Z alpha']",
+              "attempts = [(i, parse_ts(line), 2, line) for i, line in enumerate(lines, 1)]",
+              "for idx, (i, ts, count, line) in enumerate(attempts):",
+              "    ts.isoformat()",
+              "for i, a in enumerate(attempts):",
+              "    a[1].isoformat()",
+            ].join("\n"),
+            args: [],
+            description: "helper-backed datetime tuple comprehension",
+          },
+          context,
+        )
+
+        const ask = getAsk(context, "python")
+        expect(ask?.patterns).toEqual(expect.arrayContaining(["unknown:callable:parse_ts"]))
+        expect(ask?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:ts.isoformat", "unknown:callable:a.isoformat"]))
+
+        const metadata = context.metadatas[0]?.metadata
+        expect(metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "ts.isoformat", pattern: "pure:ts.isoformat" }),
+            expect.objectContaining({ kind: "pure", call: "a.isoformat", pattern: "pure:a.isoformat" }),
+            expect.objectContaining({ kind: "unknown", call: "callable:parse_ts", pattern: "unknown:callable:parse_ts" }),
+          ]),
+        )
+      })
+    })
+
+    it("skips python ask for nested tuple subscript datetime differences in homogeneous tuple lists", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime, timezone",
+              "pts = []",
+              "for line in ['2024-01-02T03:04:05.000Z alpha', '2024-01-02T03:05:05.000Z beta']:",
+              "    raw = line.split('Z', 1)[0]",
+              "    prefix, frac = raw.split('.', 1)",
+              "    frac = (frac + '000000')[:6]",
+              "    ts = datetime.strptime(prefix + '.' + frac, '%Y-%m-%dT%H:%M:%S.%f').replace(tzinfo=timezone.utc)",
+              "    pts.append((ts, line.split(' ', 1)[1]))",
+              "for i in range(1, len(pts)):",
+              "    delta = round((pts[i][0] - pts[i-1][0]).total_seconds(), 3)",
+            ].join("\n"),
+            args: [],
+            description: "nested tuple subscript total_seconds",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")).toBeUndefined()
+      })
+    })
+
+    it("keeps exact-key datetime guards conservative when the guard does not reference the key variable", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "patterns = {'start': 1, 'skip': 2}",
+              "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+              "task = 'start'",
+              "for k in patterns:",
+              "    found[k].isoformat() if task.startswith('s') else ''",
+            ].join("\n"),
+            args: [],
+            description: "unrelated guard exact-key datetime",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:found.isoformat"]))
+      })
+    })
+
+    it("keeps exact-key datetime startswith guards conservative after guard-source rebinding", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+              "prefix = ''",
+              "for key in found:",
+              "    if key.startswith(prefix):",
+              "        prefix = 's'",
+              "        found[key].isoformat()",
+            ].join("\n"),
+            args: [],
+            description: "startswith guard source rebinding",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:found.isoformat"]))
+      })
+    })
+
+    it("keeps exact-key datetime startswith guards conservative after guarded-name rebinding", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+              "for key in found:",
+              "    if key.startswith('s'):",
+              "        key = 'skip'",
+              "        found[key].isoformat()",
+            ].join("\n"),
+            args: [],
+            description: "startswith guard guarded-name rebinding",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:found.isoformat"]))
+      })
+    })
+
+    it("keeps exact-key datetime startswith guards conservative after guarded rebind entries", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const sourceContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+              "prefix = ''",
+              "for key in found:",
+              "    if key.startswith(prefix):",
+              "        for prefix in ['s']:",
+              "            found[key].isoformat()",
+            ].join("\n"),
+            args: [],
+            description: "startswith guard source rebind entry",
+          },
+          sourceContext,
+        )
+
+        expect(getAsk(sourceContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:found.isoformat"]))
+
+        const receiverContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+              "for key in found:",
+              "    if key.startswith('s'):",
+              "        for key in ['skip']:",
+              "            found[key].isoformat()",
+            ].join("\n"),
+            args: [],
+            description: "startswith guard receiver rebind entry",
+          },
+          receiverContext,
+        )
+
+        expect(getAsk(receiverContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:found.isoformat"]))
+      })
+    })
+
+    it("does not materialize startswith snapshots late from dynamic branch-entry values", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const dynamicPrefixContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+              "prefix = dynamic",
+              "for key in found:",
+              "    if key.startswith(prefix):",
+              "        for prefix in ['st']:",
+              "            found[key].isoformat()",
+            ].join("\n"),
+            args: [],
+            description: "late startswith prefix snapshot",
+          },
+          dynamicPrefixContext,
+        )
+
+        expect(getAsk(dynamicPrefixContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:found.isoformat"]))
+
+        const dynamicReceiverContext = createMockContext({ worktree, directory: worktree })
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from datetime import datetime",
+              "found = {'skip': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'stop': other}",
+              "key = dynamic",
+              "if key.startswith('sk'):",
+              "    for key in ['skip', 'stop']:",
+              "        found[key].isoformat()",
+            ].join("\n"),
+            args: [],
+            description: "late startswith receiver snapshot",
+          },
+          dynamicReceiverContext,
+        )
+
+        expect(getAsk(dynamicReceiverContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:found.isoformat"]))
       })
     })
 

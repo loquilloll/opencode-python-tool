@@ -573,7 +573,7 @@ Terminal conditions append `<python_metadata>` to the output:
 
 ## JSON Rules and Session Report
 
-- The analyzer loads declarative rule data from `src/python/python-rules.json` by default. Set `OPENCODE_PYTHON_RULES` to point at a different rules file.
+- The analyzer loads declarative rule data from `src/python/python-rules.json` by default. Lower-level analyzer entry points still honor `OPENCODE_PYTHON_RULES`, and `src/python-session-report.ts` exposes the same scan-time override as `--analyzer-rules <path>`.
 - `src/python-session-report.ts` scans saved OpenCode sessions, re-analyzes inline `state.input.code`, skips `scriptPath` entries, and suppresses calls back into definitions declared in the same snippet.
 - `--update-candidates` only updates `candidates.unknown` in the rules JSON. It does not automatically change live `methods`, `calls`, or `pathCalls` classifier buckets.
 - `--review-next` and `--decide` provide a snippet-centric human review loop backed by a sidecar ledger, with decisions such as `read`, `write`, `emit`, `exec`, `pure`, `ignore`, and `needs-code`.
@@ -583,6 +583,7 @@ Terminal conditions append `<python_metadata>` to the output:
 - Review modes include `unknown` by default; add `--include-emit` to audit already-classified `emit` callables and `--include-pure` when you also want `pure` candidates in the queue. Promoted callables should no longer reappear in default review runs.
 - `--review-next` now asks `opencode run` for taxonomy confidence scores (`read`, `write`, `emit`, `exec`, `pure`, `unknown`), caches successful score bundles, and falls back to local heuristics if scoring fails.
 - `--promote-reviewed` promotes consistently reviewed outward call strings into `calls.read`, `calls.write`, `calls.emit`, or `calls.exec`, but blocks promotion when one live call target would merge multiple reviewed identities.
+- Use `--analyzer-rules <path>` when report or review modes should classify against a non-default rules file. Keep `--rules <path>` for write-target and compare-baseline operations.
 - Recommended operator flow is: `--update-candidates` -> `--review-families`/`--review-families-json` -> optional `--family`/`--module` pivot into `--review-next` -> broader `--review-tui` or more `--review-next` decisions as needed -> `--suggest-rules`/`--compare-rules` -> `--promote-reviewed` -> rerun the report.
 - `src/python-session-report.ts` is an operator utility run from this repo checkout; it is not an OpenCode tool that belongs in `~/.config/opencode/tools/`.
 
@@ -604,6 +605,7 @@ bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --revi
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-families-json
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-families --family re.Match.group
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-next
+bun run ../src/python-session-report.ts --analyzer-rules ../tmp/python-rules.json --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-next --family item.lower
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-next --module pytest
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --score-cache "$scores" --review-tui
 bun run ../src/python-session-report.ts --db "$bundle" --ledger "$ledger" --review-next --decide 1=read,2=emit

@@ -145,6 +145,10 @@ Incrementally mutated exact receiver-path list values such as `inv[current]` sta
 
 Same-scope direct helper calls can also preserve tracked datetime receiver kinds when every observed direct call site agrees on the helper parameter container kinds and every helper return stays consistently datetime-like. Optional `None` returns, aliased helper calls, and mixed helper seeds remain conservative.
 
+Bounded tuple/list slot provenance can now also carry datetime-like receivers through explicit tuple destructuring and exact-key dict lookups when the slot or key proof stays homogeneous. Indexed or key-targeted mutation still clears those proofs conservatively before later `isoformat()` or `total_seconds()` calls are classified.
+
+Positive exact-iterable membership inside inline conditional expressions can also narrow a receiver to `string` for downstream string methods like `item.lower()`. Negated membership, scalar-string membership, unrelated guards, and broader statement/body guard propagation stay conservative.
+
 Tracked `bytes` and `bytearray` receivers now also seed bounded `decode(...)` string chaining when the receiver provenance is already known, so patterns like `blob.decode("utf8").replace(...)` or `data.decode("utf8").split(",")` stay `pure` without broadening unknown binary receivers.
 
 #### Tempfile

@@ -41,13 +41,18 @@ export function scope(parent?: Scope): Scope {
     localDefinitions: new Set<string>(),
     callableFactories: new Map<string, Node>(),
     callableFactoryContainers: new Map<string, ContainerKind>(),
+    callableFactoryTupleContainers: new Map<string, ContainerKind[]>(),
     containerInstances: new Map<string, ContainerKind>(),
     valueInstances: new Map<string, Value>(),
     exactStringSets: new Map<string, string[]>(),
     exactIteratedStringSets: new Map<string, string[]>(),
+    iteratedExactStringTupleInstances: new Map<string, string[][]>(),
     iteratedElementInstances: new Map<string, ContainerKind>(),
+    iteratedContainerTupleInstances: new Map<string, ContainerKind[]>(),
     iteratedPathInstances: new Map<string, Value>(),
     iteratedPathTupleInstances: new Map<string, Value[]>(),
+    tupleContainerSlotInstances: new Map<string, ContainerKind[]>(),
+    seedableTupleLists: new Map<string, string[]>(),
     receiverContainers: new Map<string, ReceiverContainer>(),
     receiverElementKinds: new Map<string, ReceiverContainer>(),
     receiverSeedableStringLists: new Map<string, string[]>(),
@@ -211,13 +216,18 @@ export function clearTrackedName(current: Scope, name: string) {
   current.localDefinitions.delete(name)
   current.callableFactories.delete(name)
   current.callableFactoryContainers.delete(name)
+  current.callableFactoryTupleContainers.delete(name)
   current.containerInstances.delete(name)
   current.valueInstances.delete(name)
   current.exactStringSets.delete(name)
   current.exactIteratedStringSets.delete(name)
+  current.iteratedExactStringTupleInstances.delete(name)
   current.iteratedElementInstances.delete(name)
+  current.iteratedContainerTupleInstances.delete(name)
   current.iteratedPathInstances.delete(name)
   current.iteratedPathTupleInstances.delete(name)
+  current.tupleContainerSlotInstances.delete(name)
+  current.seedableTupleLists.delete(name)
   current.pathInstances.delete(name)
   current.sqliteConnectionInstances.delete(name)
   current.sqliteCursorInstances.delete(name)
@@ -399,6 +409,22 @@ export function iteratedElementInstance(current: Scope, name: string) {
   }
 }
 
+export function iteratedExactStringTupleInstance(current: Scope, name: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const value = scope.iteratedExactStringTupleInstances.get(name)
+    if (value) return value
+    if (scope.bindings.has(name)) return
+  }
+}
+
+export function iteratedContainerTupleInstance(current: Scope, name: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const value = scope.iteratedContainerTupleInstances.get(name)
+    if (value) return value
+    if (scope.bindings.has(name)) return
+  }
+}
+
 export function iteratedPathInstance(current: Scope, name: string) {
   for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
     const value = scope.iteratedPathInstances.get(name)
@@ -413,6 +439,29 @@ export function iteratedPathTupleInstance(current: Scope, name: string) {
     if (value) return value
     if (scope.bindings.has(name)) return
   }
+}
+
+export function tupleContainerSlotInstance(current: Scope, name: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const value = scope.tupleContainerSlotInstances.get(name)
+    if (value) return value
+    if (scope.bindings.has(name)) return
+  }
+}
+
+export function hasSeedableTupleList(current: Scope, name: string) {
+  const target = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    if (scope.seedableTupleLists.has(name)) return true
+    if (target && scope.seedableTupleLists.has(target)) return true
+    if (target) {
+      for (const key of scope.seedableTupleLists.keys()) {
+        if (resolveQualified(key, current) === target) return true
+      }
+    }
+    if (scope.bindings.has(name)) return false
+  }
+  return false
 }
 
 export function pathInstanceValue(current: Scope, name: string) {
@@ -501,6 +550,14 @@ export function lookupCallableFactory(current: Scope, key: string) {
 export function lookupCallableFactoryContainer(current: Scope, key: string) {
   for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
     const value = scope.callableFactoryContainers.get(key)
+    if (value) return value
+    if (scope.bindings.has(key)) return
+  }
+}
+
+export function lookupCallableFactoryTupleContainer(current: Scope, key: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const value = scope.callableFactoryTupleContainers.get(key)
     if (value) return value
     if (scope.bindings.has(key)) return
   }

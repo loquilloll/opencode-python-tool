@@ -9,7 +9,7 @@ Drive the saved-session review queue to completion. Treat a named callable as a 
 
 ## Core Rules
 
-- Start by reading continuity, then use the repo-local rules file: `OPENCODE_PYTHON_RULES=/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json`.
+- Start by reading continuity, then use the repo-local rules file through `--analyzer-rules /home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json` when running `src/python-session-report.ts`.
 - Always inspect the full snippet before deciding. Resolve the canonical callable/module/family first.
 - If the user asks to classify a callable family such as `Mock`, `ast`, or `Path`, classify the constructor/function and the bounded method surface that should follow from it.
 - Prefer analyzer/rules fixes over repeated manual decisions when the same family is likely to recur.
@@ -22,7 +22,7 @@ Drive the saved-session review queue to completion. Treat a named callable as a 
 1. Run:
 
 ```bash
-OPENCODE_PYTHON_RULES="/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" bun run ../src/python-session-report.ts --db "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db" --ledger "${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-review.json" --score-cache "${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-score-cache.json" --review-next
+bun run ../src/python-session-report.ts --analyzer-rules "/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" --db "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db" --ledger "${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-review.json" --score-cache "${XDG_STATE_HOME:-$HOME/.local/state}/opencode/python-session-score-cache.json" --review-next
 ```
 
 2. If there is no next candidate, stop and report that the queue is empty.

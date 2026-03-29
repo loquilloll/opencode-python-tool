@@ -61,8 +61,8 @@ describe("python analyzer", () => {
     )
   })
 
-  it("marks calls to inline definitions so review tooling can skip them", async () => {
-    const detailed = await analyzeDetailed(["def helper():", "    writer.save('x')", "helper()"].join("\n"))
+    it("marks calls to inline definitions so review tooling can skip them", async () => {
+      const detailed = await analyzeDetailed(["def helper():", "    writer.save('x')", "helper()"].join("\n"))
 
     expect(detailed.events).toEqual(
       expect.arrayContaining([
@@ -76,8 +76,26 @@ describe("python analyzer", () => {
           call: "callable:writer.save",
         }),
       ]),
-    )
-  })
+      )
+    })
+
+    it("marks calls to inline lambda helpers so review tooling can skip them", async () => {
+      const detailed = await analyzeDetailed(["helper = lambda text: writer.save(text)", "helper('x')"].join("\n"))
+
+      expect(detailed.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "unknown",
+            call: "callable:helper",
+            evidence: expect.objectContaining({ localDefinition: true }),
+          }),
+          expect.objectContaining({
+            kind: "unknown",
+            call: "callable:writer.save",
+          }),
+        ]),
+      )
+    })
 
   describe("parity fixture regressions", () => {
     const fixtures = [

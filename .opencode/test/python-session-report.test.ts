@@ -4,7 +4,7 @@ import { access, mkdtemp, readFile, rm, writeFile } from "fs/promises"
 import os from "os"
 import path from "path"
 import { PassThrough, Writable } from "stream"
-import { action, applyDecisions, compareRules, filterReviewQueue, item, nextReview, parse, promote, promotions, recordDecision, render, renderPromotions, renderReview, renderReviewFamilies, renderReviewModule, renderRulesCompare, renderSuggestions, renderTui, rescore, review, reviewFamilies, reviewFamilySummary, scan, selectReviewFamilies, settled, suggestRules, tui, update } from "../../src/python-session-report"
+import { action, applyDecisions, compareRules, filterReviewQueue, item, main, nextReview, parse, promote, promotions, recordDecision, render, renderPromotions, renderReview, renderReviewFamilies, renderReviewModule, renderRulesCompare, renderSuggestions, renderTui, rescore, review, reviewFamilies, reviewFamilySummary, scan, selectReviewFamilies, settled, suggestRules, tui, update } from "../../src/python-session-report"
 
 function plain(text: string) {
   return text.replace(/\x1b\[[0-9;]*m/g, "")
@@ -208,6 +208,39 @@ describe("python session report", () => {
           "python",
           {
             code: ["def helper():", "    writer.save('x')", "helper()", "reader.fetch('y')"].join("\n"),
+          },
+        ),
+      })
+
+      const report = await scan({ db: tmp.file, samples: 3, includePure: true })
+      expect(report.totals.unknownEvents).toBe(2)
+      expect(report.unknown.map((item) => item.call).sort()).toEqual(["reader.fetch", "writer.save"])
+      expect(report.occurrences.map((item) => item.call).sort()).toEqual(["reader.fetch", "writer.save"])
+
+      const queue = await review(report, { ledger: path.join(tmp.dir, "review-ledger.json") })
+      expect(queue.snippets).toHaveLength(1)
+      expect(queue.snippets[0]?.candidates.map((item) => item.call).sort()).toEqual(["reader.fetch", "writer.save"])
+    } finally {
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
+  it("skips inline lambda helper call names while keeping underlying unknown calls reviewable", async () => {
+    const tmp = await db()
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data(
+          "python",
+          {
+            code: ["helper = lambda text: writer.save(text)", "helper('x')", "reader.fetch('y')"].join("\n"),
           },
         ),
       })
@@ -2524,6 +2557,48 @@ describe("python session report", () => {
     }
   })
 
+  it("uses --analyzer-rules for scan-time classification", async () => {
+    const tmp = await db()
+    const ledger = path.join(tmp.dir, "review-ledger.json")
+    const rules = path.join(tmp.dir, "python-rules.json")
+    const output: string[] = []
+    const priorLog = console.log
+    const priorRules = process.env.OPENCODE_PYTHON_RULES
+
+    try {
+      tmp.db.exec("insert into session (id, title, time_updated) values ('s1', 'Alpha', 2000);")
+      put(tmp.db, {
+        id: "p1",
+        messageID: "m1",
+        sessionID: "s1",
+        created: 1000,
+        updated: 2000,
+        data: data("python", { code: "reader.fetch('x')" }),
+      })
+
+      const src = new URL("../../src/python/python-rules.json", import.meta.url)
+      const base = JSON.parse(await readFile(src, "utf8")) as Record<string, any>
+      base.calls.read = [...new Set([...(base.calls.read as string[]), "reader.fetch"])].sort()
+      await writeFile(rules, `${JSON.stringify(base, null, 2)}\n`)
+
+      console.log = (...args: unknown[]) => {
+        output.push(args.map((arg) => String(arg)).join(" "))
+      }
+
+      await main(["--db", tmp.file, "--ledger", ledger, "--review-json", "--analyzer-rules", rules])
+
+      const queue = JSON.parse(output.join("\n")) as { totals: { pendingCandidates: number } }
+      expect(queue.totals.pendingCandidates).toBe(0)
+      expect(process.env.OPENCODE_PYTHON_RULES).toBe(priorRules)
+    } finally {
+      console.log = priorLog
+      if (priorRules === undefined) delete process.env.OPENCODE_PYTHON_RULES
+      else process.env.OPENCODE_PYTHON_RULES = priorRules
+      tmp.db.close()
+      await rm(tmp.dir, { recursive: true, force: true })
+    }
+  })
+
   it("promotes callables once a matching review-identity decision exists", async () => {
     const tmp = await db()
     const ledger = path.join(tmp.dir, "review-ledger.json")
@@ -3087,6 +3162,10 @@ describe("python session report", () => {
     expect(parse(["--compare-rules", "/tmp/rules.json"]).compareRules).toBe("/tmp/rules.json")
   })
 
+  it("parses --analyzer-rules", () => {
+    expect(parse(["--analyzer-rules", "/tmp/rules.json"]).analyzerRules).toBe("/tmp/rules.json")
+  })
+
   it("parses family summary options", () => {
     expect(parse(["--review-families"]).reviewFamilies).toBeTrue()
     expect(parse(["--review-families-json"]).reviewFamiliesJson).toBeTrue()
@@ -3109,6 +3188,9 @@ describe("python session report", () => {
     )
     expect(() => parse(["--record-decision", "abc=read", "--review-families"])).toThrow(
       "--record-decision cannot be combined with suggest, compare, or family summary modes",
+    )
+    expect(() => parse(["--analyzer-rules", "/tmp/current.json", "--compare-rules", "/tmp/alt.json"])).toThrow(
+      "--analyzer-rules cannot be combined with --compare-rules; compare mode already uses --rules and --compare-rules",
     )
     expect(() => parse(["--family", "re.Match.group"])).toThrow(
       "--family/--module require --review-families, --review-families-json, or --review-next",

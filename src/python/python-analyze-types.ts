@@ -38,13 +38,18 @@ export type Scope = {
   localDefinitions: Set<string>
   callableFactories: Map<string, Node>
   callableFactoryContainers: Map<string, ContainerKind>
+  callableFactoryTupleContainers: Map<string, ContainerKind[]>
   containerInstances: Map<string, ContainerKind>
   valueInstances: Map<string, Value>
   exactStringSets: Map<string, string[]>
   exactIteratedStringSets: Map<string, string[]>
+  iteratedExactStringTupleInstances: Map<string, string[][]>
   iteratedElementInstances: Map<string, ContainerKind>
+  iteratedContainerTupleInstances: Map<string, ContainerKind[]>
   iteratedPathInstances: Map<string, Value>
   iteratedPathTupleInstances: Map<string, Value[]>
+  tupleContainerSlotInstances: Map<string, ContainerKind[]>
+  seedableTupleLists: Map<string, string[]>
   receiverContainers: Map<string, ReceiverContainer>
   receiverElementKinds: Map<string, ReceiverContainer>
   receiverSeedableStringLists: Map<string, string[]>
@@ -66,9 +71,14 @@ export type TimelineEntry = {
   node: Node
   scope: Scope
   bodyScope?: Scope
-  guards?: Node[]
+  guards?: TimelineGuard[]
   startIndex: number
   endIndex: number
+}
+
+export type TimelineGuard = {
+  node: Node
+  startswithSnapshots?: Map<string, { receiverName: string; prefixes: string[]; receiverValues?: string[] }>
 }
 
 export type Rules = {

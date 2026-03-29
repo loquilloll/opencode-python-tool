@@ -18,6 +18,8 @@ type Opts = {
   since?: number
   json: boolean
   samples: number
+  analyzerRules: string
+  analyzerRulesExplicit: boolean
   rules: string
   scoreCache: string
   update: boolean
@@ -409,7 +411,8 @@ function usage() {
     "Options:",
     "  --db <path>      Override OpenCode session database path",
     "  --ledger <path>  Override review-ledger JSON path",
-    "  --rules <path>   Override python rules JSON path",
+    "  --analyzer-rules <path>  Override scan-time analyzer rules JSON path",
+    "  --rules <path>   Override writable rules JSON path",
     "  --score-cache <path>  Override review score-cache JSON path",
     "  --since <iso>    Only scan rows updated at or after this ISO timestamp",
     "  --samples <n>    Sample sessions/previews per unknown callable (default: 3)",
@@ -444,6 +447,10 @@ function defdb() {
 
 function defrules() {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "python", "python-rules.json")
+}
+
+function defAnalyzerRules() {
+  return process.env.OPENCODE_PYTHON_RULES ? path.resolve(process.env.OPENCODE_PYTHON_RULES) : defrules()
 }
 
 function defledger() {
@@ -957,6 +964,8 @@ export function parse(args: string[]) {
     json: false,
     samples: 3,
     ledger: defledger(),
+    analyzerRules: defAnalyzerRules(),
+    analyzerRulesExplicit: false,
     rules: defrules(),
     scoreCache: defscorecache(),
     reviewJson: false,
@@ -1046,6 +1055,13 @@ export function parse(args: string[]) {
       opts.ledger = path.resolve(val)
       continue
     }
+    if (arg === "--analyzer-rules") {
+      const val = args[++i]
+      if (!val) fail("Missing value for --analyzer-rules")
+      opts.analyzerRules = path.resolve(val)
+      opts.analyzerRulesExplicit = true
+      continue
+    }
     if (arg === "--rules") {
       const val = args[++i]
       if (!val) fail("Missing value for --rules")
@@ -1105,6 +1121,7 @@ export function parse(args: string[]) {
   if (opts.compareRules && (opts.reviewJson || opts.reviewNext || opts.reviewTui || opts.reviewFamilies || opts.reviewFamiliesJson || opts.update || opts.promoteReviewed || opts.suggestRules)) {
     fail("--compare-rules cannot be combined with review, update, promotion, or suggest modes")
   }
+  if (opts.analyzerRulesExplicit && opts.compareRules) fail("--analyzer-rules cannot be combined with --compare-rules; compare mode already uses --rules and --compare-rules")
   if (opts.recordDecision && (opts.suggestRules || opts.compareRules || opts.reviewFamilies || opts.reviewFamiliesJson)) {
     fail("--record-decision cannot be combined with suggest, compare, or family summary modes")
   }
@@ -2733,13 +2750,6 @@ export async function main(args = process.argv.slice(2)) {
     }
   }
 
-  const report = await scan({
-    db: opts.db,
-    since: opts.since,
-    samples: opts.samples,
-    includeEmit: opts.includeEmit,
-    includePure: opts.includePure,
-  })
   if (opts.compareRules) {
     const compared = await compareRules({
       db: opts.db,
@@ -2754,54 +2764,63 @@ export async function main(args = process.argv.slice(2)) {
     console.log(opts.json ? JSON.stringify(compared, null, 2) : renderRulesCompare(compared))
     return
   }
-  if (opts.suggestRules) {
-    const suggestions = await suggestRules(report, { ledger: opts.ledger, rules: opts.rules })
-    console.log(opts.json ? JSON.stringify(suggestions, null, 2) : renderSuggestions(suggestions))
-    return
-  }
-  if (opts.reviewJson) {
-    console.log(JSON.stringify(await review(report, { ledger: opts.ledger }), null, 2))
-    return
-  }
-  if (opts.reviewFamiliesJson) {
-    console.log(JSON.stringify(reviewFamilySummary(await review(report, { ledger: opts.ledger }), { family: opts.family, module: opts.module }), null, 2))
-    return
-  }
-  if (opts.reviewFamilies) {
-    console.log(renderReviewFamilies(reviewFamilySummary(await review(report, { ledger: opts.ledger }), { family: opts.family, module: opts.module })))
-    return
-  }
-  if (opts.reviewTui) {
-    await tui(await review(report, { ledger: opts.ledger }), { ledger: opts.ledger, cache: opts.scoreCache })
-    return
-  }
-  if (opts.reviewNext) {
-    const familySelectors = { family: opts.family, module: opts.module }
-    let queue = filterReviewQueue(await review(report, { ledger: opts.ledger }), familySelectors)
-    let item = nextReview(queue)
-    if (opts.decide) {
-      if (!item) fail("No pending review items")
-      await applyDecisions({ ledger: opts.ledger, item, decide: opts.decide })
-      queue = filterReviewQueue(await review(report, { ledger: opts.ledger }), familySelectors)
-      item = nextReview(queue)
-    }
-    if (!item) {
-      console.log("No pending review items.")
+  await withRulesFile(opts.analyzerRules, async () => {
+    const report = await scan({
+      db: opts.db,
+      since: opts.since,
+      samples: opts.samples,
+      includeEmit: opts.includeEmit,
+      includePure: opts.includePure,
+    })
+    if (opts.suggestRules) {
+      const suggestions = await suggestRules(report, { ledger: opts.ledger, rules: opts.rules })
+      console.log(opts.json ? JSON.stringify(suggestions, null, 2) : renderSuggestions(suggestions))
       return
     }
-    const next = await rescore(item, { cache: opts.scoreCache })
-    if (next.warning) console.error(next.warning)
-    const families = reviewFamilies(queue).filter((cluster) => next.item.candidates.some((candidate) => cluster.familyKey === reviewKeyOf(candidate)))
-    if (opts.module) console.log(renderReviewModule(next.item, opts.module, families))
-    else console.log(renderReview(next.item, families[0]))
-    return
-  }
-  if (opts.promoteReviewed) {
-    console.log(renderPromotions(await promote(report, { ledger: opts.ledger, rules: opts.rules })))
-    return
-  }
-  if (opts.update) await update(report, { rules: opts.rules, samples: opts.samples })
-  console.log(opts.json ? JSON.stringify(report, null, 2) : render(report))
+    if (opts.reviewJson) {
+      console.log(JSON.stringify(await review(report, { ledger: opts.ledger }), null, 2))
+      return
+    }
+    if (opts.reviewFamiliesJson) {
+      console.log(JSON.stringify(reviewFamilySummary(await review(report, { ledger: opts.ledger }), { family: opts.family, module: opts.module }), null, 2))
+      return
+    }
+    if (opts.reviewFamilies) {
+      console.log(renderReviewFamilies(reviewFamilySummary(await review(report, { ledger: opts.ledger }), { family: opts.family, module: opts.module })))
+      return
+    }
+    if (opts.reviewTui) {
+      await tui(await review(report, { ledger: opts.ledger }), { ledger: opts.ledger, cache: opts.scoreCache })
+      return
+    }
+    if (opts.reviewNext) {
+      const familySelectors = { family: opts.family, module: opts.module }
+      let queue = filterReviewQueue(await review(report, { ledger: opts.ledger }), familySelectors)
+      let item = nextReview(queue)
+      if (opts.decide) {
+        if (!item) fail("No pending review items")
+        await applyDecisions({ ledger: opts.ledger, item, decide: opts.decide })
+        queue = filterReviewQueue(await review(report, { ledger: opts.ledger }), familySelectors)
+        item = nextReview(queue)
+      }
+      if (!item) {
+        console.log("No pending review items.")
+        return
+      }
+      const next = await rescore(item, { cache: opts.scoreCache })
+      if (next.warning) console.error(next.warning)
+      const families = reviewFamilies(queue).filter((cluster) => next.item.candidates.some((candidate) => cluster.familyKey === reviewKeyOf(candidate)))
+      if (opts.module) console.log(renderReviewModule(next.item, opts.module, families))
+      else console.log(renderReview(next.item, families[0]))
+      return
+    }
+    if (opts.promoteReviewed) {
+      console.log(renderPromotions(await promote(report, { ledger: opts.ledger, rules: opts.rules })))
+      return
+    }
+    if (opts.update) await update(report, { rules: opts.rules, samples: opts.samples })
+    console.log(opts.json ? JSON.stringify(report, null, 2) : render(report))
+  })
 }
 
 if (import.meta.main) {

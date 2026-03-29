@@ -2,6 +2,7 @@ import type { PythonAstTree as Tree } from "./frontend/interface"
 import { getFrontend, loadRules } from "./python-bootstrap"
 import { analysisResult, foldResolvedEffect, unique } from "./python-events"
 import { classify, classifyRaise, isAtlassianImportStatement } from "./python-classifier"
+import { ensureGuardSnapshots } from "./python-key-equivalence"
 import type { PythonEvent } from "./python-analyze-types"
 import {
   analyzerMetadata,
@@ -14,6 +15,7 @@ import {
 import {
   clearMutatedClassModuleReceiverContainer,
   clearIndirectMappingMutations,
+  clearIndirectSetitemMutations,
   clearMutatedTrustedHashlibCalls,
   clearMutatedTrustedModelDumpPaths,
   clearMutatedTrustedDifflibCalls,
@@ -28,6 +30,7 @@ import {
   replayImportEntry,
   replayRebindEntry,
   updateSqliteCursorExecution,
+  updateMutatedTupleListSlotKinds,
   updateMutatedReceiverElementKind,
 } from "./python-replay"
 import { buildTimeline } from "./python-timeline"
@@ -86,6 +89,7 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
     }
 
     if (entry.kind === "rebind") {
+      ensureGuardSnapshots(entry.scope, entry.guards)
       replayRebindEntry(entry)
       continue
     }
@@ -96,15 +100,18 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
     }
 
     if (entry.kind === "raise") {
+      ensureGuardSnapshots(entry.scope, entry.guards)
       const resolved = classifyRaise(entry.node, entry.scope)
       if (resolved) events.push(foldResolvedEffect(resolved))
       continue
     }
 
-    const resolved = classify(entry.node, rules, hasAtlassianImportProvenance, entry.scope)
+    ensureGuardSnapshots(entry.scope, entry.guards)
+    const resolved = classify(entry.node, rules, hasAtlassianImportProvenance, entry.scope, entry.guards ?? [])
     if (resolved) events.push(foldResolvedEffect(resolved))
     clearEscapedReceiverPaths(entry)
     clearMutatedIteratedElementInstance(entry)
+    updateMutatedTupleListSlotKinds(entry)
     clearMutatedMappingValueContainerKind(entry)
     clearMutatedClassModuleReceiverContainer(entry)
     clearMutatedTrustedHashlibCalls(entry)
@@ -112,6 +119,7 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
     clearMutatedTrustedDifflibCalls(entry)
     clearMutatedTrustedOciModelMetadataMaps(entry)
     clearIndirectMappingMutations(entry)
+    clearIndirectSetitemMutations(entry)
     updateSqliteCursorExecution(entry)
     updateMutatedReceiverElementKind(entry)
   }

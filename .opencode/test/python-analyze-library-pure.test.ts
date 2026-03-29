@@ -292,6 +292,508 @@ describe("python analyzer", () => {
       )
     })
 
+    it("tracks bounded datetime tuple slots through tuple destructuring and indexed tuple reads", async () => {
+      const events = await analyze(
+        [
+          "from datetime import datetime",
+          "attempts = []",
+          "for idx, raw in enumerate(['2024-01-02T03:04:05+00:00'], start=1):",
+          "    ts = datetime.fromisoformat(raw)",
+          "    attempts.append((idx, ts, 2))",
+          "for idx, ts, count in attempts:",
+          "    ts.isoformat()",
+          "for i, attempt in enumerate(attempts):",
+          "    attempt[1].isoformat()",
+          "for i, (slot, ts, count) in enumerate(attempts):",
+          "    ts.isoformat()",
+        ].join("\n"),
+      )
+
+      const mutatedEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "attempts = []",
+          "for raw in ['2024-01-02T03:04:05+00:00']:",
+          "    ts = datetime.fromisoformat(raw)",
+          "    attempts.append((1, ts, 2))",
+          "attempts[0] = (1, 'oops', 2)",
+          "for idx, ts, count in attempts:",
+          "    ts.isoformat()",
+        ].join("\n"),
+      )
+
+      const aliasMutatedEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "attempts = []",
+          "for raw in ['2024-01-02T03:04:05+00:00']:",
+          "    ts = datetime.fromisoformat(raw)",
+          "    attempts.append((1, ts, 2))",
+          "alias = attempts",
+          "alias[0] = (1, 'oops', 2)",
+          "for idx, ts, count in attempts:",
+          "    ts.isoformat()",
+        ].join("\n"),
+      )
+
+      const boundMutatedEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "attempts = []",
+          "for raw in ['2024-01-02T03:04:05+00:00']:",
+          "    ts = datetime.fromisoformat(raw)",
+          "    attempts.append((1, ts, 2))",
+          "app = attempts.append",
+          "app((1, 'oops', 2))",
+          "for idx, ts, count in attempts:",
+          "    ts.isoformat()",
+        ].join("\n"),
+      )
+
+      const setitemMutatedEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "attempts = []",
+          "for raw in ['2024-01-02T03:04:05+00:00']:",
+          "    ts = datetime.fromisoformat(raw)",
+          "    attempts.append((1, ts, 2))",
+          "attempts.__setitem__(0, (1, 'oops', 2))",
+          "for idx, ts, count in attempts:",
+          "    ts.isoformat()",
+        ].join("\n"),
+      )
+
+      const wrappedSetitemMutatedEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "attempts = []",
+          "for raw in ['2024-01-02T03:04:05+00:00']:",
+          "    ts = datetime.fromisoformat(raw)",
+          "    attempts.append((1, ts, 2))",
+          "list.__setitem__((attempts), 0, (1, 'oops', 2))",
+          "for idx, ts, count in attempts:",
+          "    ts.isoformat()",
+        ].join("\n"),
+      )
+
+      const wrappedAppendMutatedEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "attempts = []",
+          "for raw in ['2024-01-02T03:04:05+00:00']:",
+          "    ts = datetime.fromisoformat(raw)",
+          "    attempts.append((1, ts, 2))",
+          "(attempts).append((1, 'oops', 2))",
+          "app = attempts.append",
+          "(app)((1, 'oops', 2))",
+          "for idx, ts, count in attempts:",
+          "    ts.isoformat()",
+        ].join("\n"),
+      )
+
+      const classMethodMutatedEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "attempts = []",
+          "for raw in ['2024-01-02T03:04:05+00:00']:",
+          "    ts = datetime.fromisoformat(raw)",
+          "    attempts.append((1, ts, 2))",
+          "list.append(attempts, (1, 'oops', 2))",
+          "push = list.append",
+          "push(attempts, (1, 'oops', 2))",
+          "for idx, ts, count in attempts:",
+          "    ts.isoformat()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "ts.isoformat" }, { kind: "pure", call: "attempt.isoformat" }, { kind: "pure", call: "enumerate" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:ts.isoformat" }, { kind: "unknown", call: "callable:attempt.isoformat" }]))
+
+      for (const variant of [mutatedEvents, aliasMutatedEvents, boundMutatedEvents, setitemMutatedEvents, wrappedSetitemMutatedEvents, wrappedAppendMutatedEvents, classMethodMutatedEvents]) {
+        expect(variant).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:ts.isoformat" }]))
+        expect(variant).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "ts.isoformat" }]))
+      }
+    })
+
+    it("tracks exact-key datetime receivers and helper args without widening mutated keys", async () => {
+      const events = await analyze(
+        [
+          "from datetime import datetime",
+          "patterns = {'start': '2024-01-02T03:04:05+00:00', 'end': '2024-01-02T03:05:05+00:00'}",
+          "found = {}",
+          "for key, raw in patterns.items():",
+          "    found[key] = datetime.fromisoformat(raw)",
+          "found['start'].isoformat()",
+          "for k in patterns:",
+          "    found[k].isoformat()",
+          "pairs = [('start', 'end')]",
+          "for a, b in pairs:",
+          "    (found[b] - found[a]).total_seconds()",
+          "def show(ts):",
+          "    return ts.isoformat()",
+          "def secs(a, b):",
+          "    gap = b - a",
+          "    return gap.total_seconds()",
+          "def measure(left, right):",
+          "    return round((found[right] - found[left]).total_seconds(), 3)",
+          "show(found['start'])",
+          "secs(found['start'], found['end'])",
+          "measure('start', 'end')",
+          "(found['end'] - found['start']).total_seconds()",
+        ].join("\n"),
+      )
+
+      const mutatedEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "patterns = {'start': '2024-01-02T03:04:05+00:00', 'end': '2024-01-02T03:05:05+00:00'}",
+          "found = {}",
+          "for key, raw in patterns.items():",
+          "    found[key] = datetime.fromisoformat(raw)",
+          "found['end'] = other",
+          "found['start'].isoformat()",
+          "for k in patterns:",
+          "    found[k].isoformat()",
+          "def secs(a, b):",
+          "    gap = b - a",
+          "    return gap.total_seconds()",
+          "def measure(left, right):",
+          "    return round((found[right] - found[left]).total_seconds(), 3)",
+          "pairs = [('start', 'end')]",
+          "pairs[0] = ('start', other)",
+          "secs(found['start'], found['end'])",
+          "measure('start', 'end')",
+          "(found['end'] - found['start']).total_seconds()",
+        ].join("\n"),
+      )
+
+      const boundUpdateEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "patterns = {'start': '2024-01-02T03:04:05+00:00', 'end': '2024-01-02T03:05:05+00:00'}",
+          "found = {}",
+          "for key, raw in patterns.items():",
+          "    found[key] = datetime.fromisoformat(raw)",
+          "upd = found.update",
+          "upd({'end': other})",
+          "for k in patterns:",
+          "    found[k].isoformat()",
+          "pairs = [('start', 'end')]",
+          "for a, b in pairs:",
+          "    (found[b] - found[a]).total_seconds()",
+        ].join("\n"),
+      )
+
+      const setitemUpdateEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "patterns = {'start': '2024-01-02T03:04:05+00:00', 'end': '2024-01-02T03:05:05+00:00'}",
+          "found = {}",
+          "for key, raw in patterns.items():",
+          "    found[key] = datetime.fromisoformat(raw)",
+          "set_item = found.__setitem__",
+          "set_item('end', other)",
+          "for k in patterns:",
+          "    found[k].isoformat()",
+          "pairs = [('start', 'end')]",
+          "for a, b in pairs:",
+          "    (found[b] - found[a]).total_seconds()",
+        ].join("\n"),
+      )
+
+      const wrappedSetitemUpdateEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "patterns = {'start': '2024-01-02T03:04:05+00:00', 'end': '2024-01-02T03:05:05+00:00'}",
+          "found = {}",
+          "for key, raw in patterns.items():",
+          "    found[key] = datetime.fromisoformat(raw)",
+          "dict.__setitem__((found), 'end', other)",
+          "for k in patterns:",
+          "    found[k].isoformat()",
+          "pairs = [('start', 'end')]",
+          "for a, b in pairs:",
+          "    (found[b] - found[a]).total_seconds()",
+        ].join("\n"),
+      )
+
+      const wrappedUpdateEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "patterns = {'start': '2024-01-02T03:04:05+00:00', 'end': '2024-01-02T03:05:05+00:00'}",
+          "found = {}",
+          "for key, raw in patterns.items():",
+          "    found[key] = datetime.fromisoformat(raw)",
+          "(found).update({'end': other})",
+          "upd = found.update",
+          "(upd)({'end': other})",
+          "for k in patterns:",
+          "    found[k].isoformat()",
+          "pairs = [('start', 'end')]",
+          "for a, b in pairs:",
+          "    (found[b] - found[a]).total_seconds()",
+        ].join("\n"),
+      )
+
+      const classMethodUpdateEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "patterns = {'start': '2024-01-02T03:04:05+00:00', 'end': '2024-01-02T03:05:05+00:00'}",
+          "found = {}",
+          "for key, raw in patterns.items():",
+          "    found[key] = datetime.fromisoformat(raw)",
+          "dict.update((found), {'end': other})",
+          "dict_set = dict.__setitem__",
+          "dict_set((found), 'end', other)",
+          "for k in patterns:",
+          "    found[k].isoformat()",
+          "pairs = [('start', 'end')]",
+          "for a, b in pairs:",
+          "    (found[b] - found[a]).total_seconds()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "found.isoformat" },
+          { kind: "pure", call: "ts.isoformat" },
+          { kind: "pure", call: "gap.total_seconds" },
+          { kind: "pure", call: "round" },
+          { kind: "pure", call: "total_seconds" },
+        ]),
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:found.isoformat" },
+          { kind: "unknown", call: "callable:ts.isoformat" },
+          { kind: "unknown", call: "callable:gap.total_seconds" },
+          { kind: "unknown", call: "callable:total_seconds" },
+        ]),
+      )
+
+      expect(mutatedEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:found.isoformat" },
+          { kind: "unknown", call: "callable:gap.total_seconds" },
+          { kind: "unknown", call: "callable:total_seconds" },
+        ]),
+      )
+      expect(mutatedEvents).not.toEqual(
+        expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }, { kind: "pure", call: "gap.total_seconds" }, { kind: "pure", call: "total_seconds" }]),
+      )
+
+      expect(boundUpdateEvents).toEqual(
+        expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }, { kind: "unknown", call: "callable:total_seconds" }]),
+      )
+      expect(boundUpdateEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }, { kind: "pure", call: "total_seconds" }]))
+
+      expect(setitemUpdateEvents).toEqual(
+        expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }, { kind: "unknown", call: "callable:total_seconds" }]),
+      )
+      expect(setitemUpdateEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }, { kind: "pure", call: "total_seconds" }]))
+
+      expect(wrappedSetitemUpdateEvents).toEqual(
+        expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }, { kind: "unknown", call: "callable:total_seconds" }]),
+      )
+      expect(wrappedSetitemUpdateEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }, { kind: "pure", call: "total_seconds" }]))
+
+      expect(wrappedUpdateEvents).toEqual(
+        expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }, { kind: "unknown", call: "callable:total_seconds" }]),
+      )
+      expect(wrappedUpdateEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }, { kind: "pure", call: "total_seconds" }]))
+
+      expect(classMethodUpdateEvents).toEqual(
+        expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }, { kind: "unknown", call: "callable:total_seconds" }]),
+      )
+      expect(classMethodUpdateEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }, { kind: "pure", call: "total_seconds" }]))
+    })
+
+    it("tracks helper-backed datetime tuple slots through list comprehensions with enumerate indexes", async () => {
+      const events = await analyze(
+        [
+          "from datetime import datetime",
+          "def parse_ts(line):",
+          "    raw = line.split('Z', 1)[0].lstrip('\\ufeff') + 'Z'",
+          "    return datetime.fromisoformat(raw.replace('Z', '+00:00'))",
+          "lines = ['2024-01-02T03:04:05.000Z alpha']",
+          "attempts = [(i, parse_ts(line), 2, line) for i, line in enumerate(lines, 1)]",
+          "for idx, (i, ts, count, line) in enumerate(attempts):",
+          "    ts.isoformat()",
+          "for i, a in enumerate(attempts):",
+          "    a[1].isoformat()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "ts.isoformat" }, { kind: "pure", call: "a.isoformat" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:ts.isoformat" }, { kind: "unknown", call: "callable:a.isoformat" }]))
+    })
+
+    it("tracks nested tuple subscript datetime differences in homogeneous tuple lists", async () => {
+      const events = await analyze(
+        [
+          "from datetime import datetime, timezone",
+          "pts = []",
+          "for line in ['2024-01-02T03:04:05.000Z alpha', '2024-01-02T03:05:05.000Z beta']:",
+          "    raw = line.split('Z', 1)[0]",
+          "    prefix, frac = raw.split('.', 1)",
+          "    frac = (frac + '000000')[:6]",
+          "    ts = datetime.strptime(prefix + '.' + frac, '%Y-%m-%dT%H:%M:%S.%f').replace(tzinfo=timezone.utc)",
+          "    pts.append((ts, line.split(' ', 1)[1]))",
+          "for i in range(1, len(pts)):",
+          "    delta = round((pts[i][0] - pts[i-1][0]).total_seconds(), 3)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "total_seconds" }, { kind: "pure", call: "round" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:total_seconds" }]))
+    })
+
+    it("classifies typed helper-backed exact-key datetime reads and helper-key total_seconds from matched timestamps", async () => {
+      const events = await analyze(
+        [
+          "from datetime import datetime, timezone",
+          "import re",
+          "def parse_ts(raw: str) -> datetime:",
+          "    body = raw[:-1]",
+          "    if '.' in body:",
+          "        prefix, frac = body.split('.', 1)",
+          "        frac = (frac + '000000')[:6]",
+          "        body = prefix + '.' + frac",
+          "        return datetime.strptime(body, '%Y-%m-%dT%H:%M:%S.%f').replace(tzinfo=timezone.utc)",
+          "    return datetime.strptime(body, '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)",
+          "patterns = {'start': r'start', 'end': r'end'}",
+          "found = {}",
+          "for line in ['2024-01-02T03:04:05.000Z start', '2024-01-02T03:05:05.000Z end']:",
+          "    m = re.match(r'^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)', line)",
+          "    if not m:",
+          "        continue",
+          "    ts = parse_ts(m.group(1))",
+          "    for key, pat in patterns.items():",
+          "        if key in found:",
+          "            continue",
+          "        if re.search(pat, line):",
+          "            found[key] = ts",
+          "for k in patterns:",
+          "    found[k].isoformat()",
+          "def measure(left, right):",
+          "    return round((found[right] - found[left]).total_seconds(), 3)",
+          "measure('start', 'end')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "body.split" }, { kind: "pure", call: "found.isoformat" }, { kind: "pure", call: "total_seconds" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:body.split" }, { kind: "unknown", call: "callable:found.isoformat" }, { kind: "unknown", call: "callable:total_seconds" }]))
+    })
+
+    it("keeps exact-key datetime guards conservative when the guard does not reference the key variable", async () => {
+      const events = await analyze(
+        [
+          "from datetime import datetime",
+          "patterns = {'start': 1, 'skip': 2}",
+          "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+          "task = 'start'",
+          "for k in patterns:",
+          "    found[k].isoformat() if task.startswith('s') else ''",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }]))
+    })
+
+    it("keeps exact-key datetime startswith guards conservative after guard-source rebinding", async () => {
+      const events = await analyze(
+        [
+          "from datetime import datetime",
+          "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+          "prefix = ''",
+          "for key in found:",
+          "    if key.startswith(prefix):",
+          "        prefix = 's'",
+          "        found[key].isoformat()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }]))
+    })
+
+    it("keeps exact-key datetime startswith guards conservative after guarded-name rebinding", async () => {
+      const events = await analyze(
+        [
+          "from datetime import datetime",
+          "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+          "for key in found:",
+          "    if key.startswith('s'):",
+          "        key = 'skip'",
+          "        found[key].isoformat()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }]))
+    })
+
+    it("keeps exact-key datetime startswith guards conservative after guarded rebind entries", async () => {
+      const sourceRebindEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+          "prefix = ''",
+          "for key in found:",
+          "    if key.startswith(prefix):",
+          "        for prefix in ['s']:",
+          "            found[key].isoformat()",
+        ].join("\n"),
+      )
+
+      const receiverRebindEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+          "for key in found:",
+          "    if key.startswith('s'):",
+          "        for key in ['skip']:",
+          "            found[key].isoformat()",
+        ].join("\n"),
+      )
+
+      for (const events of [sourceRebindEvents, receiverRebindEvents]) {
+        expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }]))
+        expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }]))
+      }
+    })
+
+    it("does not materialize startswith snapshots late from dynamic branch-entry values", async () => {
+      const dynamicPrefixEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "found = {'start': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'skip': other}",
+          "prefix = dynamic",
+          "for key in found:",
+          "    if key.startswith(prefix):",
+          "        for prefix in ['st']:",
+          "            found[key].isoformat()",
+        ].join("\n"),
+      )
+
+      const dynamicReceiverEvents = await analyze(
+        [
+          "from datetime import datetime",
+          "found = {'skip': datetime.fromisoformat('2024-01-02T03:04:05+00:00'), 'stop': other}",
+          "key = dynamic",
+          "if key.startswith('sk'):",
+          "    for key in ['skip', 'stop']:",
+          "        found[key].isoformat()",
+        ].join("\n"),
+      )
+
+      for (const events of [dynamicPrefixEvents, dynamicReceiverEvents]) {
+        expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:found.isoformat" }]))
+        expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "found.isoformat" }]))
+      }
+    })
+
   })
 
   describe("time and zoneinfo classification", () => {

@@ -25,7 +25,7 @@ import {
   STANDARD_EXCEPTION_BUILTINS,
   TRACKED_HTTP_REQUEST_SUFFIXES,
 } from "./python-known-methods"
-import type { AtlassianClientFamily, Rules, Scope } from "./python-analyze-types"
+import type { AtlassianClientFamily, Rules, Scope, TimelineGuard } from "./python-analyze-types"
 import type { PythonEventEvidence, ReceiverKind, ResolvedEffect } from "./python-ir"
 import { type ContainerKind, trackableReceiverInfo, trackableSelfAttributePath } from "./python-provenance"
 import {
@@ -336,6 +336,7 @@ export function classify(
   rules: Rules,
   hasAtlassianImportProvenance: boolean,
   current: Scope,
+  guards: TimelineGuard[] = [],
 ): ResolvedEffect | undefined {
   const fn = node.childForFieldName("function")
   const call = resolvedName(fn, current)
@@ -384,12 +385,12 @@ export function classify(
   ) {
     return effect("pure.compute", { resolvedCall: call })
   }
-  const temporaryContainer = directTemporaryContainerKind(temporaryReceiver, current)
+  const temporaryContainer = directTemporaryContainerKind(temporaryReceiver, current, guards)
   if (temporaryContainer && pureContainerMethod(temporaryContainer, method)) {
     return effect("pure.compute", { resolvedCall: call })
   }
 
-  const trackedReceiverContainer = trackedReceiverContainerKind(temporaryReceiver, current)
+  const trackedReceiverContainer = trackedReceiverContainerKind(temporaryReceiver, current, guards)
   const trackedReceiverInfo = trackableReceiverInfo(temporaryReceiver)
   const dependencySignature = trackedReceiverInfo
     ? current.receiverContainers.get(trackedReceiverInfo.path)?.deps ?? current.receiverPaths.get(trackedReceiverInfo.path)?.deps

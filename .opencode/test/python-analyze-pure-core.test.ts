@@ -98,6 +98,83 @@ describe("python analyzer", () => {
       )
     })
 
+    it("tracks direct regex list returns through assigned locals and keeps shadowed roots conservative", async () => {
+      const events = await analyze(
+        [
+          "import re",
+          "names = re.findall('describe', text)",
+          "names.count('describe')",
+          "parts = re.split(':', text)",
+          "parts.count('')",
+        ].join("\n"),
+      )
+
+      const directImportEvents = await analyze(
+        [
+          "from re import findall, split",
+          "names = findall('describe', text)",
+          "names.count('describe')",
+          "parts = split(':', text)",
+          "parts.count('')",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "import re",
+          "re = fake",
+          "names = re.findall('describe', text)",
+          "names.count('describe')",
+        ].join("\n"),
+      )
+
+      for (const variant of [events, directImportEvents]) {
+        expect(variant).toEqual(
+          expect.arrayContaining([
+            { kind: "pure", call: "re.findall" },
+            { kind: "pure", call: "names.count" },
+            { kind: "pure", call: "re.split" },
+            { kind: "pure", call: "parts.count" },
+          ]),
+        )
+        expect(variant).not.toEqual(
+          expect.arrayContaining([
+            { kind: "unknown", call: "callable:names.count" },
+            { kind: "unknown", call: "callable:parts.count" },
+          ]),
+        )
+      }
+
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:names.count" }]))
+      expect(shadowedEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "names.count" }]))
+    })
+
+    it("tracks direct regex split iterated string locals without widening shadowed roots", async () => {
+      const events = await analyze(
+        [
+          "import re",
+          "sections = re.split('TITLE', text)",
+          "for sec in sections[1:]:",
+          "    sec.split(')').count('')",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "import re",
+          "re = fake",
+          "sections = re.split('TITLE', text)",
+          "for sec in sections[1:]:",
+          "    sec.split(')').count('')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "re.split" }, { kind: "pure", call: "sec.split" }, { kind: "pure", call: "sec.split.count" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:sec.split" }, { kind: "unknown", call: "callable:sec.split.count" }]))
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:sec.split" }]))
+      expect(shadowedEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "sec.split" }]))
+    })
+
     it("tracks string split results through subscripted receivers and assigned locals", async () => {
       const events = await analyze(
         [
@@ -383,6 +460,24 @@ describe("python analyzer", () => {
       )
 
       expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "e.split" }, { kind: "pure", call: "e.startswith" }, { kind: "pure", call: "line.startswith" }]))
+    })
+
+    it("tracks keys derived from exact variable prefixes under startswith branch narrowing", async () => {
+      const events = await analyze(
+        [
+          "inv = {}",
+          "prefix = 'FILE '",
+          "for line in ['FILE python.test.ts', '- x -> title']:",
+          "    if line.startswith(prefix):",
+          "        current = line.split(prefix, 1)[1].strip()",
+          "        inv[current] = []",
+          "    elif current and line.startswith('- '):",
+          "        inv[current].append(line[2:])",
+          "result = [e.split(' -> ')[-1] for e in inv['python.test.ts'] if e.startswith('x')]",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "line.startswith" }, { kind: "pure", call: "line.split" }, { kind: "pure", call: "line.split.strip" }]))
     })
 
     it("keeps keys derived from dynamic-origin mixed lines conservative without value narrowing", async () => {
@@ -1614,6 +1709,97 @@ describe("python analyzer", () => {
       )
     })
 
+    it("narrows guarded item.lower receivers from exact membership without widening unguarded literal_eval loops", async () => {
+      const guardedEvents = await analyze(
+        [
+          "import ast",
+          "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+          "items = ast.literal_eval(raw)",
+          "li_depts = ['Health Benefit Analytic Sol', 'D&DS Product', 'ITPMA', 'Core Services', 'Enterprise Data Mgmt', 'DHP IT', 'Transformation & Integrations', 'Claims', 'HST IT']",
+          "for item in items:",
+          "    normalized = item.lower() if item in li_depts else item",
+        ].join("\n"),
+      )
+
+      const unguardedEvents = await analyze(
+        [
+          "import ast",
+          "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+          "items = ast.literal_eval(raw)",
+          "for item in items:",
+          "    item.lower()",
+        ].join("\n"),
+      )
+
+      const negativeGuardEvents = await analyze(
+        [
+          "import ast",
+          "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+          "items = ast.literal_eval(raw)",
+          "li_depts = ['Health Benefit Analytic Sol', 'D&DS Product', 'ITPMA', 'Core Services', 'Enterprise Data Mgmt', 'DHP IT', 'Transformation & Integrations', 'Claims', 'HST IT']",
+          "flag = False",
+          "for item in items:",
+          "    lowered = item.lower() if item not in li_depts else item",
+          "    maybe = item.lower() if flag or item in li_depts else item",
+        ].join("\n"),
+      )
+
+      expect(guardedEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "item.lower" }]))
+      expect(guardedEvents).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.lower" }]))
+
+      expect(unguardedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.lower" }]))
+      expect(unguardedEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "item.lower" }]))
+
+      expect(negativeGuardEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.lower" }]))
+      expect(negativeGuardEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "item.lower" }]))
+
+      const outerGuardShadowEvents = await analyze(
+        [
+          "import ast",
+          "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+          "items = ast.literal_eval(raw)",
+          "li_depts = ['Health Benefit Analytic Sol', 'D&DS Product', 'ITPMA', 'Core Services', 'Enterprise Data Mgmt', 'DHP IT', 'Transformation & Integrations', 'Claims', 'HST IT']",
+          "item = 'Health Benefit Analytic Sol'",
+          "if item in li_depts:",
+          "    lowered = [item.lower() for item in items]",
+        ].join("\n"),
+      )
+
+      const booleanGuardRebindEvents = await analyze(
+        [
+          "import ast",
+          "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+          "items = ast.literal_eval(raw)",
+          "li_depts = ['Health Benefit Analytic Sol', 'D&DS Product', 'ITPMA', 'Core Services', 'Enterprise Data Mgmt', 'DHP IT', 'Transformation & Integrations', 'Claims', 'HST IT']",
+          "ok = True",
+          "for item in items:",
+          "    if ok and item in li_depts:",
+          "        li_depts = ['Other']",
+          "        item.lower()",
+        ].join("\n"),
+      )
+
+      const scalarMembershipEvents = await analyze(
+        [
+          "import ast",
+          "raw = '[\"Health Benefit Analytic Sol\", \"Other\"]'",
+          "items = ast.literal_eval(raw)",
+          "allowed = 'Health Benefit Analytic Sol'",
+          "for item in items:",
+          "    normalized = item.lower() if item in allowed else item",
+        ].join("\n"),
+      )
+
+      expect(outerGuardShadowEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.lower" }]))
+      expect(outerGuardShadowEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "item.lower" }]))
+
+      expect(booleanGuardRebindEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.lower" }]))
+      expect(booleanGuardRebindEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "item.lower" }]))
+
+      expect(scalarMembershipEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.lower" }]))
+      expect(scalarMembershipEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "item.lower" }]))
+    })
+
     it("classifies unittest.mock constructors, patch helpers, and tracked mock methods as pure", async () => {
       const events = await analyze(
         [
@@ -1699,6 +1885,35 @@ describe("python analyzer", () => {
       )
     })
 
+    it("tracks iterated regex match results for downstream start/end methods without widening iterator receivers", async () => {
+      const events = await analyze(
+        [
+          "import re",
+          "for m in re.finditer('a+', text):",
+          "    m.start()",
+          "    m.end()",
+          "pat = re.compile('a+')",
+          "matches = pat.finditer(text)",
+          "for m in matches:",
+          "    m.start()",
+          "    m.end()",
+          "matches.start()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "pure", call: "re.finditer" },
+          { kind: "pure", call: "m.start" },
+          { kind: "pure", call: "m.end" },
+          { kind: "pure", call: "re.compile" },
+          { kind: "pure", call: "pat.finditer" },
+        ]),
+      )
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:matches.start" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "matches.start" }]))
+    })
+
     it("tracks regex match group string returns for downstream string methods without widening arbitrary group-like receivers", async () => {
       const events = await analyze(
         [
@@ -1762,9 +1977,60 @@ describe("python analyzer", () => {
       )
     })
 
-    it("keeps re.sub outside pure classification", async () => {
-      const events = await analyze("re.sub('a+', '-', text)")
-      expect(events).toEqual([{ kind: "unknown", call: "callable:re.sub" }])
+    it("keeps re.sub outside pure classification by default but tracks non-callable replacement string results", async () => {
+      const events = await analyze(
+        [
+          "import re",
+          "text = 'aaTITLEbb'",
+          "re.sub('a+', '-', text)",
+          "sec = re.sub('a+', '-', text)",
+          "sec.split('TITLE').count('')",
+          "re.sub('a+', '-', text).split('TITLE').count('')",
+        ].join("\n"),
+      )
+
+      const callableEvents = await analyze(
+        [
+          "import re",
+          "text = 'aaTITLEbb'",
+          "def repl(m):",
+          "    return '-'",
+          "sec = re.sub('a+', repl, text)",
+          "sec.split('TITLE').count('')",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "import re",
+          "re = fake",
+          "text = 'aaTITLEbb'",
+          "sec = re.sub('a+', '-', text)",
+          "sec.split('TITLE').count('')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:re.sub" },
+          { kind: "pure", call: "sec.split" },
+          { kind: "pure", call: "sec.split.count" },
+          { kind: "pure", call: "re.sub.split" },
+          { kind: "pure", call: "re.sub.split.count" },
+        ]),
+      )
+      expect(callableEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:re.sub" },
+          { kind: "unknown", call: "callable:sec.split" },
+        ]),
+      )
+      expect(shadowedEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:fake.sub" },
+          { kind: "unknown", call: "callable:sec.split" },
+        ]),
+      )
     })
   })
 

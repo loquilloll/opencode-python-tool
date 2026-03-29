@@ -101,35 +101,31 @@ When you use `--review-next`, the utility asks `opencode run` to score the pendi
 ### Text Report
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB"
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB"
 ```
 
 ### JSON Report
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --json
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --json
 ```
 
 ### Narrower Incremental Scan
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --since 2026-03-01T00:00:00Z --samples 5
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --since 2026-03-01T00:00:00Z --samples 5
 ```
 
 ## Important Note About Rules
 
-`OPENCODE_PYTHON_RULES` controls which rules file the analyzer uses while classifying callables during the scan.
+`--analyzer-rules` controls which rules file the analyzer uses while classifying callables during the scan.
 
-`--rules` controls which JSON file gets updated when `--update-candidates` is used.
+`--rules` controls which JSON file gets updated by `--update-candidates`, read by `--suggest-rules` and `--promote-reviewed`, and treated as the current baseline for `--compare-rules`.
 
-If you want the scan and the update to both use your global rules file, set both:
+If you want the scan and the update to both use your global rules file, pass both flags:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --rules "$RULES" --update-candidates
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --rules "$RULES" --update-candidates
 ```
 
 ## Update Candidates Workflow
@@ -137,8 +133,7 @@ bun run ../src/python-session-report.ts --db "$DB" --rules "$RULES" --update-can
 Run this when you want to merge newly discovered unknown callables into `candidates.unknown` in the global rules file.
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --rules "$RULES" --update-candidates
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --rules "$RULES" --update-candidates
 ```
 
 What this does:
@@ -164,8 +159,7 @@ Recommended sequence:
 ### Summarize pending families first
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-families
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --review-families
 ```
 
 This prints a read-only summary of pending family clusters before you enter one-snippet-at-a-time review. It is meant for triage only and does not write decisions or promote rules.
@@ -173,15 +167,13 @@ This prints a read-only summary of pending family clusters before you enter one-
 You can pivot directly to one target with selectors:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-families --family re.Match.group
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --review-families --family re.Match.group
 ```
 
 or:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next --module pytest
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --review-next --module pytest
 ```
 
 Selector matching is exact. `--module` only matches trusted module roots from the family summary, and `--family` / `--module` are mutually exclusive.
@@ -217,22 +209,19 @@ Common provenance-heavy buckets:
 ### Show the next pending snippet
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next
 ```
 
 Include already-classified emit candidates only when explicitly needed:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --include-emit
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --include-emit
 ```
 
 Include pure candidates only when explicitly needed:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --include-pure
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --include-pure
 ```
 
 This prints:
@@ -255,15 +244,13 @@ Replay rules are intentionally narrow:
 Use the numbered list shown by `--review-next`.
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --decide 1=read,2=write
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --decide 1=read,2=write
 ```
 
 You can also target candidates by fingerprint instead of index:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --decide abc123def4567890=ignore
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --decide abc123def4567890=ignore
 ```
 
 Supported decisions:
@@ -279,8 +266,7 @@ Supported decisions:
 ### Review queue as JSON
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-json
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --review-json
 ```
 
 Use this when you want to inspect the queue programmatically or feed it into another OpenCode workflow. `--review-json` keeps the stored heuristic scores; `opencode run` scoring is applied by `--review-next`.
@@ -288,8 +274,7 @@ Use this when you want to inspect the queue programmatically or feed it into ano
 ### Family summary as JSON
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-families-json
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --review-families-json
 ```
 
 Use this when you want stable machine-readable family/module summaries derived from the pending queue. The JSON output mirrors the internal family cluster model and stays read-only.
@@ -299,8 +284,7 @@ Use this when you want stable machine-readable family/module summaries derived f
 If you want a faster operator loop, use the terminal UI instead of repeated `--review-next --decide` calls.
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-tui
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-tui
 ```
 
 The UI shows:
@@ -339,8 +323,7 @@ Skip is session-local only. If you quit and restart the TUI, skipped candidates 
 When a callable has a consistent reviewed decision and maps to `read`, `write`, `emit`, or `exec`, you can promote it into live call rules.
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --rules "$RULES" --promote-reviewed
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --rules "$RULES" --promote-reviewed
 ```
 
 Use a full scan for promotion. Do not combine `--promote-reviewed` with `--since`.
@@ -366,8 +349,7 @@ What this does not do:
 Use this to preview copy-pasteable rule fragments from unanimous reviewed evidence without mutating the live rules file.
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --rules "$RULES" --suggest-rules
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --rules "$RULES" --suggest-rules
 ```
 
 Current suggestions stay intentionally narrow:
@@ -394,7 +376,6 @@ Review rendering now surfaces optional analyzer evidence when available, such as
 Use this to A/B the current rules file against an alternate candidate rules file on the same saved-session corpus.
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
 bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --rules "$RULES" --compare-rules "$ALT_RULES"
 ```
 
@@ -405,7 +386,7 @@ This reports:
 - pending review candidate deltas
 - added or removed preview suggestions
 
-`--compare-rules` is read-only. It never updates either rules file.
+`--compare-rules` is read-only. It never updates either rules file, and it already swaps between `--rules` and `--compare-rules`, so do not add `--analyzer-rules` here.
 
 ## What To Do After `--update-candidates`
 
@@ -424,8 +405,7 @@ For each candidate, decide whether it should:
 Before dropping into snippet review, inspect the family summary so you can separate whole-family rule candidates from provenance work:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-families
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --review-families
 ```
 
 Use this step to decide whether the family is ready for rule drafting (`rule`), still depends on receiver/source evidence (`provenance`), must stay split (`manual-split`), or needs more modeling/code inspection first (`blocked`).
@@ -435,15 +415,13 @@ Use this step to decide whether the family is ready for rule drafting (`rule`), 
 Use the review loop until each callable has a reviewed decision and any callable-level conflicts are resolved.
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next --family re.Match.group
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --review-next --family re.Match.group
 ```
 
 Then apply your decisions:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --review-next --family re.Match.group --decide 1=read,2=write
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --review-next --family re.Match.group --decide 1=read,2=write
 ```
 
 Keep snippet review scoped to the family or module you chose from the summary. The drilldown is still evidence review, not a shortcut around inspecting representative code.
@@ -453,8 +431,7 @@ Keep snippet review scoped to the family or module you chose from the summary. T
 If a callable is consistently reviewed and maps cleanly to a live call bucket, promote it with:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --rules "$RULES" --promote-reviewed
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --rules "$RULES" --promote-reviewed
 ```
 
 If promotion is not possible because contexts are unresolved, multiple review identities share one outward call, or the better fix is a method/path rule, update the JSON or TypeScript manually.
@@ -474,8 +451,7 @@ Typical destinations:
 After promotion, run the report again against the same rules file:
 
 ```bash
-OPENCODE_PYTHON_RULES="$RULES" \
-bun run ../src/python-session-report.ts --db "$DB"
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB"
 ```
 
 The promoted callable should stop appearing in the default review queue, and it should also stop appearing as unknown.
@@ -508,10 +484,10 @@ Run these from `"$REPO/.opencode"`:
 
 ```bash
 bun run ../src/python-session-report.ts --help
-OPENCODE_PYTHON_RULES="$RULES" bun run ../src/python-session-report.ts --db "$DB"
-OPENCODE_PYTHON_RULES="$RULES" bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next
-OPENCODE_PYTHON_RULES="$RULES" bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --include-pure
-OPENCODE_PYTHON_RULES="$RULES" bun run ../src/python-session-report.ts --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-tui
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB"
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-next --include-pure
+bun run ../src/python-session-report.ts --analyzer-rules "$RULES" --db "$DB" --ledger "$LEDGER" --score-cache "$SCORES" --review-tui
 bun test test/python-analyze.test.ts
 bun test test/python-session-report.test.ts
 ```

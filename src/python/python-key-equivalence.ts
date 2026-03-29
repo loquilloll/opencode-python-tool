@@ -1,10 +1,11 @@
 import type { PythonAstNode as Node } from "./frontend/interface"
+import type { TimelineGuard } from "./python-analyze-types"
 import { unwrapParenthesized, value } from "./python-inference-values"
 import type { PythonValue as Value } from "./python-values"
 
-const MAX_EXACT_STRINGS = 8
+const MAX_EXACT_STRINGS = 24
 
-type Guards = readonly Node[]
+type Guards = readonly TimelineGuard[]
 
 type ValueScope = {
   parent?: ValueScope
@@ -93,40 +94,139 @@ function integerIndex(node: Node | null): number | undefined {
   if (node.text.startsWith("-") && /^-\d+$/.test(node.text)) return Number(node.text)
 }
 
-function applyGuardCondition(current: ValueScope, values: string[], guard: Node): string[] | undefined {
-  guard = unwrapParenthesized(guard) ?? guard
-  if (guard.type === "boolean_operator") {
-    if (!guard.text.includes(" and ")) return values
+function guardReferencesName(node: Node | null, name: string): boolean {
+  node = unwrapParenthesized(node)
+  if (!node) return false
+  if (node.type === "identifier" && node.text === name) return true
+  return node.namedChildren.some((child) => guardReferencesName(child, name))
+}
+
+function booleanOperatorKind(node: Node): "and" | "or" | undefined {
+  const first = node.namedChildren[0]
+  const second = node.namedChildren[1]
+  if (!first || !second) return
+  const between = node.text.slice(first.endIndex - node.startIndex, second.startIndex - node.startIndex)
+  if (between.includes(" and ")) return "and"
+  if (between.includes(" or ")) return "or"
+}
+
+function sameStrings(left: string[] | undefined, right: string[] | undefined) {
+  return left?.length === right?.length && (left ?? []).every((value) => right?.includes(value))
+}
+
+function applyGuardCondition(current: ValueScope, name: string, values: string[], guard: TimelineGuard, node: Node = guard.node): string[] | undefined {
+  node = unwrapParenthesized(node) ?? node
+  if (node.type === "boolean_operator") {
+    if (booleanOperatorKind(node) !== "and") return values
     let narrowed = values
-    for (const child of guard.namedChildren) {
-      const next = applyGuardCondition(current, narrowed, child)
+    for (const child of node.namedChildren) {
+      const next = applyGuardCondition(current, name, narrowed, guard, child)
       if (next) narrowed = next
     }
     return narrowed
   }
 
-  if (guard.type !== "call") return values
-  const fn = guard.childForFieldName("function")
+  if (node.type !== "call") return values
+  const fn = node.childForFieldName("function")
   if (fn?.type !== "attribute") return values
   const method = fn.childForFieldName("attribute")?.text
   const receiver = unwrapParenthesized(fn.childForFieldName("object"))
-  const argNodes = guard.childForFieldName("arguments")?.namedChildren ?? []
-  if (receiver?.type !== "identifier" || method !== "startswith" || argNodes.length !== 1) return values
-  const prefixes = exactStringSet(current, argNodes[0])
-  if (!prefixes || prefixes.length !== 1) return values
-  return uniqueStrings(values.filter((item) => item.startsWith(prefixes[0]!)))
+  const argNodes = node.childForFieldName("arguments")?.namedChildren ?? []
+  if (receiver?.type !== "identifier" || receiver.text !== name || method !== "startswith" || argNodes.length !== 1) return values
+  const snapshot = guard.startswithSnapshots?.get(nodeKey(node))
+  if (!snapshot || snapshot.prefixes.length !== 1) return values
+  if (snapshot.receiverName !== name) return values
+  const currentReceiverValues = exactStringSet(current, receiver)
+  if (!sameStrings(currentReceiverValues, snapshot.receiverValues)) return values
+  return uniqueStrings(values.filter((item) => item.startsWith(snapshot.prefixes[0]!)))
 }
 
 function applyGuards(current: ValueScope, name: string, values: string[], guards: Guards): string[] | undefined {
   let narrowed = values
   for (const guard of guards) {
-    if (!guard.text.includes(name)) continue
-    const next = applyGuardCondition(current, narrowed, guard)
+    if (!guardReferencesName(guard.node, name)) continue
+    const next = applyGuardCondition(current, name, narrowed, guard)
     if (next === undefined) continue
     narrowed = next
     if (narrowed.length === 0) return
   }
   return uniqueStrings(narrowed)
+}
+
+function guardMembershipValues(current: ValueScope, name: string, guard: TimelineGuard, node: Node = guard.node): string[] | undefined {
+  node = unwrapParenthesized(node) ?? node
+  if (node.type === "boolean_operator") {
+    if (booleanOperatorKind(node) !== "and") return
+    let narrowed: string[] | undefined
+    for (const child of node.namedChildren) {
+      const values = guardMembershipValues(current, name, guard, child)
+      if (!values) continue
+      narrowed = narrowed ? uniqueStrings(narrowed.filter((item) => values.includes(item))) : values
+    }
+    return narrowed
+  }
+  if (node.type !== "comparison_operator") return
+  const left = unwrapParenthesized(node.childForFieldName("left") ?? node.namedChildren[0] ?? null)
+  const right = unwrapParenthesized(node.childForFieldName("right") ?? node.namedChildren[1] ?? null)
+  if (left?.type !== "identifier" || left.text !== name) return
+  if (node.text.includes(" not in ")) return
+  if (!node.text.includes(" in ")) return
+  return exactIteratedStringSet(current, right)
+}
+
+function guardExactStringSet(current: ValueScope, name: string, guards: Guards): string[] | undefined {
+  for (const guard of guards) {
+    if (!guardReferencesName(guard.node, name)) continue
+    const values = guardMembershipValues(current, name, guard)
+    if (values) return applyGuards(current, name, values, guards)
+  }
+}
+
+function nodeKey(node: Node) {
+  return `${node.startIndex}:${node.endIndex}`
+}
+
+function collectStartswithSnapshots(
+  current: ValueScope,
+  node: Node | null,
+  snapshots: Map<string, { receiverName: string; prefixes: string[]; receiverValues?: string[] }> = new Map(),
+) {
+  node = unwrapParenthesized(node)
+  if (!node) return snapshots
+  if (node.type === "call") {
+    const fn = node.childForFieldName("function")
+    if (fn?.type === "attribute" && fn.childForFieldName("attribute")?.text === "startswith") {
+      const receiver = unwrapParenthesized(fn.childForFieldName("object"))
+      const args = node.childForFieldName("arguments")?.namedChildren ?? []
+      const prefixes = args.length === 1 ? exactStringSet(current, args[0] ?? null) : undefined
+      const receiverValues = exactStringSet(current, receiver)
+      if (receiver?.type === "identifier" && prefixes && prefixes.length > 0 && receiverValues && receiverValues.length > 0) {
+        snapshots.set(nodeKey(node), { receiverName: receiver.text, prefixes, receiverValues })
+      }
+    }
+  }
+  for (const child of node.namedChildren) collectStartswithSnapshots(current, child, snapshots)
+  return snapshots
+}
+
+export function ensureGuardSnapshots(current: ValueScope, guards: Guards | undefined) {
+  if (!guards) return
+  for (const guard of guards) {
+    if (guard.startswithSnapshots !== undefined) continue
+    guard.startswithSnapshots = collectStartswithSnapshots(current, guard.node)
+  }
+}
+
+export function invalidateGuardReceiverSnapshots(guards: Guards | undefined, names: string[]) {
+  if (!guards || names.length === 0) return
+  const invalidated = new Set(names)
+  for (const guard of guards) {
+    const snapshots = guard.startswithSnapshots
+    if (!snapshots || snapshots.size === 0) continue
+    for (const [key, snapshot] of Array.from(snapshots.entries())) {
+      if (invalidated.has(snapshot.receiverName)) snapshots.delete(key)
+    }
+  }
 }
 
 function stringSetFromNode(current: ValueScope, node: Node | null, guards: Guards = []): string[] | undefined {
@@ -138,7 +238,8 @@ function stringSetFromNode(current: ValueScope, node: Node | null, guards: Guard
 
   if (node.type === "identifier") {
     const exact = exactStringSetInstance(current, node.text)
-    return exact ? applyGuards(current, node.text, exact, guards) : undefined
+    if (exact) return applyGuards(current, node.text, exact, guards)
+    return guardExactStringSet(current, node.text, guards)
   }
 
   if (node.type === "call") {

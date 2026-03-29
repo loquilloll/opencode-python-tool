@@ -37,21 +37,24 @@ import {
   ZONEINFO_SET_CALLS,
   ZONEINFO_ZONE_CALLS,
 } from "./python-known-methods"
-import type { Scope } from "./python-analyze-types"
-import { exactIteratedStringSet } from "./python-key-equivalence"
+import type { Scope, TimelineGuard } from "./python-analyze-types"
+import { exactIteratedStringSet, exactStringSet } from "./python-key-equivalence"
 import {
   containerInstance,
   directImportTarget,
   hasBoundName,
   hasTrustedBinding,
   lookupCallableFactoryContainer,
+  lookupCallableFactoryTupleContainer,
   hasTrustedDirectBinding,
   hasHttpResponseInstance,
   hasTrustedModuleRoot,
+  iteratedContainerTupleInstance,
   iteratedElementInstance,
   name,
   resolvedName,
   trustedCallWithPolicy,
+  tupleContainerSlotInstance,
 } from "./python-scope"
 import {
   lookupTrackedReceiverContainerKind,
@@ -88,6 +91,87 @@ function helperReturnContainerKind(node: Node | null, current: Scope): Container
   if (fn?.type !== "identifier") return
   const kind = lookupCallableFactoryContainer(current, fn.text)
   if (kind && DIRECT_HELPER_RETURN_CONTAINER_KINDS.has(kind)) return kind
+}
+
+function exactInteger(node: Node | null) {
+  node = unwrapParenthesized(node)
+  if (!node || node.type !== "integer") return
+  const value = Number(node.text.replace(/_/g, ""))
+  if (!Number.isInteger(value) || value < 0) return
+  return value
+}
+
+export function tupleContainerSlotKinds(node: Node | null, current: Scope): ContainerKind[] | undefined {
+  node = unwrapParenthesized(node)
+  if (!node) return
+
+  if (node.type === "identifier") {
+    return tupleContainerSlotInstance(current, node.text)
+  }
+
+  if (node.type === "subscript") {
+    const value = node.childForFieldName("value")
+    const subscript = value ? node.namedChildren.find((child) => child.startIndex > value.endIndex) : undefined
+    if (subscript && (subscript.type === "slice" || subscript.text.includes(":"))) return
+    const iteratedTuple = iteratedContainerTupleValues(value, current)
+    if (iteratedTuple) return iteratedTuple
+  }
+
+  if (node.type === "tuple" || node.type === "list") {
+    if (node.namedChildren.length === 0) return
+    const kinds = node.namedChildren.map((child) => trackedContainerKind(child, current) ?? returnedTrackedContainerKind(child, current))
+    if (kinds.some((kind) => !kind)) return
+    return kinds as ContainerKind[]
+  }
+
+  if (node.type === "call") {
+    const fn = node.childForFieldName("function")
+    if (fn?.type !== "identifier") return
+    return lookupCallableFactoryTupleContainer(current, fn.text)
+  }
+}
+
+export function iteratedContainerTupleValues(node: Node | null, current: Scope): ContainerKind[] | undefined {
+  node = unwrapParenthesized(node)
+  if (!node) return
+
+  if (node.type === "identifier") {
+    return iteratedContainerTupleInstance(current, node.text)
+  }
+
+  if (node.type === "list_comprehension" || node.type === "set_comprehension" || node.type === "generator_expression") {
+    return comprehensionTupleSlotKinds(node, current)
+  }
+
+  if (node.type !== "list" && node.type !== "tuple") return
+  const tuples = node.namedChildren
+  if (tuples.length === 0) return
+  const slotKinds = tuples.map((child) => tupleContainerSlotKinds(child, current))
+  if (slotKinds.some((item) => !item)) return
+  const width = slotKinds[0]?.length ?? 0
+  if (width === 0) return
+  if (!slotKinds.every((item) => item && item.length === width)) return
+
+  const merged: ContainerKind[] = []
+  for (let index = 0; index < width; index += 1) {
+    const first = slotKinds[0]?.[index]
+    if (!first) return
+    if (!slotKinds.every((item) => item?.[index] === first)) return
+    merged.push(first)
+  }
+  return merged
+}
+
+function tupleSubscriptContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+  node = unwrapParenthesized(node)
+  if (!node || node.type !== "subscript") return
+  const value = unwrapParenthesized(node.childForFieldName("value"))
+  const slots = tupleContainerSlotKinds(value, current)
+  if (!slots) return
+  const subscript = value ? node.namedChildren.find((child) => child.startIndex > value.endIndex) : undefined
+  const index = exactInteger(subscript ?? null)
+  if (index === undefined || index >= slots.length) return
+  return slots[index]
 }
 
 function trustedDatetimeRoot(node: Node | null, resolvedCall: string | undefined, current: Scope) {
@@ -131,6 +215,7 @@ function binaryOperatorContainerKind(node: Node | null, current: Scope, tracked:
     : containerKind(right, current)
   const operator = binaryOperatorSymbol(node)
   if (!operator) return
+  if (operator === "+" && leftKind === "string" && rightKind === "string") return "string"
   if (leftKind === "counter" && rightKind === "counter" && (operator === "+" || operator === "-" || operator === "&" || operator === "|")) return "counter"
   if (operator === "-" && ((leftKind === "datetime-datetime" && rightKind === "datetime-datetime") || (leftKind === "datetime-date" && rightKind === "datetime-date"))) {
     return "datetime-timedelta"
@@ -159,6 +244,8 @@ function containerKind(node: Node | null, current: Scope): ContainerKind | undef
   if (node.type === "dictionary_comprehension") return "dict"
   if (node.type === "set_comprehension") return "set"
   if (node.type === "subscript") {
+    const tupleSlotKind = tupleSubscriptContainerKind(node, current)
+    if (tupleSlotKind) return tupleSlotKind
     const value = node.childForFieldName("value")
     const base = trackedContainerKind(value, current) ?? returnedTrackedContainerKind(value, current) ?? lookupTrackedReceiverContainerKind(current, value) ?? containerKind(value, current)
     const subscript = value ? node.namedChildren.find((child) => child.startIndex > value.endIndex) : undefined
@@ -262,16 +349,31 @@ function matchKind(node: Node | null, current: Scope): "match" | undefined {
   if (hasTrustedModuleRoot(current, "re") || !hasBoundName(current, "re")) return "match"
 }
 
+function directRegexListKind(node: Node | null, current: Scope): "list" | undefined {
+  if (!node || node.type !== "call") return
+  const call = resolvedName(node.childForFieldName("function"), current)
+  if (call !== "re.findall" && call !== "re.split") return
+  if (hasTrustedModuleRoot(current, "re") || !hasBoundName(current, "re")) return "list"
+}
+
+function trustedRegexRoot(node: Node | null, resolvedCall: string | undefined, current: Scope) {
+  if (!resolvedCall?.startsWith("re.")) return true
+  const rawRoot = name(node)?.split(".")[0]
+  if (rawRoot !== "re") return true
+  return !hasBoundName(current, rawRoot) || hasTrustedModuleRoot(current, rawRoot) || hasTrustedBinding(current, rawRoot) || hasTrustedDirectBinding(current, rawRoot)
+}
+
 function numericKind(node: Node | null): "int" | "float" | "complex" | undefined {
   if (!node) return
   if (node.type === "integer") return "int"
   if (node.type === "float") return "float"
 }
 
-function stringKind(node: Node | null, current: Scope): "string" | undefined {
+function stringKind(node: Node | null, current: Scope, guards: TimelineGuard[] = []): "string" | undefined {
   node = unwrapParenthesized(node)
   if (!node) return
   if ((node.type === "string" || node.type === "concatenated_string") && !isBytesLiteralText(node.text)) return "string"
+  if (node.type === "identifier" && exactStringSet(current, node, guards)) return "string"
   if (node.type !== "call") return
   const call = resolvedName(node.childForFieldName("function"), current)
   if (call?.endsWith("Path.read_text")) return "string"
@@ -281,6 +383,14 @@ function stringKind(node: Node | null, current: Scope): "string" | undefined {
   const receiverKind = trackedReceiverContainerKind(receiver, current)
   if ((receiverKind === "bytes" || receiverKind === "bytearray") && method === "decode") return "string"
   if (method === "read_text" && trackedPathValue(receiver, current)) return "string"
+  if (call === "re.sub" && trustedRegexRoot(fn, call, current)) {
+    const argNodes = node.childForFieldName("arguments")?.namedChildren ?? []
+    if (argNodes.length < 3) return
+    const replacement = exactStringSet(current, argNodes[1] ?? null, guards)
+    const sourceNode = argNodes[2] ?? null
+    const sourceKind = trackedReceiverContainerKind(sourceNode, current, guards) ?? trackedContainerKind(sourceNode, current, guards) ?? stringKind(sourceNode, current, guards)
+    if (replacement && sourceKind === "string") return "string"
+  }
 }
 
 function datetimeConstantKind(call: string): ContainerKind | undefined {
@@ -388,7 +498,7 @@ function trustedImportedClassMroSource(node: Node | null, current: Scope) {
   return target === "msgraph.GraphServiceClient" || target === "msgraph.graph_service_client.GraphServiceClient"
 }
 
-export function directTemporaryContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+export function directTemporaryContainerKind(node: Node | null, current: Scope, guards: TimelineGuard[] = []): ContainerKind | undefined {
   node = unwrapParenthesized(node)
   if (!node) return
 
@@ -400,9 +510,11 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope):
 
   const directMatch = matchKind(node, current)
   if (directMatch) return directMatch
+  const directRegexList = directRegexListKind(node, current)
+  if (directRegexList) return directRegexList
   const directBytes = bytesKind(node, current)
   if (directBytes) return directBytes
-  const directString = stringKind(node, current)
+  const directString = stringKind(node, current, guards)
   if (directString) return directString
   const directNumeric = numericKind(node)
   if (directNumeric) return directNumeric
@@ -491,19 +603,23 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope):
   if (effect?.atom === "pure.compute") return "json"
 }
 
-export function trackedContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+export function trackedContainerKind(node: Node | null, current: Scope, guards: TimelineGuard[] = []): ContainerKind | undefined {
   node = unwrapParenthesized(node)
   if (!node) return
   if (node.type === "identifier") {
+    if (tupleContainerSlotInstance(current, node.text)) return "tuple"
     const local = containerInstance(current, node.text)
     if (local) return local
   }
+
+  const trackedReceiver = lookupTrackedReceiverContainerKind(current, node)
+  if (trackedReceiver) return trackedReceiver
 
   const directMatch = matchKind(node, current)
   if (directMatch) return directMatch
   const directBytes = bytesKind(node, current)
   if (directBytes) return directBytes
-  const directString = stringKind(node, current)
+  const directString = stringKind(node, current, guards)
   if (directString) return directString
   const directNumeric = numericKind(node)
   if (directNumeric) return directNumeric
@@ -540,11 +656,11 @@ export function trackedContainerKind(node: Node | null, current: Scope): Contain
   return containerKind(node, current)
 }
 
-export function trackedReceiverContainerKind(node: Node | null, current: Scope): ContainerKind | undefined {
+export function trackedReceiverContainerKind(node: Node | null, current: Scope, guards: TimelineGuard[] = []): ContainerKind | undefined {
   node = unwrapParenthesized(node)
   if (!node) return
 
-  const temporary = directTemporaryContainerKind(node, current) ?? trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current)
+  const temporary = directTemporaryContainerKind(node, current, guards) ?? trackedContainerKind(node, current, guards) ?? returnedTrackedContainerKind(node, current)
   if (temporary) return temporary
   return lookupTrackedReceiverContainerKind(current, node)
 }
@@ -577,6 +693,7 @@ export function returnedTrackedContainerKind(node: Node | null, current: Scope):
     if (method === "replace") return "datetime-time"
     if (method === "tzname") return "string"
   }
+  if (receiverKind === "match" && method === "groups") return "tuple"
   if (receiverKind === "datetime-timedelta" && method === "total_seconds") return "float"
   if (receiverKind === "datetime-timezone") {
     if (method === "dst" || method === "utcoffset") return "datetime-timedelta"
@@ -646,6 +763,22 @@ function comprehensionElementKind(node: Node, current: Scope): ContainerKind | u
   return iteratedContainerKind(source ?? null, current)
 }
 
+function comprehensionTupleSlotKinds(node: Node, current: Scope): ContainerKind[] | undefined {
+  const body = node.childForFieldName("body")
+  if (!body || (body.type !== "tuple" && body.type !== "list")) return
+  const clause = node.namedChildren.find((child) => child.type === "for_in_clause")
+  const target = clause?.childForFieldName("left")
+  const source = clause?.childForFieldName("right")
+  const seeded = new Map(rebindContainerKinds(target ?? null, source ?? null, current).map((item) => [item.name, item.kind] as const))
+  const kinds = body.namedChildren.map((child) => {
+    const direct = trackedContainerKind(child, current) ?? returnedTrackedContainerKind(child, current)
+    if (direct) return direct
+    if (child.type === "identifier") return seeded.get(child.text)
+  })
+  if (kinds.some((kind) => !kind)) return
+  return kinds as ContainerKind[]
+}
+
 function iterableElementKind(node: Node | null, current: Scope): ContainerKind | undefined {
   if (!node) return
 
@@ -700,6 +833,14 @@ export function iteratedContainerKind(node: Node | null, current: Scope): Contai
         return iteratedContainerKind(source, current)
       }
     }
+    if (call === "re.split") {
+      if (trustedRegexRoot(fn, call, current)) return "string"
+    }
+    if (call === "re.finditer") {
+      if (hasTrustedModuleRoot(current, "re") || !hasBoundName(current, "re")) return "match"
+    }
+    if (method === "split" && trackedReceiverContainerKind(receiver, current) === "regex-pattern") return "string"
+    if (method === "finditer" && trackedReceiverContainerKind(receiver, current) === "regex-pattern") return "match"
     if (method && STRING_ITERABLE_METHODS.has(method) && trackedReceiverContainerKind(receiver, current) === "string") {
       return "string"
     }
@@ -727,6 +868,30 @@ function enumeratedElementKind(node: Node | null, current: Scope): ContainerKind
   return iteratedContainerKind(source, current)
 }
 
+function enumeratedContainerTupleValues(node: Node | null, current: Scope) {
+  if (!node || node.type !== "call") return
+  const call = resolvedName(node.childForFieldName("function"), current)
+  if (call !== "enumerate") return
+  const effect = classifyBuiltinPureCall(call, node, args(node), current)
+  if (effect?.atom !== "pure.compute") return
+  const source = node.childForFieldName("arguments")?.namedChildren[0] ?? null
+  return iteratedContainerTupleValues(source, current)
+}
+
+function tupleContainerKindAssignments(target: Node | null, kinds: ContainerKind[]) {
+  if (!target) return [] as Array<{ name: string; kind: ContainerKind }>
+  if (!(ASSIGNMENT_CONTAINER_TYPES.has(target.type) || target.type.endsWith("_pattern"))) {
+    return [] as Array<{ name: string; kind: ContainerKind }>
+  }
+  if (target.namedChildren.length !== kinds.length) {
+    return [] as Array<{ name: string; kind: ContainerKind }>
+  }
+  return target.namedChildren
+    .map((child, index) => ({ child, kind: kinds[index] }))
+    .filter((item): item is { child: Node; kind: ContainerKind } => Boolean(item.child && item.kind && item.child.type === "identifier"))
+    .flatMap(({ child, kind }) => assignedNames(child).filter((name) => name !== "_").map((name) => ({ name, kind })))
+}
+
 export function rebindContainerKinds(target: Node | null, source: Node | null, current: Scope) {
   if (!target) return [] as Array<{ name: string; kind: ContainerKind }>
 
@@ -737,6 +902,17 @@ export function rebindContainerKinds(target: Node | null, source: Node | null, c
 
   if (!(ASSIGNMENT_CONTAINER_TYPES.has(target.type) || target.type.endsWith("_pattern"))) {
     return [] as Array<{ name: string; kind: ContainerKind }>
+  }
+
+  const tupleKinds = iteratedContainerTupleValues(source, current)
+  if (tupleKinds) {
+    if (target.namedChildren.length !== tupleKinds.length || !target.namedChildren.every((child) => child.type === "identifier")) {
+      return [] as Array<{ name: string; kind: ContainerKind }>
+    }
+    return target.namedChildren
+      .map((child, index) => ({ child, kind: tupleKinds[index] }))
+      .filter((item): item is { child: Node; kind: ContainerKind } => Boolean(item.child && item.kind))
+      .flatMap(({ child, kind }) => assignedNames(child).filter((name) => name !== "_").map((name) => ({ name, kind })))
   }
 
   const itemValueKind = itemsValueKind(source, current)
@@ -751,13 +927,41 @@ export function rebindContainerKinds(target: Node | null, source: Node | null, c
   }
 
   const kind = enumeratedElementKind(source, current)
+  const enumeratedTupleKinds = enumeratedContainerTupleValues(source, current)
+  if (enumeratedTupleKinds) {
+    const second = target.namedChildren[1]
+    return tupleContainerKindAssignments(second ?? null, enumeratedTupleKinds)
+  }
   if (!kind) return [] as Array<{ name: string; kind: ContainerKind }>
+
+  const enumerateCall = source?.type === "call" ? resolvedName(source.childForFieldName("function"), current) : undefined
+  if (enumerateCall === "enumerate") {
+    const first = target.namedChildren[0]
+    const second = target.namedChildren[1]
+    const assignments: Array<{ name: string; kind: ContainerKind }> = []
+    if (first?.type === "identifier" && first.text !== "_") assignments.push({ name: first.text, kind: "int" })
+    if (second?.type === "identifier" && second.text !== "_") assignments.push({ name: second.text, kind })
+    return assignments
+  }
 
   const second = target.namedChildren[1]
   if (!second) return [] as Array<{ name: string; kind: ContainerKind }>
   return assignedNames(second)
     .filter((name) => name !== "_")
     .map((name) => ({ name, kind }))
+}
+
+export function rebindTupleContainerSlotKinds(target: Node | null, source: Node | null, current: Scope) {
+  if (!target || !(ASSIGNMENT_CONTAINER_TYPES.has(target.type) || target.type.endsWith("_pattern"))) {
+    return [] as Array<{ name: string; kinds: ContainerKind[] }>
+  }
+
+  const tupleKinds = enumeratedContainerTupleValues(source, current)
+  if (!tupleKinds) return [] as Array<{ name: string; kinds: ContainerKind[] }>
+
+  const second = target.namedChildren[1]
+  if (second?.type !== "identifier" || second.text === "_") return [] as Array<{ name: string; kinds: ContainerKind[] }>
+  return [{ name: second.text, kinds: tupleKinds }]
 }
 
 export function rebindReceiverContainerKinds(target: Node | null, source: Node | null, current: Scope) {

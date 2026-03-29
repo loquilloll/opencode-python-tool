@@ -4,18 +4,21 @@ import {
   args,
   hasDictionarySplat,
   iteratedContainerKind,
+  iteratedContainerTupleValues,
   iteratedPathTupleValues,
   iteratedPathValue,
   rebindContainerKinds,
   rebindReceiverContainerKinds,
+  rebindTupleContainerSlotKinds,
   rebindPathValues,
   rebindSource,
   returnedTrackedContainerKind,
   trackedContainerKind,
   trackedReceiverContainerKind,
   trackedPathValue,
+  tupleContainerSlotKinds,
 } from "./python-inference"
-import { equivalentSubscriptValuePath, exactIteratedStringSet, exactNodeValue, exactStringSet } from "./python-key-equivalence"
+import { ensureGuardSnapshots, equivalentSubscriptValuePath, equivalentSubscriptValuePaths, exactIteratedStringSet, exactNodeValue, exactStringSet, invalidateGuardReceiverSnapshots } from "./python-key-equivalence"
 import { TRACKED_HTTP_CLIENT_CONSTRUCTORS, TRUSTED_MODULE_BINDINGS } from "./python-known-methods"
 import type { Rules, Scope, TimelineEntry } from "./python-analyze-types"
 import {
@@ -37,6 +40,7 @@ import {
   closeSqliteCursorInstance,
   containerInstance,
   directImportTarget,
+  hasSeedableTupleList,
   hasExecutedSqliteCursorInstance,
   hasSqliteConnectionInstance,
   hasSqliteCursorInstance,
@@ -44,6 +48,7 @@ import {
   importBindings,
   invalidateTrackedName,
   iteratedElementInstance,
+  iteratedExactStringTupleInstance,
   markExecutedSqliteCursorInstance,
   resolveQualified,
   resolvedName,
@@ -64,6 +69,7 @@ import {
 export type HelperParamSeed = {
   containerKind?: ContainerKind
   iteratedElementKind?: ContainerKind
+  exactStrings?: string[]
 }
 
 export type HelperSeeds = Map<number, Map<string, HelperParamSeed>>
@@ -101,6 +107,7 @@ const DIFFLIB_MUTABLE_TRUSTED_ATTRIBUTES = new Set(["unified_diff"])
 const HASHLIB_MUTABLE_TRUSTED_ATTRIBUTES = new Set(["sha1", "sha256"])
 const TRUSTED_MODELDUMP_TARGET = "pytfe.models.organization_membership.OrganizationMembershipListOptions"
 const SQLITE_CURSOR_READ_METHODS = new Set(["fetchone", "fetchall"])
+const MAX_EXACT_TUPLE_STRINGS = 8
 const HELPER_PARAM_CONTAINER_KINDS = new Set<ContainerKind>([
   "string",
   "datetime-date",
@@ -198,6 +205,18 @@ function clearExactStringIterableProvenance(current: Scope, name: string) {
   }
 }
 
+function clearIteratedExactStringTupleProvenance(current: Scope, name: string) {
+  const resolved = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const toDelete = new Set<string>([name])
+    if (resolved && resolved !== name) toDelete.add(resolved)
+    for (const key of scope.iteratedExactStringTupleInstances.keys()) {
+      if (resolveQualified(key, current) === resolved) toDelete.add(key)
+    }
+    for (const key of toDelete) scope.iteratedExactStringTupleInstances.delete(key)
+  }
+}
+
 function clearIteratedPathTupleProvenance(current: Scope, name: string) {
   const resolved = resolveQualified(name, current)
   for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
@@ -210,16 +229,85 @@ function clearIteratedPathTupleProvenance(current: Scope, name: string) {
   }
 }
 
+function clearIteratedContainerTupleProvenance(current: Scope, name: string) {
+  const resolved = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const toDelete = new Set<string>([name])
+    if (resolved && resolved !== name) toDelete.add(resolved)
+    for (const key of scope.iteratedContainerTupleInstances.keys()) {
+      if (resolveQualified(key, current) === resolved) toDelete.add(key)
+    }
+    for (const key of toDelete) scope.iteratedContainerTupleInstances.delete(key)
+  }
+}
+
+function clearTupleContainerSlotProvenance(current: Scope, name: string) {
+  const resolved = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const toDelete = new Set<string>([name])
+    if (resolved && resolved !== name) toDelete.add(resolved)
+    for (const key of scope.tupleContainerSlotInstances.keys()) {
+      if (resolveQualified(key, current) === resolved) toDelete.add(key)
+    }
+    for (const key of toDelete) scope.tupleContainerSlotInstances.delete(key)
+  }
+}
+
+function clearSeedableTupleListProvenance(current: Scope, name: string) {
+  const resolved = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const toDelete = new Set<string>([name])
+    if (resolved && resolved !== name) toDelete.add(resolved)
+    for (const key of scope.seedableTupleLists.keys()) {
+      if (resolveQualified(key, current) === resolved) toDelete.add(key)
+    }
+    for (const key of toDelete) scope.seedableTupleLists.delete(key)
+  }
+}
+
+function setIteratedContainerTupleProvenance(current: Scope, name: string, kinds: ContainerKind[]) {
+  current.iteratedContainerTupleInstances.set(name, kinds)
+  const resolved = resolveQualified(name, current)
+  if (resolved && resolved !== name) current.iteratedContainerTupleInstances.set(resolved, kinds)
+}
+
+function setTupleContainerSlotProvenance(current: Scope, name: string, kinds: ContainerKind[]) {
+  current.tupleContainerSlotInstances.set(name, kinds)
+  current.containerInstances.set(name, "tuple")
+  const resolved = resolveQualified(name, current)
+  if (resolved && resolved !== name) {
+    current.tupleContainerSlotInstances.set(resolved, kinds)
+    current.containerInstances.set(resolved, "tuple")
+  }
+}
+
+function markSeedableTupleList(current: Scope, name: string) {
+  current.seedableTupleLists.set(name, [name])
+  const resolved = resolveQualified(name, current)
+  if (resolved && resolved !== name) current.seedableTupleLists.set(resolved, [resolved])
+}
+
+function setIteratedExactStringTupleProvenance(current: Scope, name: string, values: string[][]) {
+  current.iteratedExactStringTupleInstances.set(name, values)
+  const resolved = resolveQualified(name, current)
+  if (resolved && resolved !== name) current.iteratedExactStringTupleInstances.set(resolved, values)
+}
+
 export function clearIndirectMappingMutations(entry: TimelineEntry) {
   if (entry.kind !== "call") return
-  const fn = entry.node.childForFieldName("function")
-  const resolved = resolvedName(fn, entry.scope)
+  const rawFn = entry.node.childForFieldName("function")
+  const fn = unwrapParenthesized(rawFn)
+  const resolved = resolvedName(fn ?? rawFn, entry.scope)
   if (!resolved) return
 
   let receiverName: string | undefined
   if (resolved === "dict.update" || resolved === "dict.setdefault") {
-    const receiver = entry.node.childForFieldName("arguments")?.namedChildren[0]
+    const receiver = unwrapParenthesized(entry.node.childForFieldName("arguments")?.namedChildren[0] ?? null)
     if (receiver?.type === "identifier") receiverName = receiver.text
+  } else if (fn?.type === "attribute") {
+    const receiver = unwrapParenthesized(fn.childForFieldName("object"))
+    const method = fn.childForFieldName("attribute")?.text
+    if (receiver?.type === "identifier" && (method === "update" || method === "setdefault")) receiverName = receiver.text
   } else {
     if (fn?.type !== "identifier") return
     const parts = resolved.split(".")
@@ -231,6 +319,39 @@ export function clearIndirectMappingMutations(entry: TimelineEntry) {
   if (!receiverName) return
   clearTrackedMappingValueContainerKind(entry.scope, receiverName)
   clearExactStringIterableProvenance(entry.scope, receiverName)
+  clearTrackedReceiverContainers(entry.scope, receiverName)
+}
+
+export function clearIndirectSetitemMutations(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const rawFn = entry.node.childForFieldName("function")
+  const fn = unwrapParenthesized(rawFn)
+  const resolved = resolvedName(fn ?? rawFn, entry.scope)
+  if (!resolved) return
+
+  let receiverName: string | undefined
+  if (resolved === "dict.__setitem__" || resolved === "list.__setitem__") {
+    const receiver = unwrapParenthesized(entry.node.childForFieldName("arguments")?.namedChildren[0] ?? null)
+    if (receiver?.type === "identifier") receiverName = receiver.text
+  } else if (fn?.type === "attribute" && fn.childForFieldName("attribute")?.text === "__setitem__") {
+    const receiver = unwrapParenthesized(fn.childForFieldName("object"))
+    if (receiver?.type === "identifier") receiverName = receiver.text
+  } else if (fn?.type === "identifier" && resolved.endsWith(".__setitem__")) {
+    receiverName = resolved.slice(0, -".__setitem__".length) || undefined
+  }
+
+  if (!receiverName) return
+  const receiverKind = containerInstance(entry.scope, receiverName)
+  if (receiverKind === "list") {
+    clearIteratedContainerTupleProvenance(entry.scope, receiverName)
+    clearIteratedExactStringTupleProvenance(entry.scope, receiverName)
+    clearSeedableTupleListProvenance(entry.scope, receiverName)
+    return
+  }
+
+  clearTrackedMappingValueContainerKind(entry.scope, receiverName)
+  clearExactStringIterableProvenance(entry.scope, receiverName)
+  clearTrackedReceiverContainers(entry.scope, receiverName)
 }
 
 function clearTrustedModuleRoot(current: Scope, receiver: Node | null, target: string) {
@@ -285,6 +406,17 @@ function clearTrackedMappingValueContainerKind(current: Scope, name: string) {
     for (const key of keys) {
       const kind = scope.containerInstances.get(key)
       if (kind && TRACKED_MAPPING_VALUE_KINDS.has(kind)) scope.containerInstances.delete(key)
+    }
+  }
+}
+
+function clearTrackedReceiverContainers(current: Scope, name: string) {
+  const target = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    for (const key of Array.from(scope.receiverContainers.keys())) {
+      const root = subscriptRootPrefix(key) ?? key.split(".")[0]
+      const resolvedRoot = root ? (resolveQualified(root, current) ?? root) : undefined
+      if (root === name || root === target || resolvedRoot === target) scope.receiverContainers.delete(key)
     }
   }
 }
@@ -360,6 +492,11 @@ function clearReceiverContainerPath(current: Scope, path: string | undefined, ca
   }
 }
 
+function clearReceiverContainerPaths(current: Scope, paths: string[] | undefined) {
+  if (!paths || paths.length === 0) return
+  for (const path of paths) clearReceiverContainerPath(current, path)
+}
+
 function clearClassModuleReceiverContainer(current: Scope, receiver: Node | null) {
   if (receiver?.type !== "identifier") return
   clearReceiverContainerPath(current, `${receiver.text}.__module__`)
@@ -402,6 +539,27 @@ function clearSiblingSubscriptReceiverPaths(current: Scope, path: string | undef
         )
       ) {
         scope.receiverSeedableStringLists.delete(key)
+      }
+    }
+  }
+}
+
+function clearSiblingSubscriptReceiverContainers(current: Scope, path: string | undefined, canonicalPath?: string, equivalentPaths?: string[]) {
+  const rootPrefixes = subscriptRootPrefixes(path, canonicalPath)
+  if (rootPrefixes.length === 0) return
+  const targetRoots = new Set(rootPrefixes.map((prefix) => resolveQualified(prefix, current) ?? prefix))
+  const preserved = new Set((equivalentPaths ?? []).map((item) => equivalentSubscriptIdentity(item, current)).filter(Boolean) as string[])
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    for (const key of Array.from(scope.receiverContainers.keys())) {
+      const keyRoot = subscriptRootPrefix(key)
+      const resolvedKeyRoot = keyRoot ? (resolveQualified(keyRoot, scope) ?? keyRoot) : undefined
+      if (key === path || key === canonicalPath) continue
+      if (
+        resolvedKeyRoot &&
+        targetRoots.has(resolvedKeyRoot) &&
+        !(preserved.size > 0 && isEquivalentSubscriptPath(key) && preserved.has(equivalentSubscriptIdentity(key, scope) ?? ""))
+      ) {
+        scope.receiverContainers.delete(key)
       }
     }
   }
@@ -473,6 +631,10 @@ function shouldPersistCanonicalReceiverPath(receiver: Node | null, rawPath: stri
 
 function receiverEquivalentPath(current: Scope, receiver: Node | null) {
   return equivalentSubscriptValuePath(current, receiver)
+}
+
+function receiverEquivalentPaths(current: Scope, receiver: Node | null) {
+  return equivalentSubscriptValuePaths(current, receiver)
 }
 
 function receiverEquivalentDeps(receiver: Node | null, fallbackDeps: string[]) {
@@ -596,6 +758,7 @@ function applyHelperSeeds(entry: TimelineEntry, helperSeeds: HelperSeeds) {
   for (const [name, seed] of seeds) {
     if (seed.containerKind) targetScope.containerInstances.set(name, seed.containerKind)
     if (seed.iteratedElementKind) targetScope.iteratedElementInstances.set(name, seed.iteratedElementKind)
+    if (seed.exactStrings) targetScope.exactStringSets.set(name, seed.exactStrings)
   }
 }
 
@@ -626,6 +789,15 @@ function registerActiveHelper(
   allHelpers.push(helper)
 }
 
+function lookupActiveHelper(activeByScope: Map<Scope, Map<string, ActiveHelper>>, current: Scope, name: string, allowParent: boolean) {
+  for (let scope: Scope | undefined = current; scope; scope = allowParent ? scope.parent : undefined) {
+    const helper = activeByScope.get(scope)?.get(name)
+    if (helper) return helper
+    if (!allowParent) return
+    if (scope !== current && (scope.bindings.has(name) || scope.localDefinitions.has(name))) return
+  }
+}
+
 export function replayDefinitionEntry(entry: TimelineEntry, helperSeeds?: HelperSeeds, helperReturnKinds?: HelperReturnKinds) {
   const name = definitionName(entry.node)
   if (name) {
@@ -651,6 +823,15 @@ export function replayRebindEntry(entry: TimelineEntry) {
   for (const seeded of rebindContainerKinds(target ?? null, rebindSource(entry.node) ?? null, entry.scope)) {
     entry.scope.containerInstances.set(seeded.name, seeded.kind)
   }
+  for (const seeded of rebindTupleContainerSlotKinds(target ?? null, rebindSource(entry.node) ?? null, entry.scope)) {
+    setTupleContainerSlotProvenance(entry.scope, seeded.name, seeded.kinds)
+  }
+  for (const seeded of rebindExactStringTupleSlots(target ?? null, rebindSource(entry.node) ?? null, entry.scope)) {
+    entry.scope.exactStringSets.set(seeded.name, seeded.values)
+  }
+  for (const seeded of rebindItemsKeyExactStrings(target ?? null, rebindSource(entry.node) ?? null, entry.scope)) {
+    entry.scope.exactStringSets.set(seeded.name, seeded.values)
+  }
   for (const seeded of rebindReceiverContainerKinds(target ?? null, rebindSource(entry.node) ?? null, entry.scope)) {
     entry.scope.receiverContainers.set(seeded.path, { kind: seeded.kind, deps: seeded.deps })
   }
@@ -667,6 +848,7 @@ export function replayRebindEntry(entry: TimelineEntry) {
       }
     }
   }
+  invalidateGuardReceiverSnapshots(entry.guards, names)
 }
 
 export function replayAssignmentEntry(
@@ -677,7 +859,10 @@ export function replayAssignmentEntry(
   helperReceiverElementKinds?: HelperReceiverElementKinds,
   helperReturnKinds?: HelperReturnKinds,
 ) {
+  ensureGuardSnapshots(entry.scope, entry.guards)
   const left = assignmentLeft(entry.node)
+  const invalidatedGuardNames = assignedNames(left)
+  const finish = () => invalidateGuardReceiverSnapshots(entry.guards, invalidatedGuardNames)
   const right = assignmentRight(entry.node)
   if (helperSeeds && right?.type === "lambda") applyHelperSeeds(entry, helperSeeds)
   const factoryTarget = callableFactoryTarget(right, entry.scope, right?.type === "call" ? args(right) : undefined)
@@ -685,14 +870,18 @@ export function replayAssignmentEntry(
   const localValue = exactNodeValue(entry.scope, right, entry.guards)
   const localExactStrings = exactStringSet(entry.scope, right, entry.guards)
   const localExactIteratedStrings = exactIteratedStringSet(entry.scope, right, entry.guards)
+  const iteratedExactStringTuple = iteratedExactStringTupleValues(right, entry.scope)
+  const iteratedContainerTuple = iteratedContainerTupleValues(right, entry.scope)
   const iteratedPath = iteratedPathValue(right, entry.scope)
   const iteratedPathTuple = iteratedPathTupleValues(right, entry.scope)
   const localContainer = trackedContainerKind(right, entry.scope) ?? returnedTrackedContainerKind(right, entry.scope)
+  const tupleContainerSlots = tupleContainerSlotKinds(right, entry.scope)
   const iteratedElement = iteratedContainerKind(right, entry.scope)
   const target = aliasTarget(right, entry.scope)
   const leftResolved = left?.type === "identifier" ? resolvedName(left, entry.scope) : undefined
   const escapedReceiverInfoPath = left?.type === "identifier" && right?.type === "subscript" ? trackableReceiverInfo(right)?.path : undefined
   const escapedReceiverPath = left?.type === "identifier" && right?.type === "subscript" ? canonicalReceiverPath(right, entry.scope) : undefined
+  const escapedEquivalentPaths = left?.type === "identifier" && right?.type === "subscript" ? receiverEquivalentPaths(entry.scope, right) : undefined
   const escapedEquivalentPath = left?.type === "identifier" && right?.type === "subscript" ? receiverEquivalentPath(entry.scope, right) : undefined
   const assignedCall = right?.type === "call" ? resolvedName(right.childForFieldName("function"), entry.scope) : undefined
   const invalidations = trackableInvalidationDeps(left, assignedNames)
@@ -701,19 +890,29 @@ export function replayAssignmentEntry(
     const base = left.childForFieldName("value")
     const leftCanonicalPath = canonicalReceiverPath(left, entry.scope)
     const leftInfo = trackableReceiverInfo(left)
+    const leftEquivalentPaths = receiverEquivalentPaths(entry.scope, left)
     const leftEquivalentPath = receiverEquivalentPath(entry.scope, left)
+    clearSiblingSubscriptReceiverContainers(entry.scope, leftInfo?.path, leftCanonicalPath, leftEquivalentPaths)
     clearSiblingSubscriptReceiverPaths(entry.scope, leftInfo?.path, leftCanonicalPath, leftEquivalentPath)
     clearHelperSiblingSubscriptReceiverPaths(entry.scope, helperReceiverElementKinds, leftInfo?.path, leftCanonicalPath, leftEquivalentPath)
     if (leftCanonicalPath) clearIteratedElementProvenance(entry.scope, leftCanonicalPath)
     if (base?.type === "identifier") {
       clearIteratedElementProvenance(entry.scope, base.text)
+      clearIteratedExactStringTupleProvenance(entry.scope, base.text)
+      clearIteratedContainerTupleProvenance(entry.scope, base.text)
       clearIteratedPathTupleProvenance(entry.scope, base.text)
       clearExactIteratedStringSetProvenance(entry.scope, base.text)
+      clearTupleContainerSlotProvenance(entry.scope, base.text)
+      clearSeedableTupleListProvenance(entry.scope, base.text)
       clearTrackedMappingValueContainerKind(entry.scope, base.text)
     }
+    clearReceiverContainerPath(entry.scope, leftInfo?.path, leftCanonicalPath)
     clearReceiverElementKindPath(entry.scope, leftInfo?.path, leftCanonicalPath)
     clearReceiverSeedableStringListPath(entry.scope, leftInfo?.path, leftCanonicalPath)
     clearHelperReceiverElementKindPath(helperReceiverElementKinds, leftInfo?.path, leftCanonicalPath)
+    if (leftEquivalentPaths?.length) {
+      clearReceiverContainerPaths(entry.scope, leftEquivalentPaths)
+    }
     if (leftEquivalentPath) {
       clearReceiverElementKindPath(entry.scope, leftEquivalentPath)
       clearReceiverSeedableStringListPath(entry.scope, leftEquivalentPath)
@@ -729,9 +928,13 @@ export function replayAssignmentEntry(
   clearReceiverDeps(entry.scope, invalidations)
   clearHelperReceiverDeps(helperReceiverElementKinds, invalidations)
   if (escapedReceiverInfoPath || escapedReceiverPath) {
+    clearReceiverContainerPath(entry.scope, escapedReceiverInfoPath, escapedReceiverPath)
     clearReceiverElementKindPath(entry.scope, escapedReceiverInfoPath, escapedReceiverPath)
     clearReceiverSeedableStringListPath(entry.scope, escapedReceiverInfoPath, escapedReceiverPath)
     clearHelperReceiverElementKindPath(helperReceiverElementKinds, escapedReceiverInfoPath, escapedReceiverPath)
+  }
+  if (escapedEquivalentPaths?.length) {
+    clearReceiverContainerPaths(entry.scope, escapedEquivalentPaths)
   }
   if (escapedEquivalentPath) {
     clearReceiverElementKindPath(entry.scope, escapedEquivalentPath)
@@ -769,35 +972,84 @@ export function replayAssignmentEntry(
     clearClassModuleReceiverContainer(entry.scope, left.childForFieldName("object"))
   }
   if (applyAssignmentProvenance(entry.scope, left, localContainer, localPath)) {
+    if (left?.type === "subscript" && localContainer) {
+      const leftInfo = trackableReceiverInfo(left)
+      const equivalentPaths = receiverEquivalentPaths(entry.scope, left)
+      if (equivalentPaths?.length && leftInfo) {
+        for (const equivalentPath of equivalentPaths) {
+          if (equivalentPath === leftInfo.path) continue
+          entry.scope.receiverContainers.set(equivalentPath, { kind: localContainer, deps: receiverEquivalentDeps(left, leftInfo.deps) })
+        }
+      }
+    }
     if (left?.type === "subscript" && right?.type === "list" && right.namedChildren.length === 0) {
       markReceiverSeedableStringList(entry.scope, left)
     }
+    finish()
     return
   }
-  if (!left || left.type !== "identifier") return
+  if (!left || left.type !== "identifier") {
+    if (left) {
+      for (const seeded of rebindContainerKinds(left, right, entry.scope)) {
+        entry.scope.containerInstances.set(seeded.name, seeded.kind)
+      }
+      for (const seeded of rebindTupleContainerSlotKinds(left, right, entry.scope)) {
+        setTupleContainerSlotProvenance(entry.scope, seeded.name, seeded.kinds)
+      }
+      for (const seeded of rebindExactStringTupleSlots(left, right, entry.scope)) {
+        entry.scope.exactStringSets.set(seeded.name, seeded.values)
+      }
+      for (const seeded of rebindItemsKeyExactStrings(left, right, entry.scope)) {
+        entry.scope.exactStringSets.set(seeded.name, seeded.values)
+      }
+    }
+    finish()
+    return
+  }
 
   if (right?.type === "lambda") {
+    entry.scope.localDefinitions.add(left.text)
     const helperReturnKind = helperReturnKinds?.get(entry.startIndex)
     if (helperReturnKind) entry.scope.callableFactoryContainers.set(left.text, helperReturnKind)
   }
 
   if (entry.node.type !== "assignment") {
     clearIteratedElementProvenance(entry.scope, left.text)
+    clearIteratedExactStringTupleProvenance(entry.scope, left.text)
+    clearIteratedContainerTupleProvenance(entry.scope, left.text)
     clearExactIteratedStringSetProvenance(entry.scope, left.text)
+    clearTupleContainerSlotProvenance(entry.scope, left.text)
+    clearSeedableTupleListProvenance(entry.scope, left.text)
     if (leftResolved && leftResolved !== left.text) {
       clearIteratedElementProvenance(entry.scope, leftResolved)
+      clearIteratedExactStringTupleProvenance(entry.scope, leftResolved)
+      clearIteratedContainerTupleProvenance(entry.scope, leftResolved)
       clearExactIteratedStringSetProvenance(entry.scope, leftResolved)
+      clearTupleContainerSlotProvenance(entry.scope, leftResolved)
+      clearSeedableTupleListProvenance(entry.scope, leftResolved)
     }
+    finish()
     return
   }
 
   if (localValue) entry.scope.valueInstances.set(left.text, localValue)
   if (localExactStrings) entry.scope.exactStringSets.set(left.text, localExactStrings)
   if (localExactIteratedStrings) entry.scope.exactIteratedStringSets.set(left.text, localExactIteratedStrings)
+  if (iteratedExactStringTuple) setIteratedExactStringTupleProvenance(entry.scope, left.text, iteratedExactStringTuple)
+  if (iteratedContainerTuple) setIteratedContainerTupleProvenance(entry.scope, left.text, iteratedContainerTuple)
   if (iteratedPathTuple) entry.scope.iteratedPathTupleInstances.set(left.text, iteratedPathTuple)
+  if (tupleContainerSlots) {
+    setTupleContainerSlotProvenance(entry.scope, left.text, tupleContainerSlots)
+  }
+  if (right?.type === "list" && right.namedChildren.length === 0) {
+    markSeedableTupleList(entry.scope, left.text)
+  } else if (right?.type === "identifier" && hasSeedableTupleList(entry.scope, right.text)) {
+    markSeedableTupleList(entry.scope, left.text)
+  }
 
   if (factoryTarget) {
     entry.scope.bindings.set(left.text, factoryTarget)
+    finish()
     return
   }
 
@@ -820,6 +1072,7 @@ export function replayAssignmentEntry(
       clearReceiverSeedableStringListPath(entry.scope, containerAlias)
       clearHelperReceiverElementKindPath(helperReceiverElementKinds, containerAlias)
     }
+    finish()
     return
   }
 
@@ -832,10 +1085,12 @@ export function replayAssignmentEntry(
   if (target) {
     entry.scope.bindings.set(left.text, target)
     if (trustedAliasSource(right, entry.scope)) entry.scope.trustedBindings.add(left.text)
+    finish()
     return
   }
 
   if (!right || right.type !== "call" || !assignedCall) {
+    finish()
     return
   }
 
@@ -862,17 +1117,24 @@ export function replayAssignmentEntry(
   if (atlassianClient) {
     entry.scope.atlassianInstances.set(left.text, atlassianClient)
   }
+  finish()
 }
 
 function helperSeedFromArgument(node: Node | null, current: Scope, helperReceiverElementKinds?: HelperReceiverElementKinds): HelperParamSeed | undefined {
   const directContainerKind = node?.type === "identifier" ? containerInstance(current, node.text) : undefined
   const directIteratedElementKind = node?.type === "identifier" ? iteratedElementInstance(current, node.text) : undefined
-  const containerKind = trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current) ?? directContainerKind
+  const containerKind = trackedReceiverContainerKind(node, current) ?? trackedContainerKind(node, current) ?? returnedTrackedContainerKind(node, current) ?? directContainerKind
   const iteratedElementKind = iteratedContainerKind(node, current) ?? helperReceiverElementKind(helperReceiverElementKinds, node, current) ?? directIteratedElementKind
+  const exactStrings = exactStringSet(current, node)
   const seed: HelperParamSeed = {}
   if (containerKind && HELPER_PARAM_CONTAINER_KINDS.has(containerKind)) seed.containerKind = containerKind
   if (iteratedElementKind === "string") seed.iteratedElementKind = "string"
-  return seed.containerKind || seed.iteratedElementKind ? seed : undefined
+  if (exactStrings) seed.exactStrings = exactStrings
+  return seed.containerKind || seed.iteratedElementKind || seed.exactStrings ? seed : undefined
+}
+
+function sameExactStrings(left: string[] | undefined, right: string[] | undefined) {
+  return left?.length === right?.length && (left ?? []).every((value, index) => right?.[index] === value)
 }
 
 function sameHelperSeed(left: HelperParamSeed | undefined, right: HelperParamSeed | undefined) {
@@ -951,19 +1213,177 @@ function escapeHelperReturnByAlias(candidates: HelperReturnCandidate[], entry: T
   }
 }
 
+function sameTupleContainerKinds(left: ContainerKind[] | undefined, right: ContainerKind[] | undefined) {
+  return Boolean(left && right && left.length === right.length && left.every((kind, index) => right[index] === kind))
+}
+
+function uniqueTupleStrings(values: string[]) {
+  const unique = Array.from(new Set(values))
+  if (unique.length === 0 || unique.length > MAX_EXACT_TUPLE_STRINGS) return
+  return unique
+}
+
+function iteratedExactStringTupleValues(node: Node | null, current: Scope): string[][] | undefined {
+  node = unwrapParenthesized(node)
+  if (!node) return
+
+  if (node.type === "identifier") {
+    return iteratedExactStringTupleInstance(current, node.text)
+  }
+
+  if (node.type !== "list" && node.type !== "tuple") return
+  const tuples = node.namedChildren
+  if (tuples.length === 0) return
+  if (!tuples.every((child) => child.type === "list" || child.type === "tuple")) return
+  const width = tuples[0]?.namedChildren.length ?? 0
+  if (width === 0 || !tuples.every((child) => child.namedChildren.length === width)) return
+
+  const slots: string[][] = []
+  for (let index = 0; index < width; index += 1) {
+    const values: string[] = []
+    for (const tuple of tuples) {
+      const exact = exactStringSet(current, tuple.namedChildren[index] ?? null)
+      if (!exact) return
+      values.push(...exact)
+    }
+    const unique = uniqueTupleStrings(values)
+    if (!unique) return
+    slots.push(unique)
+  }
+  return slots
+}
+
+function exactStringTupleAssignments(target: Node | null, slotValues: string[][]) {
+  if (!target) return [] as Array<{ name: string; values: string[] }>
+  if (!(target.type === "tuple" || target.type === "list" || target.type === "pattern_list" || target.type === "tuple_pattern" || target.type === "list_pattern")) {
+    return [] as Array<{ name: string; values: string[] }>
+  }
+  if (target.namedChildren.length !== slotValues.length || !target.namedChildren.every((child) => child.type === "identifier")) {
+    return [] as Array<{ name: string; values: string[] }>
+  }
+  return target.namedChildren
+    .map((child, index) => ({ child, values: slotValues[index] }))
+    .filter((item): item is { child: Node; values: string[] } => Boolean(item.child && item.values))
+    .flatMap(({ child, values }) => assignedNames(child).filter((name) => name !== "_").map((name) => ({ name, values })))
+}
+
+function rebindExactStringTupleSlots(target: Node | null, source: Node | null, current: Scope) {
+  const slotValues = iteratedExactStringTupleValues(source, current)
+  if (!slotValues) return [] as Array<{ name: string; values: string[] }>
+  return exactStringTupleAssignments(target, slotValues)
+}
+
+function itemsKeyExactStrings(node: Node | null, current: Scope) {
+  if (!node || node.type !== "call") return
+  const fn = node.childForFieldName("function")
+  if (fn?.type !== "attribute") return
+  const call = resolvedName(fn, current)
+  const parts = call?.split(".") ?? []
+  const method = parts[parts.length - 1]
+  if (method !== "items") return
+  const input = args(node)
+  if (input.positional.length !== 0 || Object.keys(input.keyword).length !== 0 || hasDictionarySplat(node)) return
+  return exactIteratedStringSet(current, fn.childForFieldName("object"))
+}
+
+function rebindItemsKeyExactStrings(target: Node | null, source: Node | null, current: Scope) {
+  const keys = itemsKeyExactStrings(source, current)
+  if (!keys || !target) return [] as Array<{ name: string; values: string[] }>
+  if (!(target.type === "tuple" || target.type === "list" || target.type === "pattern_list" || target.type === "tuple_pattern" || target.type === "list_pattern")) {
+    return [] as Array<{ name: string; values: string[] }>
+  }
+  const first = target.namedChildren[0]
+  if (!first) return [] as Array<{ name: string; values: string[] }>
+  return assignedNames(first).filter((name) => name !== "_").map((name) => ({ name, values: keys }))
+}
+
+export function updateMutatedTupleListSlotKinds(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const rawFn = entry.node.childForFieldName("function")
+  const fn = unwrapParenthesized(rawFn)
+  const resolved = resolvedName(fn, entry.scope)
+  let receiverName: string | undefined
+  let method: string | undefined
+  if (resolved === "list.append" || resolved === "list.insert" || resolved === "list.extend") {
+    const receiver = unwrapParenthesized(entry.node.childForFieldName("arguments")?.namedChildren[0] ?? null)
+    if (receiver?.type !== "identifier") return
+    receiverName = receiver.text
+    const parts = resolved.split(".")
+    method = parts[parts.length - 1]
+  } else if (fn?.type === "attribute") {
+    const receiver = unwrapParenthesized(fn.childForFieldName("object"))
+    if (receiver?.type !== "identifier") return
+    receiverName = receiver.text
+    method = fn.childForFieldName("attribute")?.text
+  } else if (fn?.type === "identifier" && resolved) {
+    const parts = resolved.split(".")
+    method = parts[parts.length - 1]
+    receiverName = parts.slice(0, -1).join(".") || undefined
+    if (!receiverName) return
+  } else {
+    return
+  }
+  if (!method || (method !== "append" && method !== "insert" && method !== "extend")) return
+  const receiverKind = containerInstance(entry.scope, receiverName)
+  if (receiverKind !== "list") return
+
+  if (resolved === "list.append" || resolved === "list.insert" || resolved === "list.extend") {
+    clearIteratedContainerTupleProvenance(entry.scope, receiverName)
+    clearIteratedExactStringTupleProvenance(entry.scope, receiverName)
+    clearSeedableTupleListProvenance(entry.scope, receiverName)
+    return
+  }
+
+  if (fn?.type === "identifier") {
+    clearIteratedContainerTupleProvenance(entry.scope, receiverName)
+    clearIteratedExactStringTupleProvenance(entry.scope, receiverName)
+    clearSeedableTupleListProvenance(entry.scope, receiverName)
+    return
+  }
+
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const valueNode = method === "append" ? (argNodes[0] ?? null) : method === "insert" ? (argNodes[1] ?? null) : (argNodes[0] ?? null)
+  const nextKinds = method === "extend" ? iteratedContainerTupleValues(valueNode, entry.scope) : tupleContainerSlotKinds(valueNode, entry.scope)
+  const currentKinds = entry.scope.iteratedContainerTupleInstances.get(receiverName)
+  clearIteratedExactStringTupleProvenance(entry.scope, receiverName)
+  if (nextKinds && ((currentKinds && sameTupleContainerKinds(currentKinds, nextKinds)) || (!currentKinds && hasSeedableTupleList(entry.scope, receiverName)))) {
+    setIteratedContainerTupleProvenance(entry.scope, receiverName, nextKinds)
+    clearSeedableTupleListProvenance(entry.scope, receiverName)
+    return
+  }
+
+  clearIteratedContainerTupleProvenance(entry.scope, receiverName)
+  clearSeedableTupleListProvenance(entry.scope, receiverName)
+}
+
 export function clearMutatedIteratedElementInstance(entry: TimelineEntry) {
   if (entry.kind !== "call") return
-  const fn = entry.node.childForFieldName("function")
-  if (fn?.type !== "attribute") return
-  const receiver = fn.childForFieldName("object")
-  const resolved = resolvedName(fn, entry.scope)
-  const parts = resolved?.split(".")
-  const method = parts && parts.length > 0 ? parts[parts.length - 1] : undefined
-  if (receiver?.type !== "identifier" || !method || !ITERATED_ELEMENT_INVALIDATING_METHODS.has(method)) return
-  clearIteratedElementProvenance(entry.scope, receiver.text)
-  clearIteratedPathTupleProvenance(entry.scope, receiver.text)
-  clearExactStringSetProvenance(entry.scope, receiver.text)
-  clearExactIteratedStringSetProvenance(entry.scope, receiver.text)
+  const rawFn = entry.node.childForFieldName("function")
+  const fn = unwrapParenthesized(rawFn)
+  const resolved = resolvedName(fn ?? rawFn, entry.scope)
+  let receiverName: string | undefined
+  let method: string | undefined
+  if (resolved === "list.append" || resolved === "list.extend" || resolved === "list.insert") {
+    const receiver = unwrapParenthesized(entry.node.childForFieldName("arguments")?.namedChildren[0] ?? null)
+    if (receiver?.type !== "identifier") return
+    receiverName = receiver.text
+    const parts = resolved.split(".")
+    method = parts[parts.length - 1]
+  } else if (fn?.type === "attribute") {
+    const receiver = unwrapParenthesized(fn.childForFieldName("object"))
+    const parts = resolved?.split(".")
+    method = parts && parts.length > 0 ? parts[parts.length - 1] : undefined
+    if (receiver?.type === "identifier") receiverName = receiver.text
+  } else if (fn?.type === "identifier" && resolved) {
+    const parts = resolved.split(".")
+    method = parts[parts.length - 1]
+    receiverName = parts.slice(0, -1).join(".") || undefined
+  }
+  if (!receiverName || !method || !ITERATED_ELEMENT_INVALIDATING_METHODS.has(method)) return
+  clearIteratedElementProvenance(entry.scope, receiverName)
+  clearIteratedPathTupleProvenance(entry.scope, receiverName)
+  clearExactStringSetProvenance(entry.scope, receiverName)
+  clearExactIteratedStringSetProvenance(entry.scope, receiverName)
 }
 
 export function clearMutatedMappingValueContainerKind(entry: TimelineEntry) {
@@ -1225,6 +1645,7 @@ export function discoverHelperParamSeeds(
   const activeByScope = new Map<Scope, Map<string, ActiveHelper>>()
   const allHelpers: ActiveHelper[] = []
   const helperReceiverElementKinds: HelperReceiverElementKinds = new Map()
+  const comprehensionScopes = new Set<Scope>()
 
   for (const entry of timeline) {
     if (entry.kind === "import") {
@@ -1237,6 +1658,8 @@ export function discoverHelperParamSeeds(
       const params = def?.type === "function_definition" ? parameterNames(def.childForFieldName("parameters")) : []
       registerActiveHelper(activeByScope, allHelpers, entry.scope, definitionName(entry.node), params, entry.bodyScope, entry.startIndex)
     } else if (entry.kind === "rebind") {
+      if (entry.node.type === "for_in_clause") comprehensionScopes.add(entry.scope)
+      ensureGuardSnapshots(entry.scope, entry.guards)
       for (const name of helperInvalidationNames(entry)) activeByScope.get(entry.scope)?.delete(name)
       replayRebindEntry(entry)
     } else if (entry.kind === "assignment") {
@@ -1249,7 +1672,7 @@ export function discoverHelperParamSeeds(
       registerActiveHelper(activeByScope, allHelpers, entry.scope, left?.type === "identifier" ? left.text : undefined, params, entry.bodyScope, entry.startIndex)
     } else if (entry.kind === "call") {
       const name = directHelperCallName(entry)
-      const helper = name ? activeByScope.get(entry.scope)?.get(name) : undefined
+      const helper = name ? lookupActiveHelper(activeByScope, entry.scope, name, comprehensionScopes.has(entry.scope)) : undefined
       if (helper) {
         helper.observedCalls += 1
         const input = args(entry.node)
@@ -1264,13 +1687,23 @@ export function discoverHelperParamSeeds(
               helper.blocked = true
               break
             }
-            helper.seeds[index] = seed
+            const nextSeed: HelperParamSeed = {
+              containerKind: seed.containerKind ?? current?.containerKind,
+              iteratedElementKind: seed.iteratedElementKind ?? current?.iteratedElementKind,
+            }
+            if (!current) {
+              if (seed.exactStrings) nextSeed.exactStrings = seed.exactStrings
+            } else if (current.exactStrings && seed.exactStrings && sameExactStrings(current.exactStrings, seed.exactStrings)) {
+              nextSeed.exactStrings = current.exactStrings
+            }
+            helper.seeds[index] = nextSeed
           }
         }
       } else {
         clearEscapedReceiverPaths(entry, helperReceiverElementKinds)
       }
       clearMutatedIteratedElementInstance(entry)
+      updateMutatedTupleListSlotKinds(entry)
       clearMutatedMappingValueContainerKind(entry)
       clearMutatedClassModuleReceiverContainer(entry)
       clearMutatedTrustedOciModelMetadataMaps(entry)
@@ -1278,6 +1711,7 @@ export function discoverHelperParamSeeds(
       clearMutatedTrustedHashlibCalls(entry)
       clearMutatedTrustedModelDumpPaths(entry)
       clearIndirectMappingMutations(entry)
+      clearIndirectSetitemMutations(entry)
       updateSqliteCursorExecution(entry)
       updateMutatedReceiverElementKind(entry, helperReceiverElementKinds)
     }
@@ -1317,6 +1751,7 @@ export function discoverHelperReturnKinds(
     }
 
     if (entry.kind === "rebind") {
+      ensureGuardSnapshots(entry.scope, entry.guards)
       replayRebindEntry(entry)
       continue
     }
@@ -1332,6 +1767,7 @@ export function discoverHelperReturnKinds(
 
     clearEscapedReceiverPaths(entry)
     clearMutatedIteratedElementInstance(entry)
+    updateMutatedTupleListSlotKinds(entry)
     clearMutatedMappingValueContainerKind(entry)
     clearMutatedClassModuleReceiverContainer(entry)
     clearMutatedTrustedHashlibCalls(entry)
@@ -1339,6 +1775,7 @@ export function discoverHelperReturnKinds(
     clearMutatedTrustedDifflibCalls(entry)
     clearMutatedTrustedOciModelMetadataMaps(entry)
     clearIndirectMappingMutations(entry)
+    clearIndirectSetitemMutations(entry)
     updateSqliteCursorExecution(entry)
     updateMutatedReceiverElementKind(entry)
   }

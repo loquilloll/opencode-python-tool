@@ -1,6 +1,6 @@
 import type { PythonAstNode as Node } from "./frontend/interface"
 import { ASSIGNMENT_CONTAINER_TYPES, BODY_SCOPE_TYPES, COMPREHENSION_SCOPE_TYPES } from "./python-known-methods"
-import type { Scope, TimelineEntry } from "./python-analyze-types"
+import type { Scope, TimelineEntry, TimelineGuard } from "./python-analyze-types"
 import type { PythonValue as Value } from "./python-values"
 
 type TimelineDeps = {
@@ -12,6 +12,10 @@ export function parameterNames(node: Node | null): string[] {
   if (!node) return []
   const name = node.childForFieldName("name")
   if (name?.type === "identifier") return [name.text]
+  if (node.type === "typed_parameter" || node.type === "default_parameter" || node.type === "typed_default_parameter") {
+    const identifier = node.namedChildren.find((child) => child.type === "identifier")
+    if (identifier) return [identifier.text]
+  }
   if (node.type === "identifier") return [node.text]
   return node.namedChildren.flatMap((child) => parameterNames(child))
 }
@@ -61,14 +65,25 @@ function pushEntry(
   kind: TimelineEntry["kind"],
   node: Node,
   scope: Scope,
-  guards: Node[] = [],
+  guards: TimelineGuard[] = [],
   startIndex = node.startIndex,
   endIndex = node.endIndex,
 ) {
   entries.push({ kind, node, scope, guards: guards.length > 0 ? [...guards] : undefined, startIndex, endIndex })
 }
 
-function collectTimeline(node: Node, current: Scope, entries: TimelineEntry[], deps: TimelineDeps, decorated = false, guards: Node[] = []) {
+function wrapGuard(node: Node | null) {
+  if (!node) return
+  return { node }
+}
+
+function containsComparisonOperator(node: Node | null): boolean {
+  if (!node) return false
+  if (node.type === "comparison_operator") return true
+  return node.namedChildren.some((child) => containsComparisonOperator(child))
+}
+
+function collectTimeline(node: Node, current: Scope, entries: TimelineEntry[], deps: TimelineDeps, decorated = false, guards: TimelineGuard[] = []) {
   if (node.type === "assignment" || node.type === "augmented_assignment" || node.type === "named_expression") {
     const right = assignmentRight(node)
     const assignmentStart = right?.type === "lambda" ? right.startIndex : right?.endIndex ?? node.startIndex
@@ -107,13 +122,15 @@ function collectTimeline(node: Node, current: Scope, entries: TimelineEntry[], d
     const condition = node.childForFieldName("condition")
     const consequence = node.childForFieldName("consequence")
     const alternative = node.childForFieldName("alternative")
+    const conditionGuard = condition && !containsComparisonOperator(condition) ? wrapGuard(condition) : undefined
+    const consequenceGuards = conditionGuard ? [...guards, conditionGuard] : guards
     for (const child of node.namedChildren) {
       if (condition && child.startIndex === condition.startIndex && child.endIndex === condition.endIndex) {
         collectTimeline(child, current, entries, deps, decorated, guards)
         continue
       }
       if (consequence && child.startIndex === consequence.startIndex && child.endIndex === consequence.endIndex) {
-        collectTimeline(child, current, entries, deps, decorated, condition ? [...guards, condition] : guards)
+        collectTimeline(child, current, entries, deps, decorated, consequenceGuards)
         continue
       }
       if (alternative && child.startIndex === alternative.startIndex && child.endIndex === alternative.endIndex) {
@@ -131,6 +148,14 @@ function collectTimeline(node: Node, current: Scope, entries: TimelineEntry[], d
       collectTimeline(child, current, entries, deps, decorated, guards)
       if (body && child.startIndex === body.startIndex && child.endIndex === body.endIndex) continue
     }
+    return
+  }
+
+  if (node.type === "conditional_expression") {
+    const [consequence, condition, alternative] = node.namedChildren
+    const conditionGuard = wrapGuard(condition ?? null)
+    if (consequence) collectTimeline(consequence, current, entries, deps, decorated, conditionGuard ? [...guards, conditionGuard] : guards)
+    if (alternative) collectTimeline(alternative, current, entries, deps, decorated, guards)
     return
   }
 
@@ -154,7 +179,7 @@ function collectTimeline(node: Node, current: Scope, entries: TimelineEntry[], d
     for (const child of node.namedChildren) {
       const inBody =
         !!body && child.type === body.type && child.startIndex === body.startIndex && child.endIndex === body.endIndex
-      collectTimeline(child, inBody ? inner : current, entries, deps, decorated, guards)
+      collectTimeline(child, inBody ? inner : current, entries, deps, decorated, inBody ? [] : guards)
     }
     return
   }
@@ -169,16 +194,16 @@ function collectTimeline(node: Node, current: Scope, entries: TimelineEntry[], d
       if (isBody(child)) continue
       if (child.type === "for_in_clause") {
         const right = child.childForFieldName("right")
-        if (right) collectTimeline(right, inner, entries, deps, decorated, guards)
+        if (right) collectTimeline(right, inner, entries, deps, decorated, [])
         const rebindIndex = body?.startIndex ?? right?.endIndex ?? child.startIndex
-        pushEntry(entries, "rebind", child, inner, guards, rebindIndex, rebindIndex)
+        pushEntry(entries, "rebind", child, inner, [], rebindIndex, rebindIndex)
         for (const name of assignedNames(child.childForFieldName("left"))) deps.invalidateTrackedName(inner, name)
         continue
       }
-      collectTimeline(child, inner, entries, deps, decorated, guards)
+      collectTimeline(child, inner, entries, deps, decorated, [])
     }
 
-    if (body) collectTimeline(body, inner, entries, deps, decorated, guards)
+    if (body) collectTimeline(body, inner, entries, deps, decorated, [])
     return
   }
 

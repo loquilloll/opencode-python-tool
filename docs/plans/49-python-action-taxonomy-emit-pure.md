@@ -217,6 +217,66 @@ Calls that cannot be reliably classified.
 - Commit: `12d1983`
 - PR/Jira: None
 
+#### Follow-up Notes
+
+- Status: Done (2026-03-07)
+- Summary: Extended scorer confidence storage/output to include full taxonomy confidences (`read`, `write`, `emit`, `exec`, `pure`, `unknown`) with legacy read/write compatibility, and updated default `y`/`n` suggestions to default to `read`/`write`/`emit`/`ignore`/`pure` (no automatic `needs-code`).
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `README.md`, `docs/python-session-report-operator-guide.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test`
+- Follow-ups: None
+- Commit: Not committed (working tree)
+- PR/Jira: None
+
+#### Follow-up Notes (TUI readability)
+
+- Status: Done (2026-03-07)
+- Summary: Improved review TUI readability by adding ANSI syntax highlighting for Python snippets and stronger current-call emphasis (focused gutter marker plus highlighted `[[call]]` token).
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test`
+- Follow-ups: None
+- Commit: Not committed (working tree)
+- PR/Jira: None
+
+#### Follow-up Notes (review default tightening)
+
+- Status: Done (2026-03-08)
+- Summary: Tightened the default review queue back to unresolved `unknown` callables only, added opt-in `--include-emit` support for auditing rule-backed emit callables, and verified that promoted emit callables no longer reappear in default review runs.
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `README.md`, `docs/python-session-report-operator-guide.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test`; `cd .opencode && bun run ../src/python-session-report.ts --help`
+- Follow-ups: None
+- Commit: Not committed
+- PR/Jira: None
+
+#### Follow-up Notes (TUI responsiveness)
+
+- Status: Done (2026-03-07)
+- Summary: Added transient processing status feedback in the review TUI so operators can see immediate response while saving a decision and loading/rescoring the next candidate.
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `README.md`, `docs/python-session-report-operator-guide.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test`
+- Follow-ups: None
+- Commit: Not committed (working tree)
+- PR/Jira: None
+
+#### Follow-up Notes (Callable reuse)
+
+- Status: Done (2026-03-07)
+- Summary: Updated review/promotion behavior so a recorded, consistent callable decision is reused across later snippet contexts for the same callable, avoiding repeated classification of calls such as `print` while leaving conflicting call histories reviewable.
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `README.md`, `docs/python-session-report-operator-guide.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test`
+- Follow-ups: None
+- Commit: Not committed (working tree)
+- PR/Jira: None
+
+#### Follow-up Notes (TUI full-page default)
+
+- Status: Done (2026-03-08)
+- Summary: Changed the review TUI to open with the full code page visible by default while keeping `v` as a toggle back to the focused-window view around the active call.
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `README.md`, `docs/python-session-report-operator-guide.md`, `docs/plans/49-python-action-taxonomy-emit-pure.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`; `cd .opencode && bun test`
+- Follow-ups: None
+- Commit: Not committed (working tree)
+- PR/Jira: None
+
 ### Phase 4 - Docs and operator guidance
 
 **Goal:** Document the new taxonomy clearly.
@@ -249,7 +309,7 @@ Calls that cannot be reliably classified.
 - Files: `README.md`, `docs/python-session-report-operator-guide.md`, `docs/plans/49-python-action-taxonomy-emit-pure.md`
 - Tests: `cd .opencode && bun test`; `cd .opencode && bun run ../src/python-session-report.ts --help`
 - Follow-ups: None
-- Commit: Not committed
+- Commit: `bc26adc`
 - PR/Jira: None
 
 ## Acceptance Criteria

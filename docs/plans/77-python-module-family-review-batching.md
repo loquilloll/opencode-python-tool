@@ -1,11 +1,12 @@
 ---
 title: Python Module and Family Review Batching
-status: active
+status: done
 plan: 77-python-module-family-review-batching
 created: 2026-03-18
+updated: 2026-03-29
 tags:
   - type/plan
-  - status/active
+  - status/done
   - project/opencode-python-tool
   - topic/session-report
   - topic/review-workflow
@@ -522,6 +523,76 @@ The repo supports snippet-first review (`--review-next`, `--review-tui`) and que
 - Commit: Not committed
 - PR/Jira: None
 
+#### Notes
+
+- Status: In progress (2026-03-27)
+- Summary: Standardized the latest ad hoc repo-local analyzer probe as `.opencode/skills/python-family-batching/scripts/analyzer_probe.sh`, so plan-77 work no longer needs one-off `bun -e` commands for inline snippet checks. Updated the skill docs and `.opencode/opencode.jsonc` so the helper is documented and explicitly allowlisted alongside the other `python-family-batching` scripts.
+- Files: `.opencode/skills/python-family-batching/scripts/common.sh`, `.opencode/skills/python-family-batching/scripts/analyzer_probe.sh`, `.opencode/skills/python-family-batching/SKILL.md`, `.opencode/opencode.jsonc`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `chmod +x .opencode/skills/python-family-batching/scripts/analyzer_probe.sh`; `bash -n .opencode/skills/python-family-batching/scripts/common.sh`; `bash -n .opencode/skills/python-family-batching/scripts/analyzer_probe.sh`; `.opencode/skills/python-family-batching/scripts/analyzer_probe.sh --code $'from datetime import datetime\nfound = {}\na = "start"\nb = "end"\nfound[a] = datetime.fromisoformat("2024-01-02T03:04:05+00:00")\nfound[b] = datetime.fromisoformat("2024-01-02T03:05:05+00:00")\ndef secs(a, b):\n    gap = b - a\n    return gap.total_seconds()\nsecs(found["start"], found["end"])'`
+- Follow-ups: If more canned probe shapes emerge, add them as helper flags or sibling scripts instead of expanding the config with raw `bun -e` allow rules.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-28)
+- Summary: Extended the bounded datetime provenance seam beyond direct helper returns: explicit tuple/list slot carriers can now preserve datetime kinds through destructuring and indexed tuple reads, exact-key dict receivers can reuse homogeneous multi-key proofs, tuple-pair exact string slots can drive `(found[b] - found[a]).total_seconds()`, and wrapped/class-method mutators now clear stale tuple-slot or exact-key datetime proofs. Focused analyzer/runtime suites are green and final read-only review approved the patch, but the live review DB still shows the top datetime families as blocked, so the remaining work is now a narrower representative-shape gap rather than the earlier missing tuple/exact-key plumbing.
+- Files: `src/python/python-analyze-types.ts`, `src/python/python-analyze.ts`, `src/python/python-inference.ts`, `src/python/python-inference-containers.ts`, `src/python/python-provenance.ts`, `src/python/python-replay.ts`, `src/python/python-scope.ts`, `.opencode/test/python-analyze-library-pure.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze-library-pure.test.ts`; `cd .opencode && bun test test/python-analyze-pure-core.test.ts`; `cd .opencode && bun test test/python-analyze-paths-io.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `.opencode/skills/python-family-batching/scripts/analyzer_probe.sh --code $'from datetime import datetime\npatterns = {"start": "2024-01-02T03:04:05+00:00", "end": "2024-01-02T03:05:05+00:00"}\nfound = {}\nfor key, raw in patterns.items():\n    found[key] = datetime.fromisoformat(raw)\nfor k in patterns:\n    found[k].isoformat()\npairs = [("start", "end")]\nfor a, b in pairs:\n    (found[b] - found[a]).total_seconds()'`; `.opencode/skills/python-family-batching/scripts/queue_snapshot.sh --family ts.isoformat --family a.isoformat --family found.isoformat --family total_seconds --include-representatives`
+- Follow-ups: The live filtered snapshot is now a point-in-time `51` snippets / `74` pending candidates / `55` families and still reports `ts.isoformat`, `a.isoformat`, `found.isoformat`, and `total_seconds` as blocked. The next safest step is to isolate the remaining helper-backed tuple/list representative for `ts` / `a` before pivoting to `item.lower` or the older bytes/string families.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-28)
+- Summary: Drained the remaining `ts.isoformat` / `a.isoformat` live family shapes by extending tuple-slot provenance through enumerate-backed tuple carriers, nested tuple siblings, and helper calls from comprehension scopes, then reduced `item.lower` from two live snippets to one by adding bounded positive-membership narrowing for inline conditional expressions over exact iterables. Focused suites remain green and the filtered live snapshot is now `49` snippets / `68` pending candidates / `51` families, but the broader datetime cluster still has `found.isoformat` and `total_seconds` blocked and a final read-only review still flags an outstanding `if`-body raw-guard snapshot concern around statement-level `startswith(...)` narrowing.
+- Files: `src/python/python-timeline.ts`, `src/python/python-key-equivalence.ts`, `src/python/python-classifier.ts`, `src/python/python-inference-containers.ts`, `src/python/python-analyze.ts`, `.opencode/test/python-analyze-library-pure.test.ts`, `.opencode/test/python-analyze-pure-core.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze-library-pure.test.ts`; `cd .opencode && bun test test/python-analyze-pure-core.test.ts`; `cd .opencode && bun test test/python-analyze-paths-io.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `.opencode/skills/python-family-batching/scripts/queue_snapshot.sh --family ts.isoformat --family a.isoformat --family found.isoformat --family total_seconds --family item.lower --include-representatives`
+- Follow-ups: Either fix or deliberately scope out statement-level raw-guard snapshotting for `if`/`elif` `startswith(...)` narrowing, then revisit whether `found.isoformat` / `total_seconds` should stay the next datetime bucket or whether the last unguarded `item.lower` snippet is the smaller win.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-28)
+- Summary: Followed up on the remaining plan-77 priorities by hardening guard narrowing (`not in`, scalar-membership, unrelated guard names, boolean `and`/`or`, inner-scope shadowing) and extending helper-string-key propagation so reduced repros for helper-backed `total_seconds()` now pass. Focused suites are still green, but the filtered live snapshot stays at `49` snippets / `68` pending candidates / `51` families with `found.isoformat`, `total_seconds`, and one unguarded `item.lower` snippet still blocked; a final read-only review also still treats statement-level raw `startswith(...)` guard snapshots as an open safety concern because `if`/`elif` bodies still carry raw guard ASTs rather than branch-entry snapshots.
+- Files: `src/python/python-analyze.ts`, `src/python/python-classifier.ts`, `src/python/python-inference-containers.ts`, `src/python/python-key-equivalence.ts`, `src/python/python-replay.ts`, `src/python/python-timeline.ts`, `.opencode/test/python-analyze-library-pure.test.ts`, `.opencode/test/python-analyze-pure-core.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/python-classification-reference.md`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze-library-pure.test.ts`; `cd .opencode && bun test test/python-analyze-pure-core.test.ts`; `cd .opencode && bun test test/python-analyze-paths-io.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `.opencode/skills/python-family-batching/scripts/analyzer_probe.sh --code $'from datetime import datetime, timezone\ndef parse_ts(raw):\n    body = raw[:-1]\n    if "." in body:\n        prefix, frac = body.split(".", 1)\n        frac = (frac + "000000")[:6]\n        body = prefix + "." + frac\n        return datetime.strptime(body, "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=timezone.utc)\n    return datetime.strptime(body, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)\npatterns = {"start": r"start", "end": r"end"}\nfound = {}\nfor key in patterns:\n    found[key] = parse_ts("2024-01-02T03:04:05.000Z")\ndef measure(left, right):\n    return round((found[right] - found[left]).total_seconds(), 3)\nmeasure("start", "end")'`; `.opencode/skills/python-family-batching/scripts/queue_snapshot.sh --family found.isoformat --family total_seconds --family item.lower --include-representatives`
+- Follow-ups: The next safe step is still item `1` from the prior recommendation list: either snapshot or deliberately scope out statement-level `startswith(...)` `if`/`elif` guards so review no longer treats them as mutable-scope facts. After that, re-isolate the live `found.isoformat` / `total_seconds` representatives before deciding whether the last unguarded `item.lower` should remain intentionally blocked.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-29)
+- Summary: Closed the statement-level `startswith(...)` safety blocker by forcing guard snapshots before guarded assignment/rebind replay, freezing empty snapshots, and invalidating receiver-bound snapshots on guarded-name rebinding. Follow-up datetime fixes also covered typed helper parameters and nested tuple-subscript datetime reads, and a local review decision marked the remaining homogeneous `total_seconds` family as `pure`; the focused snapshot now shows `total_seconds` gone and only the unguarded parsed-text `item.lower` family remaining among the targeted leftovers.
+- Files: `src/python/python-analyze-types.ts`, `src/python/python-analyze.ts`, `src/python/python-classifier.ts`, `src/python/python-inference-containers.ts`, `src/python/python-key-equivalence.ts`, `src/python/python-replay.ts`, `src/python/python-timeline.ts`, `.opencode/test/python-analyze-library-pure.test.ts`, `.opencode/test/python-analyze-pure-core.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze-library-pure.test.ts`; `cd .opencode && bun test test/python-analyze-pure-core.test.ts`; `cd .opencode && bun test test/python-analyze-paths-io.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `.opencode/skills/python-family-batching/scripts/analyzer_probe.sh --code $'from datetime import datetime\nfound = {"start": datetime.fromisoformat("2024-01-02T03:04:05+00:00"), "skip": other}\nprefix = ""\nfor key in found:\n    if key.startswith(prefix):\n        for prefix in ["s"]:\n            found[key].isoformat()'`; `.opencode/skills/python-family-batching/scripts/analyzer_probe.sh --code $'from datetime import datetime, timezone\nfrom pathlib import Path\nimport re\n\npath = Path("/home/alvins/.local/share/opencode/tool-output/tool_d25fec523001xvhY6bScwjyZQg")\npts = []\nfor line in path.read_text().splitlines():\n    if "Triggered on-demand provisioning for " not in line:\n        continue\n    if "mgsocippopesrdpoc" not in line and "mgsghubppopesrdpoc" not in line:\n        continue\n    m = re.match(r"^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)", line)\n    raw = m.group(1)[:-1]\n    prefix, frac = raw.split(".", 1)\n    frac = (frac + "000000")[:6]\n    ts = datetime.strptime(prefix + "." + frac, "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=timezone.utc)\n    pts.append((ts, line.split(" - INFO - ",1)[1]))\nfor i in range(1, len(pts)):\n    delta = round((pts[i][0] - pts[i-1][0]).total_seconds(), 3)\n    print(delta)'`; `bun run src/python-session-report.ts --analyzer-rules "/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" --review-next --family total_seconds --decide 1=pure`; `.opencode/skills/python-family-batching/scripts/queue_snapshot.sh --family total_seconds --family item.lower --include-representatives`
+- Follow-ups: The requested `1` and `2` follow-ups are now addressed. Remaining Phase 5 work is optional and narrowed to the last unguarded parsed-text `item.lower` snippet or the broader non-targeted families still in the live queue.
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: In progress (2026-03-29)
+- Summary: Cleared the last targeted leftover by reviewing the single remaining unguarded parsed-text `item.lower` family and recording a local `pure` decision in the review ledger after confirming it is the only pending representative for that family. This does not broaden the analyzer boundary for unguarded `ast.literal_eval(...)` loops; it closes the queue with a review-ledger exception while the analyzer remains intentionally conservative there.
+- Files: `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `bun run src/python-session-report.ts --analyzer-rules "/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" --review-next --family item.lower`; `bun run src/python-session-report.ts --analyzer-rules "/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" --review-next --family item.lower --decide 1=pure`; `bun run src/python-session-report.ts --analyzer-rules "/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" --review-families-json --family item.lower`; `.opencode/skills/python-family-batching/scripts/queue_snapshot.sh --family total_seconds --family item.lower --include-representatives`
+- Follow-ups: The targeted `total_seconds` and `item.lower` leftovers are now closed. Remaining plan-77 work, if continued, moves to the broader untargeted families still present in the live queue (`39` snippets / `55` pending candidates / `47` families at the latest focused snapshot).
+- Commit: Not committed
+- PR/Jira: None
+
+#### Notes
+
+- Status: Done (2026-03-29)
+- Summary: Finished Phase 5 by draining the remaining live review queue. The closeout combined bounded analyzer fixes (direct regex list returns, iterated regex match receivers, statement-level guard snapshots, typed helper/datetime tuple handling, lambda local-definition filtering) with a few explicit review-ledger decisions for residual singleton families, and `src/python-session-report.ts --review-families-json` now reports zero pending snippets/candidates/families.
+- Files: `src/python/python-analyze-types.ts`, `src/python/python-analyze.ts`, `src/python/python-classifier.ts`, `src/python/python-inference-containers.ts`, `src/python/python-key-equivalence.ts`, `src/python/python-replay.ts`, `src/python/python-timeline.ts`, `.opencode/test/python-analyze-library-pure.test.ts`, `.opencode/test/python-analyze-parity.test.ts`, `.opencode/test/python-analyze-pure-core.test.ts`, `.opencode/test/python-inline-permissions-basic.test.ts`, `.opencode/test/python-inline-permissions-inference.test.ts`, `.opencode/test/python-session-report.test.ts`, `docs/plans/77-python-module-family-review-batching.md`
+- Tests: `cd .opencode && bun test test/python-analyze-library-pure.test.ts`; `cd .opencode && bun test test/python-analyze-parity.test.ts`; `cd .opencode && bun test test/python-analyze-pure-core.test.ts`; `cd .opencode && bun test test/python-analyze-paths-io.test.ts`; `cd .opencode && bun test test/python-inline-permissions-basic.test.ts`; `cd .opencode && bun test test/python-inline-permissions-inference.test.ts`; `cd .opencode && bun test test/python-session-report.test.ts`; `bun run src/python-session-report.ts --analyzer-rules "/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" --review-families-json`
+- Follow-ups: None for plan 77. Remaining future work would require a new plan against fresh queue data or follow-on workflow improvements, not continuation of this plan.
+- Commit: Not committed
+- PR/Jira: None
+
 ## Risks and Guardrails
 
 - grouping by outward call alone is unsafe; batching must prefer canonical/source-aware identities and receiver evidence
@@ -544,4 +615,4 @@ The repo supports snippet-first review (`--review-next`, `--review-tui`) and que
 - Phase 2: DONE (2026-03-18)
 - Phase 3: DONE (2026-03-18)
 - Phase 4: DONE (2026-03-19)
-- Phase 5: IN PROGRESS (2026-03-19)
+- Phase 5: DONE (2026-03-29)

@@ -182,6 +182,16 @@ Replace bare-call review reuse with a stable review identity based on occurrence
 - Commit: Not committed
 - PR/Jira: None
 
+#### Follow-up Notes
+
+- Status: Done (2026-03-10)
+- Summary: Hardened the remaining review feedback in `src/python-session-report.ts` by blocking promotion when one review identity spans multiple outward call aliases and by keeping TUI in-memory settle propagation from overwriting candidates that already carry their own decisions.
+- Files: `src/python-session-report.ts`, `.opencode/test/python-session-report.test.ts`, `docs/plans/72-python-review-identity-and-promotion-safety.md`
+- Tests: `cd .opencode && bun test test/python-session-report.test.ts`
+- Follow-ups: None
+- Commit: Not committed
+- PR/Jira: None
+
 ## Acceptance Criteria
 
 - ledger rows can persist optional `kind` and `sourceCall` metadata without breaking old ledgers

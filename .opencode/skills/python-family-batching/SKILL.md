@@ -19,12 +19,13 @@ description: Reduce the saved-session Python analyzer review queue in this repos
   - extracts full snippet bodies for one or more candidate calls from `--review-json`
 - `.opencode/skills/python-family-batching/scripts/verify_bucket.sh --test <path> --family <name> [--snapshot]`
   - reruns focused tests, rechecks affected families, and optionally prints a trimmed snapshot
+- `.opencode/skills/python-family-batching/scripts/analyzer_probe.sh [--code <python> | --code-file <path>] [--detailed]`
+  - standardizes ad hoc repo-local analyzer probes that would otherwise use one-off `bun -e` commands
 
 - Get one live family snapshot manually only when the scripts are not enough:
 
 ```bash
-OPENCODE_PYTHON_RULES="/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" \
-  bun run ../src/python-session-report.ts --review-families-json
+bun run ../src/python-session-report.ts --analyzer-rules "/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" --review-families-json
 ```
 
 - For a specific family, prefer `--review-json` filtered by candidate call or `--review-next --family "<family>"` when it returns quickly.
@@ -74,7 +75,8 @@ OPENCODE_PYTHON_RULES="/home/alvins/Documents/pgit/opencode-python-tool/src/pyth
 - Run the smallest useful suites first, or use `.opencode/skills/python-family-batching/scripts/verify_bucket.sh` to bundle them:
 
 ```bash
-bun test test/python-analyze.test.ts
+bun test test/python-analyze-library-pure.test.ts
+bun test test/python-analyze-pure-core.test.ts
 bun test test/python-inline-permissions-basic.test.ts
 bun test test/python-inline-permissions-inference.test.ts
 ```
@@ -82,8 +84,7 @@ bun test test/python-inline-permissions-inference.test.ts
 - Recheck only the affected families after each bucket:
 
 ```bash
-OPENCODE_PYTHON_RULES="/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" \
-  bun run ../src/python-session-report.ts --review-next --family "<family>"
+bun run ../src/python-session-report.ts --analyzer-rules "/home/alvins/Documents/pgit/opencode-python-tool/src/python/python-rules.json" --review-next --family "<family>"
 ```
 
 - Use `code-reviewer` for a final read-only safety pass on non-trivial buckets.
