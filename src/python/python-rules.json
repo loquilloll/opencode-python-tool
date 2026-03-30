@@ -66,6 +66,7 @@
       "os.path.lexists",
       "os.path.realpath",
       "os.path.samefile",
+      "os.walk",
       "time.asctime",
       "time.clock_getres",
       "time.clock_gettime",
@@ -166,8 +167,10 @@
       "collections.Counter",
       "collections.defaultdict",
       "difflib.unified_diff",
+      "fnmatch.fnmatch",
       "hashlib.sha1",
       "hashlib.sha256",
+      "struct.unpack",
       "zlib.decompress",
       "os.path.abspath",
       "os.path.basename",
@@ -460,6 +463,12 @@
         "index": 0,
         "names": [
           "path1"
+        ]
+      },
+      "os.walk": {
+        "index": 0,
+        "names": [
+          "top"
         ]
       }
     },

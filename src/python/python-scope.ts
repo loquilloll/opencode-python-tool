@@ -51,6 +51,7 @@ export function scope(parent?: Scope): Scope {
     iteratedContainerTupleInstances: new Map<string, ContainerKind[]>(),
     iteratedPathInstances: new Map<string, Value>(),
     iteratedPathTupleInstances: new Map<string, Value[]>(),
+    seedablePathLists: new Set<string>(),
     tupleContainerSlotInstances: new Map<string, ContainerKind[]>(),
     seedableTupleLists: new Map<string, string[]>(),
     receiverContainers: new Map<string, ReceiverContainer>(),
@@ -58,6 +59,7 @@ export function scope(parent?: Scope): Scope {
     receiverSeedableStringLists: new Map<string, string[]>(),
     receiverPaths: new Map<string, ReceiverPath>(),
     pathInstances: new Map<string, Value>(),
+    boundSetitemReceivers: new Map<string, { path?: string; canonicalPath?: string; equivalentPaths?: string[] }>(),
     sqliteConnectionInstances: new Map<string, string>(),
     sqliteCursorInstances: new Map<string, string>(),
     sqliteExecutedCursorInstances: new Set<string>(),
@@ -226,9 +228,11 @@ export function clearTrackedName(current: Scope, name: string) {
   current.iteratedContainerTupleInstances.delete(name)
   current.iteratedPathInstances.delete(name)
   current.iteratedPathTupleInstances.delete(name)
+  current.seedablePathLists.delete(name)
   current.tupleContainerSlotInstances.delete(name)
   current.seedableTupleLists.delete(name)
   current.pathInstances.delete(name)
+  current.boundSetitemReceivers.delete(name)
   current.sqliteConnectionInstances.delete(name)
   current.sqliteCursorInstances.delete(name)
   current.trustedModelDumpInstances.delete(name)
@@ -464,9 +468,32 @@ export function hasSeedableTupleList(current: Scope, name: string) {
   return false
 }
 
+export function hasSeedablePathList(current: Scope, name: string) {
+  const target = resolveQualified(name, current)
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    if (scope.seedablePathLists.has(name)) return true
+    if (target && scope.seedablePathLists.has(target)) return true
+    if (target) {
+      for (const key of scope.seedablePathLists) {
+        if (resolveQualified(key, current) === target) return true
+      }
+    }
+    if (scope.bindings.has(name)) return false
+  }
+  return false
+}
+
 export function pathInstanceValue(current: Scope, name: string) {
   for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
     const value = scope.pathInstances.get(name)
+    if (value) return value
+    if (scope.bindings.has(name)) return
+  }
+}
+
+export function boundSetitemReceiver(current: Scope, name: string) {
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const value = scope.boundSetitemReceivers.get(name)
     if (value) return value
     if (scope.bindings.has(name)) return
   }

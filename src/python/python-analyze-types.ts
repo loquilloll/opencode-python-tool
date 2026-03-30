@@ -48,6 +48,7 @@ export type Scope = {
   iteratedContainerTupleInstances: Map<string, ContainerKind[]>
   iteratedPathInstances: Map<string, Value>
   iteratedPathTupleInstances: Map<string, Value[]>
+  seedablePathLists: Set<string>
   tupleContainerSlotInstances: Map<string, ContainerKind[]>
   seedableTupleLists: Map<string, string[]>
   receiverContainers: Map<string, ReceiverContainer>
@@ -55,6 +56,7 @@ export type Scope = {
   receiverSeedableStringLists: Map<string, string[]>
   receiverPaths: Map<string, ReceiverPath>
   pathInstances: Map<string, Value>
+  boundSetitemReceivers: Map<string, { path?: string; canonicalPath?: string; equivalentPaths?: string[] }>
   sqliteConnectionInstances: Map<string, string>
   sqliteCursorInstances: Map<string, string>
   sqliteExecutedCursorInstances: Set<string>

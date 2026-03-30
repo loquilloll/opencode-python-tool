@@ -16,11 +16,14 @@ import {
   clearMutatedClassModuleReceiverContainer,
   clearIndirectMappingMutations,
   clearIndirectSetitemMutations,
+  clearMutatedTrustedFnmatchCalls,
   clearMutatedTrustedHashlibCalls,
-  clearMutatedTrustedModelDumpPaths,
+   clearMutatedTrustedModelDumpPaths,
   clearMutatedTrustedDifflibCalls,
+  clearMutatedTrustedOsCalls,
   clearMutatedMappingValueContainerKind,
   clearMutatedTrustedOciModelMetadataMaps,
+  clearMutatedTrustedStructCalls,
   clearEscapedReceiverPaths,
   clearMutatedIteratedElementInstance,
   discoverHelperReturnKinds,
@@ -30,6 +33,7 @@ import {
   replayImportEntry,
   replayRebindEntry,
   updateSqliteCursorExecution,
+  updateMutatedIteratedPathInstance,
   updateMutatedTupleListSlotKinds,
   updateMutatedReceiverElementKind,
 } from "./python-replay"
@@ -111,13 +115,17 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
     if (resolved) events.push(foldResolvedEffect(resolved))
     clearEscapedReceiverPaths(entry)
     clearMutatedIteratedElementInstance(entry)
+    updateMutatedIteratedPathInstance(entry)
     updateMutatedTupleListSlotKinds(entry)
     clearMutatedMappingValueContainerKind(entry)
     clearMutatedClassModuleReceiverContainer(entry)
+    clearMutatedTrustedFnmatchCalls(entry)
     clearMutatedTrustedHashlibCalls(entry)
     clearMutatedTrustedModelDumpPaths(entry)
     clearMutatedTrustedDifflibCalls(entry)
+    clearMutatedTrustedOsCalls(entry)
     clearMutatedTrustedOciModelMetadataMaps(entry)
+    clearMutatedTrustedStructCalls(entry)
     clearIndirectMappingMutations(entry)
     clearIndirectSetitemMutations(entry)
     updateSqliteCursorExecution(entry)

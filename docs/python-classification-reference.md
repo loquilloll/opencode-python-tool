@@ -58,6 +58,7 @@ Runtime ask policy:
 | `Path(p).open(<dynamic_mode>)` | unknown | `open-mode-dynamic` |
 | `Path(p).chmod()`, `.copy*()`, `.hardlink_to()`, `.lchmod()`, `.mkdir()`, `.move*()`, `.rename()`, `.replace()`, `.rmdir()`, `.symlink_to()`, `.touch()`, `.unlink()`, `.write_*()` | write | From the receiver Path |
 | `os.path.exists(path)`, `lexists(path)`, `isdir(path)`, `isfile(path)`, `islink(path)`, `isjunction(path)`, `ismount(path)`, `isdevdrive(path)`, `getsize(path)`, `getatime(path)`, `getctime(path)`, `getmtime(path)`, `realpath(path)`, `samefile(path1, path2)` | read | 1st positional or `path`/`path1` keyword |
+| `os.walk(top)` | read | 1st positional or `top` keyword |
 
 #### OS / shutil writes
 
@@ -111,7 +112,9 @@ Runtime ask policy:
 | tracked compiled regex pattern helpers such as `pat.search()`, `pat.match()`, `pat.fullmatch()`, `pat.findall()`, `pat.finditer()`, and `pat.split()` on trusted compiled-regex receivers | pure |
 | tracked regex match receivers where single-selector `match.group(...)` / `match[0]` returns a string, enabling bounded downstream string helpers like `.endswith()` and `.replace()` | pure |
 | `collections.Counter()` and tracked Counter helpers such as `.most_common()`, `.elements()`, `.total()`, `.update()`, `.subtract()`, `.copy()`, `.keys()`, and `.items()` | pure |
+| exact module-qualified or direct-imported `fnmatch.fnmatch()` | pure |
 | trusted `collections.defaultdict(set)` / `collections.defaultdict(list)` / `collections.defaultdict(Counter)` constructors, plus explicit homogeneous dict-of-list/set subscript receiver methods like `inv[current].append(...)`, `family_aliases[fam].add(...)`, and flat `for bucket, counts in buckets.items(): counts.most_common()` loops on tracked `defaultdict(Counter)` locals before widening `update(...)` / `setdefault(...)` mutations or `default_factory` rebinding | pure |
+| exact module-qualified or direct-imported `struct.unpack()` | pure, and its returned tuple can seed bounded tuple helper methods such as `.count()` |
 | trusted `zlib.decompress()` module-qualified calls, plus bytes slices/split elements derived from those tracked outputs when they feed `.decode()` / `.splitlines()` chains | pure |
 | trusted `difflib.unified_diff()` module-qualified calls and exact unaliased direct imports | pure |
 | exact unaliased direct imports of `github.Github()` | exec |
@@ -119,6 +122,7 @@ Runtime ask policy:
 
 Incrementally mutated exact receiver-path list values such as `inv[current]` stay pure only when the builder remains unanimously string-backed across trusted `append` / `insert` / `extend` updates, no alias or non-helper escape invalidates the path, no same-root alternate-key write overwrites the family, and later reads stay on that same bounded receiver path. Direct dict-subscript iteration is now also pure for value-equivalent exact-key reads such as `inv[current]` builders followed by `inv['literal']` when the key value is proven exactly, including bounded exact derivations like `line.split(...)[1].strip()` and iterated exact literal lines; mixed-line or dynamic-origin derived keys remain conservative without branch/value proof.
 | `hashlib.sha1()` / `hashlib.sha256()` and tracked hash-object helpers such as `.digest()`, `.hexdigest()`, and `.copy()` | pure |
+| builtin `int.from_bytes()` when `int` is not shadowed locally, plus bounded downstream `int` helpers on the assigned result such as `.bit_length()` and `.to_bytes()` | pure |
 | exact unaliased direct imports of `kiota_abstractions.request_information.RequestInformation()` | pure when called with zero positional args, zero keyword args, and no `**kwargs` |
 | exact unaliased direct imports of `tabulate.tabulate()` | pure when `tablefmt=` is absent or a literal string and no `**kwargs` is passed |
 | exact unaliased direct imports of `tabulate.tabulate_formats` when iterated as format-name strings, such as `for f in tabulate_formats: f.lower()` | pure |
@@ -150,6 +154,8 @@ Bounded tuple/list slot provenance can now also carry datetime-like receivers th
 Positive exact-iterable membership inside inline conditional expressions can also narrow a receiver to `string` for downstream string methods like `item.lower()`. Negated membership, scalar-string membership, unrelated guards, and broader statement/body guard propagation stay conservative.
 
 Tracked `bytes` and `bytearray` receivers now also seed bounded `decode(...)` string chaining when the receiver provenance is already known, so patterns like `blob.decode("utf8").replace(...)` or `data.decode("utf8").split(",")` stay `pure` without broadening unknown binary receivers.
+
+Tracked `Path` provenance now also survives bounded same-scope helper params, `list([...]).pop()` stack patterns, empty-list `append(...)` / `extend(...)` candidate builders that stay unanimously path-backed, and sorted unions of path iterables such as `sorted(seen | {p.resolve() for p in extra_required})`. Conditional-expression receivers like `p = a if cond else b` only stay tracked when both branches are already Path-backed.
 
 #### Tempfile
 

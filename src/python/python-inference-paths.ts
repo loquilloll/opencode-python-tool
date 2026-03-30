@@ -85,6 +85,15 @@ export function trackedPathValue(node: Node | null, current: Scope, seenFactorie
   const method = tail(call)
   const fn = node.childForFieldName("function")
   const receiver = fn?.type === "attribute" ? fn.childForFieldName("object") : null
+  if (method === "pop" && receiver?.type === "identifier") {
+    const input = args(node)
+    if (input.positional.length <= 1 && Object.keys(input.keyword).length === 0) {
+      const direct = iteratedPathInstance(current, receiver.text)
+      if (direct) return direct
+      const resolved = resolvedName(receiver, current)
+      if (resolved && resolved !== receiver.text) return iteratedPathInstance(current, resolved)
+    }
+  }
   const base = trackedPathValue(receiver, current)
   if (!base) return
 
@@ -123,19 +132,22 @@ export function iteratedPathValue(node: Node | null, current: Scope): Value | un
     if (base && (subscript?.type === "slice" || subscript?.text.includes(":"))) return { dynamic: true }
   }
 
-  if (node.type === "list" || node.type === "tuple") {
+  if (node.type === "binary_operator") {
+    const left = node.childForFieldName("left")
+    const right = node.childForFieldName("right")
+    if (iteratedPathValue(left, current) && iteratedPathValue(right, current) && node.text.includes("|")) {
+      return { dynamic: true }
+    }
+  }
+
+  if (node.type === "list" || node.type === "tuple" || node.type === "set") {
     const items = node.namedChildren
     if (items.length > 0 && items.every((child) => trackedPathValue(child, current))) return { dynamic: true }
   }
 
-  if (node.type === "generator_expression") {
-    const body = node.childForFieldName("body")
-    const clause = node.namedChildren.find((child) => child.type === "for_in_clause")
-    const target = clause?.childForFieldName("left")
-    const source = clause?.childForFieldName("right")
-    if (body?.type === "identifier" && target?.type === "identifier" && body.text === target.text) {
-      return iteratedPathValue(source ?? null, current)
-    }
+  if (node.type === "generator_expression" || node.type === "list_comprehension" || node.type === "set_comprehension") {
+    const direct = seededComprehensionPathValue(node, current)
+    if (direct) return direct
   }
 
   if (node.type !== "call") return
@@ -144,6 +156,13 @@ export function iteratedPathValue(node: Node | null, current: Scope): Value | un
   const method = call ? tail(call) : undefined
   const receiver = fn?.type === "attribute" ? fn.childForFieldName("object") : null
   if (call === "sorted") {
+    const effect = classifyBuiltinPureCall(call, node, args(node), current)
+    if (effect?.atom === "pure.compute") {
+      const source = firstArgumentNode(node)
+      return iteratedPathValue(source, current)
+    }
+  }
+  if (call === "list" || call === "tuple" || call === "set") {
     const effect = classifyBuiltinPureCall(call, node, args(node), current)
     if (effect?.atom === "pure.compute") {
       const source = firstArgumentNode(node)
@@ -187,6 +206,45 @@ function enumeratedPathValue(node: Node | null, current: Scope): Value | undefin
   if (effect?.atom !== "pure.compute") return
   const source = firstArgumentNode(node)
   return iteratedPathValue(source, current)
+}
+
+function seededComprehensionPathValue(node: Node, current: Scope): Value | undefined {
+  const body = node.childForFieldName("body")
+  const clause = node.namedChildren.find((child) => child.type === "for_in_clause")
+  const target = clause?.childForFieldName("left")
+  const source = clause?.childForFieldName("right")
+  const seeded = new Map(rebindPathValues(target ?? null, source ?? null, current).map((item) => [item.name, item.value] as const))
+  if (seeded.size === 0 || !body) return
+
+  if (body.type === "identifier") return seeded.get(body.text)
+
+  if (body.type === "attribute") {
+    const receiver = body.childForFieldName("object")
+    const attribute = body.childForFieldName("attribute")?.text
+    if (attribute === "parent" && receiver?.type === "identifier" && seeded.has(receiver.text)) return { dynamic: true }
+  }
+
+  if (body.type !== "call") return
+  const fn = body.childForFieldName("function")
+  if (fn?.type !== "attribute") return
+  const receiver = fn.childForFieldName("object")
+  const method = fn.childForFieldName("attribute")?.text
+  if (receiver?.type !== "identifier" || !method) return
+  const base = seeded.get(receiver.text)
+  if (!base) return
+  if (PATH_DYNAMIC_RETURNING_METHODS.has(method)) return { dynamic: true }
+  if (method !== "joinpath") return
+
+  const input = args(body)
+  if (
+    base.dynamic ||
+    input.positional.length === 0 ||
+    input.positional.some((item) => item?.dynamic || item?.literal === undefined) ||
+    base.literal === undefined
+  ) {
+    return { dynamic: true }
+  }
+  return { dynamic: false, literal: path.join(base.literal, ...input.positional.map((item) => item!.literal!)) }
 }
 
 export function rebindPathValues(target: Node | null, source: Node | null, current: Scope) {

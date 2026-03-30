@@ -245,6 +245,217 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("tracks list-pop Path receivers and helper-path params in runtime metadata", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const context = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "stack = list([root / 'main.py'])",
+              "while stack:",
+              "    current = stack.pop()",
+              "    current.read_text()",
+              "    target = current.parent / 'helper'",
+              "    candidates = [target.with_suffix('.ts'), target / 'index.ts']",
+              "    for c in candidates:",
+              "        c.exists()",
+              "        c.relative_to(root).as_posix()",
+              "def parse_index(path):",
+              "    data = path.read_bytes()",
+              "    return data.hex()",
+              "parse_index(Path('src/main.py'))",
+            ].join("\n"),
+            args: [],
+            description: "path stack and helper params",
+          },
+          context,
+        )
+
+        expect(getAsk(context, "python")?.patterns).toEqual(expect.arrayContaining(["read:<dynamic>", "unknown:callable:parse_index"]))
+        expect(getAsk(context, "python")?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:current.read_text", "unknown:callable:c.exists", "unknown:callable:c.relative_to", "unknown:callable:path.read_bytes"]))
+        expect(context.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "current.read_text", pattern: "read:<dynamic>", canonicalSource: "pathlib.Path.read_text" }),
+            expect.objectContaining({ kind: "pure", call: "target.with_suffix", pattern: "pure:target.with_suffix" }),
+            expect.objectContaining({ kind: "read", call: "c.exists", pattern: "read:<dynamic>", canonicalSource: "pathlib.Path.exists" }),
+            expect.objectContaining({ kind: "pure", call: "c.relative_to", pattern: "pure:c.relative_to", canonicalSource: "pathlib.Path.relative_to" }),
+            expect.objectContaining({ kind: "pure", call: "c.relative_to.as_posix", pattern: "pure:c.relative_to.as_posix" }),
+            expect.objectContaining({ kind: "read", call: "path.read_bytes", path: toSlash(path.join(worktree, "src/main.py")), canonicalSource: "pathlib.Path.read_bytes" }),
+            expect.objectContaining({ kind: "pure", call: "data.hex", pattern: "pure:data.hex" }),
+          ]),
+        )
+      })
+    })
+
+    it("tracks sorted Path unions and keeps mixed mutation-built path lists conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const positiveContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "seen = {root / 'a.py'}",
+              "extra_required = {root / 'b.py'}",
+              "expected = sorted(seen | {p.resolve() for p in extra_required})",
+              "for source in expected:",
+              "    source.relative_to(root).as_posix()",
+            ].join("\n"),
+            args: [],
+            description: "sorted path union relative_to",
+          },
+          positiveContext,
+        )
+
+        expect(getAsk(positiveContext, "python")?.patterns).toEqual(["read:<dynamic>"])
+        expect(positiveContext.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "source.relative_to", pattern: "pure:source.relative_to" }),
+            expect.objectContaining({ kind: "pure", call: "source.relative_to.as_posix", pattern: "pure:source.relative_to.as_posix" }),
+          ]),
+        )
+
+        const mixedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "def resolve_relative(base):",
+              "    start = base.parent / 'helper'",
+              "    candidates = []",
+              "    candidates.append(start)",
+              "    candidates.append('bad')",
+              "    for candidate in candidates:",
+              "        candidate.exists()",
+              "root = Path('src/main.py')",
+              "resolve_relative(root)",
+            ].join("\n"),
+            args: [],
+            description: "mixed helper path candidates",
+          },
+          mixedContext,
+        )
+
+        expect(getAsk(mixedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:candidate.exists"]))
+      })
+    })
+
+    it("keeps call-form __setitem__ mutations on unknown permission patterns for tracked iterables", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const stringContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "lines = Path('f').read_text().splitlines()",
+              "lines.__setitem__(0, obj)",
+              "for line in lines:",
+              "    line.strip()",
+            ].join("\n"),
+            args: [],
+            description: "string __setitem__ mutation",
+          },
+          stringContext,
+        )
+
+        expect(getAsk(stringContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:line.strip"]))
+
+        const pathContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "renames = [(Path('a'), Path('b'))]",
+              "renames.__setitem__(0, ('x', 'y'))",
+              "for old_path, new_path in renames:",
+              "    old_path.exists()",
+            ].join("\n"),
+            args: [],
+            description: "path tuple __setitem__ mutation",
+          },
+          pathContext,
+        )
+
+        expect(getAsk(pathContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:old_path.exists"]))
+
+        const receiverContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "current = 'alpha'",
+              "inv = {}",
+              "inv[current] = []",
+              "inv[current].append('x')",
+              "inv[current].__setitem__(0, obj)",
+              "for item in inv[current]:",
+              "    item.strip()",
+            ].join("\n"),
+            args: [],
+            description: "receiver path __setitem__ mutation",
+          },
+          receiverContext,
+        )
+
+        expect(getAsk(receiverContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.strip"]))
+
+        const boundAliasContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "current = 'alpha'",
+              "other = current",
+              "inv = {}",
+              "inv[current] = []",
+              "inv[current].append('x')",
+              "setter = inv[other].__setitem__",
+              "setter(0, obj)",
+              "for item in inv[current]:",
+              "    item.strip()",
+            ].join("\n"),
+            args: [],
+            description: "bound receiver path __setitem__ alias",
+          },
+          boundAliasContext,
+        )
+
+        expect(getAsk(boundAliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.strip"]))
+
+        const helperAliasContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "def leaf(entries):",
+              "    for item in entries:",
+              "        item.strip()",
+              "current = 'alpha'",
+              "other = current",
+              "inv = {}",
+              "inv[current] = []",
+              "inv[current].append('x')",
+              "setter = inv[other].__setitem__",
+              "setter(0, obj)",
+              "leaf(inv[current])",
+            ].join("\n"),
+            args: [],
+            description: "helper bound receiver path __setitem__ alias",
+          },
+          helperAliasContext,
+        )
+
+        expect(getAsk(helperAliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.strip"]))
+      })
+    })
+
     it("tracks parenthesized Path read_bytes receivers into bytes decode chains in runtime metadata", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -1124,6 +1335,9 @@ describe("python tool runtime", () => {
               "num = 7",
               "num.bit_length()",
               "num.to_bytes(1, 'big')",
+              "count = int.from_bytes(b'\\x00\\x07', 'big')",
+              "count.bit_length()",
+              "count.to_bytes(1, 'big')",
               "flt = 1.5",
               "flt.hex()",
               "flt.is_integer()",
@@ -1162,6 +1376,9 @@ describe("python tool runtime", () => {
             expect.objectContaining({ kind: "pure", call: "view.release", pattern: "pure:view.release" }),
             expect.objectContaining({ kind: "pure", call: "num.bit_length", pattern: "pure:num.bit_length" }),
             expect.objectContaining({ kind: "pure", call: "num.to_bytes", pattern: "pure:num.to_bytes" }),
+            expect.objectContaining({ kind: "pure", call: "int.from_bytes", pattern: "pure:int.from_bytes" }),
+            expect.objectContaining({ kind: "pure", call: "count.bit_length", pattern: "pure:count.bit_length" }),
+            expect.objectContaining({ kind: "pure", call: "count.to_bytes", pattern: "pure:count.to_bytes" }),
             expect.objectContaining({ kind: "pure", call: "flt.hex", pattern: "pure:flt.hex" }),
             expect.objectContaining({ kind: "pure", call: "flt.is_integer", pattern: "pure:flt.is_integer" }),
             expect.objectContaining({ kind: "pure", call: "comp.conjugate", pattern: "pure:comp.conjugate" }),
@@ -1233,6 +1450,14 @@ describe("python tool runtime", () => {
               "range = maker",
               "rng = range(3)",
               "rng.count(1)",
+              "class FakeInt:",
+              "    @staticmethod",
+              "    def from_bytes(data, order):",
+              "        return data",
+              "int = FakeInt",
+              "value = int.from_bytes(b'\\x00\\x07', 'big')",
+              "value.bit_length()",
+              "value.to_bytes(1, 'big')",
             ].join("\n"),
             args: [],
             description: "shadowed built-in type constructors",
@@ -1242,20 +1467,24 @@ describe("python tool runtime", () => {
 
         const ask = getAsk(context, "python")
         expect(ask?.patterns).toEqual(
-          expect.arrayContaining([
-            "unknown:callable:factory",
-            "unknown:callable:blob.hex",
-            "unknown:callable:maker",
-            "unknown:callable:rng.count",
-          ]),
-        )
-        expect(ask?.patterns).not.toEqual(
-          expect.arrayContaining([
-            "pure:blob.hex",
-            "pure:rng.count",
-          ]),
-        )
-      })
+            expect.arrayContaining([
+              "unknown:callable:factory",
+              "unknown:callable:blob.hex",
+              "unknown:callable:maker",
+              "unknown:callable:rng.count",
+              "unknown:callable:FakeInt.from_bytes",
+              "unknown:callable:value.bit_length",
+              "unknown:callable:value.to_bytes",
+            ]),
+          )
+          expect(ask?.patterns).not.toEqual(
+            expect.arrayContaining([
+              "pure:blob.hex",
+              "pure:rng.count",
+              "pure:int.from_bytes",
+            ]),
+          )
+        })
     })
 
     it("keeps Path replace on write permission patterns", async () => {

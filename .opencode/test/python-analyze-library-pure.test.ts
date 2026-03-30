@@ -1431,6 +1431,107 @@ describe("python analyzer", () => {
     })
   })
 
+  describe("exact stdlib trust-gated classification", () => {
+    it("classifies module-qualified and direct-imported fnmatch.fnmatch and struct.unpack", async () => {
+      const moduleEvents = await analyze(
+        [
+          "import fnmatch",
+          "fnmatch.fnmatch('notes.txt', '*.txt')",
+          "import struct",
+          "values = struct.unpack('>H2s', blob)",
+          "values.count(7)",
+        ].join("\n"),
+      )
+
+      const directImportEvents = await analyze(
+        [
+          "from fnmatch import fnmatch",
+          "fnmatch('notes.txt', '*.txt')",
+          "from struct import unpack",
+          "values = unpack('>H2s', blob)",
+          "values.count(7)",
+        ].join("\n"),
+      )
+
+      expect(moduleEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "fnmatch.fnmatch" }, { kind: "pure", call: "struct.unpack" }, { kind: "pure", call: "values.count" }]))
+      expect(moduleEvents).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:fnmatch.fnmatch" }, { kind: "unknown", call: "callable:struct.unpack" }, { kind: "unknown", call: "callable:values.count" }]))
+      expect(directImportEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "fnmatch.fnmatch" }, { kind: "pure", call: "struct.unpack" }, { kind: "pure", call: "values.count" }]))
+      expect(directImportEvents).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:fnmatch.fnmatch" }, { kind: "unknown", call: "callable:struct.unpack" }]))
+    })
+
+    it("keeps aliased, rebound, and shadowed exact stdlib forms conservative", async () => {
+      const aliasedModuleEvents = await analyze(
+        [
+          "import fnmatch as fm",
+          "fm.fnmatch('notes.txt', '*.txt')",
+          "import struct as st",
+          "st.unpack('>H2s', blob)",
+        ].join("\n"),
+      )
+
+      const aliasedLeafEvents = await analyze(
+        [
+          "from fnmatch import fnmatch as matches",
+          "matches('notes.txt', '*.txt')",
+          "from struct import unpack as unpack_bytes",
+          "values = unpack_bytes('>H2s', blob)",
+          "values.count(7)",
+        ].join("\n"),
+      )
+
+      const reboundEvents = await analyze(
+        [
+          "import fnmatch",
+          "fnmatch.fnmatch = custom",
+          "fnmatch.fnmatch('notes.txt', '*.txt')",
+          "import struct",
+          "alias = struct",
+          "alias.unpack = custom",
+          "values = struct.unpack('>H2s', blob)",
+          "values.count(7)",
+        ].join("\n"),
+      )
+
+      expect(aliasedModuleEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:fnmatch.fnmatch" }, { kind: "unknown", call: "callable:struct.unpack" }]))
+      expect(aliasedLeafEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:fnmatch.fnmatch" }, { kind: "unknown", call: "callable:struct.unpack" }, { kind: "unknown", call: "callable:values.count" }]))
+      expect(reboundEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:fnmatch.fnmatch" }, { kind: "unknown", call: "callable:struct.unpack" }, { kind: "unknown", call: "callable:values.count" }]))
+      expect(reboundEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "fnmatch.fnmatch" }, { kind: "pure", call: "struct.unpack" }]))
+    })
+  })
+
+  describe("builtin int.from_bytes classification", () => {
+    it("classifies int.from_bytes and tracks returned int helpers", async () => {
+      const events = await analyze(
+        [
+          "value = int.from_bytes(b'\\x00\\x07', 'big')",
+          "value.bit_length()",
+          "value.to_bytes(1, 'big')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "int.from_bytes" }, { kind: "pure", call: "value.bit_length" }, { kind: "pure", call: "value.to_bytes" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:int.from_bytes" }, { kind: "unknown", call: "callable:value.bit_length" }, { kind: "unknown", call: "callable:value.to_bytes" }]))
+    })
+
+    it("keeps int.from_bytes conservative when int is shadowed", async () => {
+      const events = await analyze(
+        [
+          "class FakeInt:",
+          "    @staticmethod",
+          "    def from_bytes(data, order):",
+          "        return data",
+          "int = FakeInt",
+          "value = int.from_bytes(b'\\x00\\x07', 'big')",
+          "value.bit_length()",
+          "value.to_bytes(1, 'big')",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:FakeInt.from_bytes" }, { kind: "unknown", call: "callable:value.bit_length" }, { kind: "unknown", call: "callable:value.to_bytes" }]))
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "int.from_bytes" }]))
+    })
+  })
+
   describe("difflib classification", () => {
     it("classifies module-qualified and direct-imported difflib.unified_diff as pure", async () => {
       const moduleEvents = await analyze(

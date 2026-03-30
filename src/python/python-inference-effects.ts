@@ -98,6 +98,7 @@ export function classifyResponseJson(call: string, node: Node, input: Args, curr
 function builtinPurityTarget(call: string) {
   if (EXACT_PURE_CALLS.has(call)) return call
   if (call === "dict.fromkeys") return "dict"
+  if (call === "int.from_bytes") return "int"
   if (SHADOW_GUARDED_PURE_BUILTINS.has(call)) return call
   if (STANDARD_EXCEPTION_BUILTINS.has(call)) return call
 }

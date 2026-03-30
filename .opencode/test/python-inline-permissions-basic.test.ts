@@ -3614,6 +3614,98 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("classifies exact stdlib walk, fnmatch, struct, and int.from_bytes without widening non-exact forms", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const exactContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import os",
+              "os.walk('docs')",
+              "from os import walk",
+              "walk('src')",
+              "import fnmatch",
+              "fnmatch.fnmatch('notes.txt', '*.txt')",
+              "from fnmatch import fnmatch",
+              "fnmatch('notes.txt', '*.txt')",
+              "import struct",
+              "values = struct.unpack('>H2s', blob)",
+              "values.count(7)",
+              "from struct import unpack",
+              "more_values = unpack('>H2s', blob)",
+              "more_values.count(7)",
+              "value = int.from_bytes(b'\\x00\\x07', 'big')",
+              "value.bit_length()",
+            ].join("\n"),
+            args: [],
+            description: "exact stdlib trust-gated calls",
+          },
+          exactContext,
+        )
+
+        expect(getAsk(exactContext, "python")).toBeUndefined()
+        expect(exactContext.metadatas[0]?.metadata?.permissionPatterns).toEqual([])
+        expect(exactContext.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "os.walk", path: path.join(worktree, "docs") }),
+            expect.objectContaining({ kind: "read", call: "os.walk", path: path.join(worktree, "src") }),
+            expect.objectContaining({ kind: "pure", call: "fnmatch.fnmatch", pattern: "pure:fnmatch.fnmatch" }),
+            expect.objectContaining({ kind: "pure", call: "struct.unpack", pattern: "pure:struct.unpack" }),
+            expect.objectContaining({ kind: "pure", call: "values.count", pattern: "pure:values.count" }),
+            expect.objectContaining({ kind: "pure", call: "more_values.count", pattern: "pure:more_values.count" }),
+            expect.objectContaining({ kind: "pure", call: "int.from_bytes", pattern: "pure:int.from_bytes" }),
+            expect.objectContaining({ kind: "pure", call: "value.bit_length", pattern: "pure:value.bit_length" }),
+          ]),
+        )
+
+        const conservativeContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import os as operating_system",
+              "operating_system.walk('docs')",
+              "import os",
+              "os.walk = custom",
+              "os.walk('docs')",
+              "from fnmatch import fnmatch as matches",
+              "matches('notes.txt', '*.txt')",
+              "import fnmatch",
+              "fnmatch.fnmatch = custom",
+              "fnmatch.fnmatch('notes.txt', '*.txt')",
+              "import struct as st",
+              "st.unpack('>H2s', blob)",
+              "import struct",
+              "alias = struct",
+              "alias.unpack = custom",
+              "values = struct.unpack('>H2s', blob)",
+              "values.count(7)",
+              "class FakeInt:",
+              "    @staticmethod",
+              "    def from_bytes(data, order):",
+              "        return data",
+              "int = FakeInt",
+              "int.from_bytes(b'\\x00\\x07', 'big')",
+            ].join("\n"),
+            args: [],
+            description: "non exact stdlib guardrails",
+          },
+          conservativeContext,
+        )
+
+        expect(getAsk(conservativeContext, "python")?.patterns).toEqual(
+          expect.arrayContaining([
+            "unknown:callable:os.walk",
+            "unknown:callable:fnmatch.fnmatch",
+            "unknown:callable:struct.unpack",
+            "unknown:callable:values.count",
+            "unknown:callable:FakeInt.from_bytes",
+          ]),
+        )
+      })
+    })
+
     it("skips python ask for exact direct-imported Github constructors and keeps other forms conservative", async () => {
       await withWorkspace(async ({ worktree }) => {
         const directContext = createMockContext({ worktree, directory: worktree })

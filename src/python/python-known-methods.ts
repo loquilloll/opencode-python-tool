@@ -118,6 +118,7 @@ export const TRUSTED_CALL_POLICIES = new Map<string, TrustedCallPolicy>([
   ["collections.Counter", "resolved-module"],
   ["collections.defaultdict", "resolved-module"],
   ["difflib.unified_diff", "module-qualified-or-exact-direct-import"],
+  ["fnmatch.fnmatch", "module-qualified-or-exact-direct-import"],
   ["github.Github", "exact-direct-import"],
   ["hashlib.sha1", "resolved-module"],
   ["hashlib.sha256", "resolved-module"],
@@ -125,8 +126,10 @@ export const TRUSTED_CALL_POLICIES = new Map<string, TrustedCallPolicy>([
   ["importlib.metadata.version", "module-binding-or-direct-import"],
   ["kiota_abstractions.request_information.RequestInformation", "exact-direct-import"],
   ["mypy.api.run", "module-binding-or-direct-import"],
+  ["os.walk", "module-qualified-or-exact-direct-import"],
   ["pytest.main", "resolved-module"],
   ["re.compile", "resolved-module"],
+  ["struct.unpack", "module-qualified-or-exact-direct-import"],
   ["tabulate.tabulate", "exact-direct-import"],
   ["zlib.decompress", "resolved-module"],
 ])

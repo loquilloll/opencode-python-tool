@@ -526,6 +526,12 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope, 
   const input = args(node)
   if (!trustedCallWithPolicy(node.childForFieldName("function"), call, current)) return
   if (call === "re.compile") return "regex-pattern"
+  if (call === "int.from_bytes") {
+    const effect = classifyBuiltinPureCall(call, node, input, current)
+    if (effect?.atom === "pure.compute") return "int"
+    return
+  }
+  if (call === "struct.unpack") return "tuple"
   if (call === "dir" || call === "sorted") {
     const effect = classifyBuiltinPureCall(call, node, input, current)
     if (effect?.atom === "pure.compute") return "list"

@@ -355,6 +355,192 @@ describe("python analyzer", () => {
       expect(events).toEqual(expect.arrayContaining(cases.map(([, event]) => event)))
     })
 
+    it("classifies exact os.walk calls and keeps non-exact forms conservative", async () => {
+      const moduleEvents = await analyze(["import os", "os.walk('docs')"].join("\n"))
+      const directImportEvents = await analyze(["from os import walk", "walk('src')"].join("\n"))
+      const aliasedEvents = await analyze(["import os as operating_system", "operating_system.walk('docs')"].join("\n"))
+      const reboundEvents = await analyze(["import os", "os = object()", "os.walk('docs')"].join("\n"))
+      const memberMutationEvents = await analyze(["import os", "os.walk = custom", "os.walk('docs')"].join("\n"))
+      const aliasMutationEvents = await analyze(["import os", "alias = os", "alias.walk = custom", "os.walk('docs')"].join("\n"))
+
+      expect(moduleEvents).toEqual(expect.arrayContaining([{ kind: "read", call: "os.walk", path: "docs" }]))
+      expect(directImportEvents).toEqual(expect.arrayContaining([{ kind: "read", call: "os.walk", path: "src" }]))
+      for (const events of [aliasedEvents, reboundEvents, memberMutationEvents, aliasMutationEvents]) {
+        expect(events).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:os.walk" }]))
+        expect(events).not.toEqual(expect.arrayContaining([{ kind: "read", call: "os.walk" }]))
+      }
+    })
+
+    it("tracks list-pop Path receivers into read and pure Path helper chains", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "stack = list([root / 'main.py'])",
+          "while stack:",
+          "    current = stack.pop()",
+          "    current.read_text()",
+          "    target = current.parent / 'helper'",
+          "    candidates = [target.with_suffix('.ts'), target / 'index.ts']",
+          "    for c in candidates:",
+          "        c.exists()",
+          "        c.relative_to(root).as_posix()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "read", call: "current.read_text", dynamicPath: true, sourceCall: "pathlib.Path.read_text" }),
+          expect.objectContaining({ kind: "pure", call: "target.with_suffix", sourceCall: "pathlib.Path.with_suffix" }),
+          expect.objectContaining({ kind: "read", call: "c.exists", dynamicPath: true, sourceCall: "pathlib.Path.exists" }),
+          expect.objectContaining({ kind: "pure", call: "c.relative_to", sourceCall: "pathlib.Path.relative_to" }),
+          expect.objectContaining({ kind: "pure", call: "c.relative_to.as_posix" }),
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:current.read_text" }, { kind: "unknown", call: "callable:target.with_suffix" }, { kind: "unknown", call: "callable:c.exists" }, { kind: "unknown", call: "callable:c.relative_to" }]))
+    })
+
+    it("tracks helper Path params through read_bytes and mutation-built candidate lists", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "def parse_index(path):",
+          "    data = path.read_bytes()",
+          "    return data.hex()",
+          "def resolve_relative(base):",
+          "    start = base.parent / 'helper'",
+          "    candidates = []",
+          "    candidates.append(start)",
+          "    candidates.extend([start.with_suffix('.ts'), start / 'index.ts'])",
+          "    for candidate in candidates:",
+          "        if candidate.exists():",
+          "            return candidate.resolve()",
+          "root = Path('src/main.py')",
+          "parse_index(root)",
+          "resolve_relative(root)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          { kind: "read", call: "path.read_bytes", path: "src/main.py", sourceCall: "pathlib.Path.read_bytes" },
+          { kind: "pure", call: "data.hex" },
+          { kind: "read", call: "candidate.exists", dynamicPath: true, sourceCall: "pathlib.Path.exists" },
+          { kind: "read", call: "candidate.resolve", dynamicPath: true, sourceCall: "pathlib.Path.resolve" },
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:path.read_bytes" }, { kind: "unknown", call: "callable:candidate.exists" }, { kind: "unknown", call: "callable:candidate.resolve" }]))
+    })
+
+    it("tracks sorted Path unions into relative_to loops and keeps mixed candidate lists conservative", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "seen = {root / 'a.py'}",
+          "extra_required = {root / 'b.py'}",
+          "expected = sorted(seen | {p.resolve() for p in extra_required})",
+          "for source in expected:",
+          "    source.relative_to(root).as_posix()",
+        ].join("\n"),
+      )
+
+      const mixedEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "def resolve_relative(base):",
+          "    start = base.parent / 'helper'",
+          "    candidates = []",
+          "    candidates.append(start)",
+          "    candidates.append('bad')",
+          "    for candidate in candidates:",
+          "        candidate.exists()",
+          "root = Path('src/main.py')",
+          "resolve_relative(root)",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "pure", call: "source.relative_to", sourceCall: "pathlib.Path.relative_to" }), expect.objectContaining({ kind: "pure", call: "source.relative_to.as_posix" })]))
+      expect(mixedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:candidate.exists" }]))
+      expect(mixedEvents).not.toEqual(expect.arrayContaining([{ kind: "read", call: "candidate.exists" }]))
+    })
+
+    it("clears call-form __setitem__ mutations for tracked string and path iterables", async () => {
+      const stringEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "lines = Path('f').read_text().splitlines()",
+          "lines.__setitem__(0, obj)",
+          "for line in lines:",
+          "    line.strip()",
+        ].join("\n"),
+      )
+
+      const pathEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "renames = [(Path('a'), Path('b'))]",
+          "renames.__setitem__(0, ('x', 'y'))",
+          "for old_path, new_path in renames:",
+          "    old_path.exists()",
+        ].join("\n"),
+      )
+
+      const receiverEvents = await analyze(
+        [
+          "current = 'alpha'",
+          "inv = {}",
+          "inv[current] = []",
+          "inv[current].append('x')",
+          "inv[current].__setitem__(0, obj)",
+          "for item in inv[current]:",
+          "    item.strip()",
+        ].join("\n"),
+      )
+
+      expect(stringEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:line.strip" }]))
+      expect(stringEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "line.strip" }]))
+      expect(pathEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:old_path.exists" }]))
+      expect(pathEvents).not.toEqual(expect.arrayContaining([{ kind: "read", call: "old_path.exists" }]))
+      expect(receiverEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.strip" }]))
+      expect(receiverEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "item.strip" }]))
+
+      const boundAliasEvents = await analyze(
+        [
+          "current = 'alpha'",
+          "other = current",
+          "inv = {}",
+          "inv[current] = []",
+          "inv[current].append('x')",
+          "setter = inv[other].__setitem__",
+          "setter(0, obj)",
+          "for item in inv[current]:",
+          "    item.strip()",
+        ].join("\n"),
+      )
+
+      const helperAliasEvents = await analyze(
+        [
+          "def leaf(entries):",
+          "    for item in entries:",
+          "        item.strip()",
+          "current = 'alpha'",
+          "other = current",
+          "inv = {}",
+          "inv[current] = []",
+          "inv[current].append('x')",
+          "setter = inv[other].__setitem__",
+          "setter(0, obj)",
+          "leaf(inv[current])",
+        ].join("\n"),
+      )
+
+      expect(boundAliasEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.strip" }]))
+      expect(boundAliasEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "item.strip" }]))
+      expect(helperAliasEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.strip" }]))
+      expect(helperAliasEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "item.strip" }]))
+    })
+
     it("classifies Path.open modes and tracks returned Path helpers through assignments", async () => {
       const events = await analyze(
         [
@@ -903,6 +1089,9 @@ describe("python analyzer", () => {
           "num = 7",
           "num.bit_length()",
           "num.to_bytes(1, 'big')",
+          "count = int.from_bytes(b'\\x00\\x07', 'big')",
+          "count.bit_length()",
+          "count.to_bytes(1, 'big')",
           "flt = 1.5",
           "flt.hex()",
           "flt.is_integer()",
@@ -934,6 +1123,9 @@ describe("python analyzer", () => {
           { kind: "pure", call: "view.release" },
           { kind: "pure", call: "num.bit_length" },
           { kind: "pure", call: "num.to_bytes" },
+          { kind: "pure", call: "int.from_bytes" },
+          { kind: "pure", call: "count.bit_length" },
+          { kind: "pure", call: "count.to_bytes" },
           { kind: "pure", call: "flt.hex" },
           { kind: "pure", call: "flt.is_integer" },
           { kind: "pure", call: "comp.conjugate" },
@@ -990,6 +1182,14 @@ describe("python analyzer", () => {
           "range = maker",
           "rng = range(3)",
           "rng.count(1)",
+          "class FakeInt:",
+          "    @staticmethod",
+          "    def from_bytes(data, order):",
+          "        return data",
+          "int = FakeInt",
+          "value = int.from_bytes(b'\\x00\\x07', 'big')",
+          "value.bit_length()",
+          "value.to_bytes(1, 'big')",
         ].join("\n"),
       )
 
@@ -999,12 +1199,16 @@ describe("python analyzer", () => {
           { kind: "unknown", call: "callable:blob.hex" },
           { kind: "unknown", call: "callable:maker" },
           { kind: "unknown", call: "callable:rng.count" },
+          { kind: "unknown", call: "callable:FakeInt.from_bytes" },
+          { kind: "unknown", call: "callable:value.bit_length" },
+          { kind: "unknown", call: "callable:value.to_bytes" },
         ]),
       )
       expect(events).not.toEqual(
         expect.arrayContaining([
           { kind: "pure", call: "blob.hex" },
           { kind: "pure", call: "rng.count" },
+          { kind: "pure", call: "int.from_bytes" },
         ]),
       )
     })
