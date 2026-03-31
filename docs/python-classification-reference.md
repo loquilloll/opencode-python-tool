@@ -89,6 +89,7 @@ Runtime ask policy:
 | Tracked-Path helpers such as `.absolute()`, `.as_posix()`, `.as_uri()`, `.expanduser()`, `.full_match()`, `.is_absolute()`, `.is_relative_to()`, `.is_reserved()`, `.joinpath()`, `.match()`, `.relative_to()`, `.with_name()`, `.with_segments()`, `.with_stem()`, `.with_suffix()` | pure |
 | `dict.fromkeys` | pure (when `dict` is not shadowed locally) |
 | most builtin constructors/helpers from the Python builtins page such as `abs`, `aiter`, `all`, `anext`, `any`, `ascii`, `bin`, `bool`, `bytearray`, `bytes`, `callable`, `chr`, `classmethod`, `complex`, `delattr`, `dict`, `dir`, `divmod`, `enumerate`, `filter`, `float`, `format`, `frozenset`, `getattr`, `globals`, `hasattr`, `hash`, `hex`, `id`, `int`, `isinstance`, `issubclass`, `iter`, `len`, `list`, `locals`, `map`, `memoryview`, `next`, `object`, `oct`, `ord`, `pow`, `property`, `range`, `repr`, `reversed`, `round`, `set`, `setattr`, `slice`, `staticmethod`, `str`, `sum`, `super`, `tuple`, `vars`, `zip` | pure when the builtin name is not shadowed locally |
+| builtin `str(...)` when unshadowed | pure, and the returned value seeds downstream string receiver methods such as `str(path).startswith(...)` or `text = str(path); text.lower()` |
 | `max`, `min`, `sorted` | pure when the builtin name is not shadowed locally and no `key=` / `**kwargs` is passed |
 | `type(obj)` | pure when unshadowed and called with exactly one positional argument |
 | standard builtin exception constructors such as `ValueError`, `TypeError`, `RuntimeError`, and `AssertionError` | pure when the exception name is not shadowed locally; bare `raise <builtin-exception>` uses the same bounded rule |
@@ -155,7 +156,9 @@ Positive exact-iterable membership inside inline conditional expressions can als
 
 Tracked `bytes` and `bytearray` receivers now also seed bounded `decode(...)` string chaining when the receiver provenance is already known, so patterns like `blob.decode("utf8").replace(...)` or `data.decode("utf8").split(",")` stay `pure` without broadening unknown binary receivers.
 
-Tracked `Path` provenance now also survives bounded same-scope helper params, `list([...]).pop()` stack patterns, empty-list `append(...)` / `extend(...)` candidate builders that stay unanimously path-backed, and sorted unions of path iterables such as `sorted(seen | {p.resolve() for p in extra_required})`. Conditional-expression receivers like `p = a if cond else b` only stay tracked when both branches are already Path-backed.
+Tracked `Path` provenance now also survives bounded same-scope helper params, `list([...]).pop()` stack patterns, empty-list `append(...)` / `extend(...)` / `+= [...]` candidate builders that stay unanimously path-backed, and sorted unions of path iterables such as `sorted(seen | {p.resolve() for p in extra_required})`. Conditional path-candidate lists only stay tracked when both branches are already Path-backed.
+
+Bounded OCI policy-object string provenance now covers the exact `import oci; identity = oci.identity.IdentityClient(...); policies = oci.pagination.list_call_get_all_results(identity.list_policies, ...).data` seam: direct loops over `policy.statements` seed `statement.lower()` / `stmt.lower().strip()` as pure, while mutation, fake producers, shadowed `oci`, subscript replacement, and root monkeypatches stay conservative. The lambda-key family `p.name.lower` remains intentionally out of scope.
 
 #### Tempfile
 

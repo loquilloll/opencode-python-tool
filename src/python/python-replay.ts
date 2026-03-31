@@ -38,6 +38,8 @@ import {
   clearExactIteratedStringSetProvenance,
   clearExactStringSetProvenance,
   clearIteratedElementProvenance,
+  clearOciIdentityClientInstance,
+  clearOciPolicyIterableInstance,
   closeSqliteCursorInstance,
   containerInstance,
   directImportTarget,
@@ -52,9 +54,13 @@ import {
   iteratedElementInstance,
   iteratedExactStringTupleInstance,
   markExecutedSqliteCursorInstance,
+  name,
   resolveQualified,
   resolvedName,
   shouldBindDirectImport,
+  hasOciPolicyIterableInstance,
+  hasOciIdentityClientInstance,
+  hasTrustedModuleRoot,
   trustedAliasSource,
 } from "./python-scope"
 import { unwrapParenthesized } from "./python-inference-values"
@@ -103,6 +109,9 @@ const ITERATED_ELEMENT_INVALIDATING_METHODS = new Set(["append", "extend", "inse
 const TRACKED_MAPPING_VALUE_KINDS = new Set<ContainerKind>(["dict-list-values", "dict-set-values", "dict-counter-values"])
 const TRACKED_MAPPING_VALUE_INVALIDATING_METHODS = new Set(["setdefault", "update"])
 const OCI_MODEL_METADATA_ATTRIBUTES = new Set(["attribute_map", "swagger_types"])
+const OCI_POLICY_STRING_ATTRIBUTES = new Set(["name", "statements"])
+const OCI_POLICY_LIST_CALL = "oci.pagination.list_call_get_all_results"
+const OCI_TRUSTED_ROOT_MUTABLE_ATTRIBUTES = new Set(["pagination", "identity", "IdentityClient", "list_call_get_all_results"])
 const OCI_CREATE_CLUSTER_DETAILS_TARGETS = new Set([
   "oci.container_engine.models.CreateClusterDetails",
 ])
@@ -140,6 +149,62 @@ function seedTrustedOciModelMetadataMaps(current: Scope, name: string, target: s
   for (const attribute of OCI_MODEL_METADATA_ATTRIBUTES) {
     current.receiverContainers.set(`${name}.${attribute}`, { kind: "dict", deps: [name] })
   }
+}
+
+function isTrustedOciPolicyListSource(node: Node | null, current: Scope): boolean {
+  node = unwrapParenthesized(node)
+  if (!node) return false
+  if (node.type === "identifier") return hasOciPolicyIterableInstance(current, node.text)
+  if (node.type !== "attribute" || node.childForFieldName("attribute")?.text !== "data") return false
+  const object = unwrapParenthesized(node.childForFieldName("object"))
+  if (object?.type !== "call") return false
+  if (!hasTrustedModuleRoot(current, "oci")) return false
+  const call = resolvedName(object.childForFieldName("function"), current)
+  if (call !== OCI_POLICY_LIST_CALL) return false
+  const firstArg = object.childForFieldName("arguments")?.namedChildren[0] ?? null
+  if (firstArg?.type !== "attribute" || firstArg.childForFieldName("attribute")?.text !== "list_policies") return false
+  const receiver = firstArg.childForFieldName("object")
+  return receiver?.type === "identifier" && hasOciIdentityClientInstance(current, receiver.text)
+}
+
+function isDirectTrustedOciPolicyListSource(node: Node | null, current: Scope): boolean {
+  node = unwrapParenthesized(node)
+  return Boolean(node && node.type !== "identifier" && isTrustedOciPolicyListSource(node, current))
+}
+
+function seedTrustedOciPolicyFields(current: Scope, name: string) {
+  current.receiverContainers.set(`${name}.name`, { kind: "string", deps: [name] })
+  current.receiverContainers.set(`${name}.statements`, { kind: "list", deps: [name] })
+  current.receiverElementKinds.set(`${name}.statements`, { kind: "string", deps: [name] })
+}
+
+function rebindTrustedOciPolicyFields(target: Node | null, source: Node | null, current: Scope) {
+  if (!target) return [] as string[]
+  if (target.type === "identifier") {
+    return isTrustedOciPolicyListSource(source, current) ? [target.text] : []
+  }
+  if (!(target.type === "tuple" || target.type === "list" || target.type === "pattern_list" || target.type === "tuple_pattern" || target.type === "list_pattern")) {
+    return [] as string[]
+  }
+  const sourceCall = source?.type === "call" ? resolvedName(source.childForFieldName("function"), current) : undefined
+  if (sourceCall !== "enumerate") return [] as string[]
+  const enumerated = source?.childForFieldName("arguments")?.namedChildren[0] ?? null
+  if (!isTrustedOciPolicyListSource(enumerated, current)) return [] as string[]
+  const second = target.namedChildren[1]
+  if (!second) return [] as string[]
+  return assignedNames(second).filter((name) => name !== "_")
+}
+
+function isTrustedOciPolicyFieldAlias(node: Node | null, current: Scope) {
+  node = unwrapParenthesized(node)
+  if (!node || node.type !== "attribute") return false
+  const receiver = node.childForFieldName("object")
+  const attribute = node.childForFieldName("attribute")?.text
+  if (receiver?.type !== "identifier" || !attribute || !OCI_POLICY_STRING_ATTRIBUTES.has(attribute)) return false
+  const resolvedRoot = resolvedName(receiver, current) ?? receiver.text
+  const rawPath = `${receiver.text}.${attribute}`
+  const resolvedPath = `${resolvedRoot}.${attribute}`
+  return current.receiverContainers.has(rawPath) || current.receiverContainers.has(resolvedPath) || current.receiverElementKinds.has(rawPath) || current.receiverElementKinds.has(resolvedPath)
 }
 
 function seedTrustedTabulateFormatsElements(current: Scope, name: string, target: string | undefined) {
@@ -397,6 +462,7 @@ export function clearIndirectSetitemMutations(entry: TimelineEntry, helperReceiv
   }
   const receiverKind = containerInstance(entry.scope, receiverName)
   if (receiverKind === "list") {
+    clearOciPolicyIterableInstance(entry.scope, receiverName)
     clearIteratedElementProvenance(entry.scope, receiverName)
     clearIteratedPathProvenance(entry.scope, receiverName)
     clearIteratedContainerTupleProvenance(entry.scope, receiverName)
@@ -464,6 +530,26 @@ function clearTrustedStructRoot(current: Scope, receiver: Node | null) {
   clearTrustedModuleRoot(current, receiver, "struct")
 }
 
+function clearTrustedOciRoot(current: Scope, receiver: Node | null) {
+  if (!hasTrustedModuleRoot(current, "oci")) return
+  const raw = name(receiver)
+  const resolved = resolvedName(receiver, current) ?? raw
+  if (!raw || !resolved) return
+  const rawRoot = raw.split(".")[0]
+  const resolvedRoot = resolved.split(".")[0]
+  if (rawRoot !== "oci" && resolvedRoot !== "oci") return
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    const names = new Set<string>(["oci", rawRoot, resolvedRoot])
+    for (const key of scope.bindings.keys()) {
+      if (resolveQualified(key, current) === "oci") names.add(key)
+    }
+    for (const key of scope.trustedModuleRoots) {
+      if (key === "oci" || resolveQualified(key, current) === "oci") names.add(key)
+    }
+    for (const name of names) invalidateTrackedName(scope, name)
+  }
+}
+
 function clearTrustedOciModelMetadataMaps(current: Scope, receiver: Node | null) {
   if (receiver?.type !== "identifier") return
   const rawRoot = receiver.text
@@ -475,6 +561,28 @@ function clearTrustedOciModelMetadataMaps(current: Scope, receiver: Node | null)
       if (!root || !attribute || !OCI_MODEL_METADATA_ATTRIBUTES.has(attribute)) continue
       const resolvedKeyRoot = resolveQualified(root, current) ?? root
       if (root === rawRoot || resolvedKeyRoot === resolvedRoot) scope.receiverContainers.delete(key)
+    }
+  }
+}
+
+function clearTrustedOciPolicyFields(current: Scope, receiver: Node | null) {
+  if (receiver?.type !== "identifier") return
+  const rawRoot = receiver.text
+  const resolvedRoot = resolvedName(receiver, current) ?? rawRoot
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    for (const key of [...scope.receiverContainers.keys()]) {
+      const root = key.split(".")[0]
+      const attribute = key.split(".").pop()
+      if (!root || !attribute || !OCI_POLICY_STRING_ATTRIBUTES.has(attribute)) continue
+      const resolvedKeyRoot = resolveQualified(root, current) ?? root
+      if (root === rawRoot || resolvedKeyRoot === resolvedRoot) scope.receiverContainers.delete(key)
+    }
+    for (const key of [...scope.receiverElementKinds.keys()]) {
+      const root = key.split(".")[0]
+      const attribute = key.split(".").pop()
+      if (!root || !attribute || !OCI_POLICY_STRING_ATTRIBUTES.has(attribute)) continue
+      const resolvedKeyRoot = resolveQualified(root, current) ?? root
+      if (root === rawRoot || resolvedKeyRoot === resolvedRoot) scope.receiverElementKinds.delete(key)
     }
   }
 }
@@ -934,6 +1042,9 @@ export function replayRebindEntry(entry: TimelineEntry) {
   for (const seeded of rebindReceiverContainerKinds(target ?? null, rebindSource(entry.node) ?? null, entry.scope)) {
     entry.scope.receiverContainers.set(seeded.path, { kind: seeded.kind, deps: seeded.deps })
   }
+  for (const seeded of rebindTrustedOciPolicyFields(target ?? null, rebindSource(entry.node) ?? null, entry.scope)) {
+    seedTrustedOciPolicyFields(entry.scope, seeded)
+  }
   const exactStrings = exactIteratedStringSet(entry.scope, rebindSource(entry.node) ?? null)
   if (exactStrings) {
     if (target?.type === "identifier") {
@@ -977,7 +1088,12 @@ export function replayAssignmentEntry(
   const tupleContainerSlots = tupleContainerSlotKinds(right, entry.scope)
   const iteratedElement = iteratedContainerKind(right, entry.scope)
   const target = aliasTarget(right, entry.scope)
+  const trustedOciPolicyFieldAlias = isTrustedOciPolicyFieldAlias(right, entry.scope)
+  const trustedOciPolicyListLiteral = isDirectTrustedOciPolicyListSource(right, entry.scope)
   const leftResolved = left?.type === "identifier" ? resolvedName(left, entry.scope) : undefined
+  const previousContainer = left?.type === "identifier" ? containerInstance(entry.scope, left.text) : undefined
+  const previousIteratedPath = left?.type === "identifier" ? entry.scope.iteratedPathInstances.get(left.text) : undefined
+  const previousSeedablePathList = left?.type === "identifier" ? hasSeedablePathList(entry.scope, left.text) : false
   const escapedReceiverInfoPath = left?.type === "identifier" && right?.type === "subscript" ? trackableReceiverInfo(right)?.path : undefined
   const escapedReceiverPath = left?.type === "identifier" && right?.type === "subscript" ? canonicalReceiverPath(right, entry.scope) : undefined
   const escapedEquivalentPaths = left?.type === "identifier" && right?.type === "subscript" ? receiverEquivalentPaths(entry.scope, right) : undefined
@@ -996,6 +1112,7 @@ export function replayAssignmentEntry(
     clearHelperSiblingSubscriptReceiverPaths(entry.scope, helperReceiverElementKinds, leftInfo?.path, leftCanonicalPath, leftEquivalentPath)
     if (leftCanonicalPath) clearIteratedElementProvenance(entry.scope, leftCanonicalPath)
     if (base?.type === "identifier") {
+      clearOciPolicyIterableInstance(entry.scope, base.text)
       clearIteratedElementProvenance(entry.scope, base.text)
       clearIteratedExactStringTupleProvenance(entry.scope, base.text)
       clearIteratedContainerTupleProvenance(entry.scope, base.text)
@@ -1048,6 +1165,16 @@ export function replayAssignmentEntry(
     const attribute = left.childForFieldName("attribute")?.text
     if (attribute && OCI_MODEL_METADATA_ATTRIBUTES.has(attribute)) {
       clearTrustedOciModelMetadataMaps(entry.scope, left.childForFieldName("object"))
+    }
+    if (attribute && OCI_TRUSTED_ROOT_MUTABLE_ATTRIBUTES.has(attribute)) {
+      clearTrustedOciRoot(entry.scope, left.childForFieldName("object"))
+    }
+    if (attribute === "list_policies") {
+      const receiver = left.childForFieldName("object")
+      if (receiver?.type === "identifier") clearOciIdentityClientInstance(entry.scope, receiver.text)
+    }
+    if (attribute && OCI_POLICY_STRING_ATTRIBUTES.has(attribute)) {
+      clearTrustedOciPolicyFields(entry.scope, left.childForFieldName("object"))
     }
     if (attribute && DIFFLIB_MUTABLE_TRUSTED_ATTRIBUTES.has(attribute)) {
       clearTrustedDifflibRoot(entry.scope, left.childForFieldName("object"))
@@ -1122,6 +1249,20 @@ export function replayAssignmentEntry(
   }
 
   if (entry.node.type !== "assignment") {
+    if (
+      entry.node.type === "augmented_assignment" &&
+      left?.type === "identifier" &&
+      entry.node.text.includes("+=") &&
+      previousContainer === "list" &&
+      iteratedPath &&
+      (previousIteratedPath || previousSeedablePathList)
+    ) {
+      entry.scope.containerInstances.set(left.text, "list")
+      entry.scope.iteratedPathInstances.set(left.text, mergePathValues(previousIteratedPath, iteratedPath))
+      clearSeedablePathListProvenance(entry.scope, left.text)
+      finish()
+      return
+    }
     clearIteratedElementProvenance(entry.scope, left.text)
     clearIteratedExactStringTupleProvenance(entry.scope, left.text)
     clearIteratedContainerTupleProvenance(entry.scope, left.text)
@@ -1176,7 +1317,11 @@ export function replayAssignmentEntry(
     entry.scope.iteratedPathInstances.set(left.text, iteratedPath)
   }
 
-  if (localContainer) {
+  if (trustedOciPolicyListLiteral) {
+    entry.scope.ociPolicyIterableInstances.add(left.text)
+  }
+
+  if (localContainer && !trustedOciPolicyFieldAlias) {
     entry.scope.containerInstances.set(left.text, localContainer)
     if (iteratedElement) {
       entry.scope.iteratedElementInstances.set(left.text, iteratedElement)
@@ -1191,13 +1336,13 @@ export function replayAssignmentEntry(
     return
   }
 
-  if (iteratedElement) {
+  if (iteratedElement && !trustedOciPolicyFieldAlias) {
     entry.scope.iteratedElementInstances.set(left.text, iteratedElement)
     const iteratedAlias = right?.type === "subscript" ? (trackableReceiverInfo(right)?.path ?? canonicalReceiverPath(right, entry.scope)) : undefined
     if (iteratedAlias) entry.scope.bindings.set(left.text, iteratedAlias)
   }
 
-  if (target) {
+  if (target && !trustedOciPolicyFieldAlias && !trustedOciPolicyListLiteral) {
     const boundReceiver = directBoundSetitemReceiver(right, entry.scope) ?? (right?.type === "identifier" ? boundSetitemReceiver(entry.scope, right.text) : undefined)
     if (boundReceiver) entry.scope.boundSetitemReceivers.set(left.text, boundReceiver)
     entry.scope.bindings.set(left.text, target)
@@ -1213,6 +1358,10 @@ export function replayAssignmentEntry(
 
   if (assignedCall === "sqlite3.connect") {
     entry.scope.sqliteConnectionInstances.set(left.text, `sqlite-connection:${right.startIndex}`)
+  }
+
+  if (assignedCall === "oci.identity.IdentityClient" && hasTrustedModuleRoot(entry.scope, "oci")) {
+    entry.scope.ociIdentityClientInstances.add(left.text)
   }
 
   seedSqliteCursorInstance(entry.scope, left.text, right)
@@ -1562,6 +1711,7 @@ export function clearMutatedIteratedElementInstance(entry: TimelineEntry) {
     receiverName = parts.slice(0, -1).join(".") || undefined
   }
   if (!receiverName || !method || !ITERATED_ELEMENT_INVALIDATING_METHODS.has(method)) return
+  clearOciPolicyIterableInstance(entry.scope, receiverName)
   clearIteratedElementProvenance(entry.scope, receiverName)
   clearIteratedPathTupleProvenance(entry.scope, receiverName)
   clearExactStringSetProvenance(entry.scope, receiverName)
@@ -1606,6 +1756,47 @@ export function clearMutatedTrustedOciModelMetadataMaps(entry: TimelineEntry) {
   if (receiver?.type !== "identifier" || !attribute || attribute.dynamic || attribute.literal === undefined) return
   if (!OCI_MODEL_METADATA_ATTRIBUTES.has(attribute.literal)) return
   clearTrustedOciModelMetadataMaps(entry.scope, receiver)
+}
+
+export function clearMutatedTrustedOciPolicyFields(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const resolved = resolvedName(fn, entry.scope)
+  if (resolved !== "setattr") return
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const receiver = argNodes[0] ?? null
+  const attribute = exactNodeValue(entry.scope, argNodes[1] ?? null, entry.guards)
+  if (receiver?.type !== "identifier" || !attribute || attribute.dynamic || attribute.literal === undefined) return
+  if (!OCI_POLICY_STRING_ATTRIBUTES.has(attribute.literal)) return
+  clearTrustedOciPolicyFields(entry.scope, receiver)
+}
+
+export function clearMutatedOciIdentityClientMethods(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const resolved = resolvedName(fn, entry.scope)
+  if (resolved !== "setattr") return
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const receiver = argNodes[0] ?? null
+  const attribute = exactNodeValue(entry.scope, argNodes[1] ?? null, entry.guards)
+  if (receiver?.type !== "identifier" || !attribute || attribute.dynamic || attribute.literal !== "list_policies") return
+  clearOciIdentityClientInstance(entry.scope, receiver.text)
+}
+
+export function clearMutatedTrustedOciRoot(entry: TimelineEntry) {
+  if (entry.kind !== "call") return
+  const fn = entry.node.childForFieldName("function")
+  if (fn?.type !== "identifier") return
+  const resolved = resolvedName(fn, entry.scope)
+  if (resolved !== "setattr") return
+  const argNodes = entry.node.childForFieldName("arguments")?.namedChildren ?? []
+  const receiver = argNodes[0] ?? null
+  const attribute = exactNodeValue(entry.scope, argNodes[1] ?? null, entry.guards)
+  if (!receiver || !attribute || attribute.dynamic || attribute.literal === undefined) return
+  if (!OCI_TRUSTED_ROOT_MUTABLE_ATTRIBUTES.has(attribute.literal)) return
+  clearTrustedOciRoot(entry.scope, receiver)
 }
 
 export function clearMutatedTrustedDifflibCalls(entry: TimelineEntry) {
@@ -1933,6 +2124,9 @@ export function discoverHelperParamSeeds(
       clearMutatedMappingValueContainerKind(entry)
       clearMutatedClassModuleReceiverContainer(entry)
       clearMutatedTrustedOciModelMetadataMaps(entry)
+      clearMutatedTrustedOciPolicyFields(entry)
+      clearMutatedOciIdentityClientMethods(entry)
+      clearMutatedTrustedOciRoot(entry)
       clearMutatedTrustedDifflibCalls(entry)
       clearMutatedTrustedFnmatchCalls(entry)
       clearMutatedTrustedHashlibCalls(entry)
@@ -2007,6 +2201,9 @@ export function discoverHelperReturnKinds(
     clearMutatedTrustedOsCalls(entry)
     clearMutatedTrustedStructCalls(entry)
     clearMutatedTrustedOciModelMetadataMaps(entry)
+    clearMutatedTrustedOciPolicyFields(entry)
+    clearMutatedOciIdentityClientMethods(entry)
+    clearMutatedTrustedOciRoot(entry)
     clearIndirectMappingMutations(entry)
     clearIndirectSetitemMutations(entry)
     updateSqliteCursorExecution(entry)

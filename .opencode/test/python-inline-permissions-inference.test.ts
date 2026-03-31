@@ -345,6 +345,143 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("tracks conditional candidate Path lists and keeps mixed conditional lists conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const positiveContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "base = root / 'python'",
+              "cands = [base] if base.suffix else [base.with_suffix('.ts'), base.with_suffix('.json')]",
+              "for cand in cands:",
+              "    cand.exists()",
+              "    cand.is_file()",
+            ].join("\n"),
+            args: [],
+            description: "conditional candidate path list",
+          },
+          positiveContext,
+        )
+
+        expect(getAsk(positiveContext, "python")?.patterns).toEqual(["read:<dynamic>"])
+        expect(positiveContext.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "cand.exists", pattern: "read:<dynamic>", canonicalSource: "pathlib.Path.exists" }),
+            expect.objectContaining({ kind: "read", call: "cand.is_file", pattern: "read:<dynamic>", canonicalSource: "pathlib.Path.is_file" }),
+          ]),
+        )
+
+        const mixedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "base = root / 'python'",
+              "cands = [base] if base.suffix else [base.with_suffix('.ts'), 'bad']",
+              "for cand in cands:",
+              "    cand.exists()",
+              "    cand.is_file()",
+            ].join("\n"),
+            args: [],
+            description: "mixed conditional candidate path list",
+          },
+          mixedContext,
+        )
+
+        expect(getAsk(mixedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cand.exists", "unknown:callable:cand.is_file"]))
+        expect(getAsk(mixedContext, "python")?.patterns).not.toEqual(expect.arrayContaining(["read:<dynamic>"]))
+
+        const invalidatedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "base = root / 'python'",
+              "candidates = []",
+              "candidates += [base.with_suffix('.ts')]",
+              "candidates += ['bad']",
+              "for cand in candidates:",
+              "    cand.exists()",
+              "    cand.is_file()",
+            ].join("\n"),
+            args: [],
+            description: "invalidated plus-equals candidate path list",
+          },
+          invalidatedContext,
+        )
+
+        expect(getAsk(invalidatedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cand.exists", "unknown:callable:cand.is_file"]))
+        expect(getAsk(invalidatedContext, "python")?.patterns).not.toEqual(expect.arrayContaining(["read:<dynamic>"]))
+      })
+    })
+
+    it("tracks append and += candidate Path builders and keeps mixed builders conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const positiveContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "base = root / 'python'",
+              "candidates = []",
+              "if base.suffix:",
+              "    candidates.append(base)",
+              "else:",
+              "    candidates += [base.with_suffix('.ts'), base.with_suffix('.json')]",
+              "for cand in candidates:",
+              "    cand.exists()",
+              "    cand.is_file()",
+            ].join("\n"),
+            args: [],
+            description: "append and plus-equals candidate path list",
+          },
+          positiveContext,
+        )
+
+        expect(getAsk(positiveContext, "python")?.patterns).toEqual(["read:<dynamic>"])
+        expect(positiveContext.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "read", call: "cand.exists", pattern: "read:<dynamic>", canonicalSource: "pathlib.Path.exists" }),
+            expect.objectContaining({ kind: "read", call: "cand.is_file", pattern: "read:<dynamic>", canonicalSource: "pathlib.Path.is_file" }),
+          ]),
+        )
+
+        const mixedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "base = root / 'python'",
+              "candidates = []",
+              "if base.suffix:",
+              "    candidates.append(base)",
+              "else:",
+              "    candidates += [base.with_suffix('.ts'), 'bad']",
+              "for cand in candidates:",
+              "    cand.exists()",
+              "    cand.is_file()",
+            ].join("\n"),
+            args: [],
+            description: "mixed append and plus-equals candidate path list",
+          },
+          mixedContext,
+        )
+
+        expect(getAsk(mixedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:cand.exists", "unknown:callable:cand.is_file"]))
+      })
+    })
+
     it("keeps call-form __setitem__ mutations on unknown permission patterns for tracked iterables", async () => {
       await withWorkspace(async ({ worktree }) => {
         const stringContext = createMockContext({ worktree, directory: worktree })
@@ -577,6 +714,7 @@ describe("python tool runtime", () => {
           {
             code: [
               "obj.exists()",
+              "obj.is_file()",
               "obj.read_text()",
               "obj.write_text('x')",
               "obj.joinpath('a')",
@@ -593,6 +731,7 @@ describe("python tool runtime", () => {
         expect(ask?.patterns).toEqual(
           expect.arrayContaining([
             "unknown:callable:obj.exists",
+            "unknown:callable:obj.is_file",
             "unknown:callable:obj.read_text",
             "unknown:callable:obj.write_text",
             "unknown:callable:obj.joinpath",
@@ -1160,7 +1299,7 @@ describe("python tool runtime", () => {
       })
     })
 
-    it("keeps arbitrary and unsupported string-like receivers on unknown permission patterns", async () => {
+    it("keeps arbitrary and unsupported string-like receivers on unknown permission patterns while allowing builtin str() results", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
 
@@ -1190,21 +1329,24 @@ describe("python tool runtime", () => {
             "unknown:callable:open.read.find",
             "unknown:callable:open.read.replace",
             "unknown:callable:text.replace",
-            "unknown:callable:str.find",
-            "unknown:callable:str.replace",
           ]),
         )
         expect(ask?.patterns).not.toEqual(
-          expect.arrayContaining([
+        expect.arrayContaining([
             "pure:obj.find",
             "pure:obj.replace",
             "pure:open.read.find",
             "pure:open.read.replace",
-            "pure:str.find",
-            "pure:str.replace",
             "write:obj.replace",
             "write:open.read.replace",
             "write:str.replace",
+          ]),
+        )
+        expect(context.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "str", pattern: "pure:str" }),
+            expect.objectContaining({ kind: "pure", call: "str.find", pattern: "pure:str.find" }),
+            expect.objectContaining({ kind: "pure", call: "str.replace", pattern: "pure:str.replace" }),
           ]),
         )
       })
@@ -1388,7 +1530,7 @@ describe("python tool runtime", () => {
       })
     })
 
-    it("keeps unsupported built-in type method receivers conservative while allowing tracked decode chains on permission patterns", async () => {
+    it("keeps unsupported built-in type method receivers conservative while allowing tracked decode chains and builtin str() results on permission patterns", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
 
@@ -1418,7 +1560,6 @@ describe("python tool runtime", () => {
             "unknown:callable:obj.bit_length",
             "unknown:callable:obj.tobytes",
             "unknown:callable:open.read.decode",
-            "unknown:callable:str.encode",
           ]),
         )
         expect(ask?.patterns).not.toEqual(expect.arrayContaining([`read:${path.join(worktree, "f")}`]))
@@ -1430,8 +1571,13 @@ describe("python tool runtime", () => {
             "pure:obj.tobytes",
             "pure:open.read.decode",
             "pure:data.decode.split",
-            "pure:str.encode",
             "unknown:callable:data.decode.split",
+          ]),
+        )
+        expect(context.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "str", pattern: "pure:str" }),
+            expect.objectContaining({ kind: "pure", call: "str.encode", pattern: "pure:str.encode" }),
           ]),
         )
       })

@@ -563,9 +563,9 @@ export function directTemporaryContainerKind(node: Node | null, current: Scope, 
   if (call.endsWith("Path.read_text")) return "string"
   if (call.endsWith("Path.read_bytes")) return "bytes"
 
-  if (call === "tuple" || call === "range" || call === "bytes" || call === "bytearray" || call === "memoryview" || call === "int" || call === "float" || call === "complex") {
+  if (call === "str" || call === "tuple" || call === "range" || call === "bytes" || call === "bytearray" || call === "memoryview" || call === "int" || call === "float" || call === "complex") {
     const effect = classifyBuiltinPureCall(call, node, input, current)
-    if (effect?.atom === "pure.compute") return call
+    if (effect?.atom === "pure.compute") return call === "str" ? "string" : call
     return
   }
 

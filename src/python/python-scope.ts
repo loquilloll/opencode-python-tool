@@ -65,6 +65,8 @@ export function scope(parent?: Scope): Scope {
     sqliteExecutedCursorInstances: new Set<string>(),
     sqliteClosedCursorInstances: new Set<string>(),
     trustedModelDumpInstances: new Set<string>(),
+    ociPolicyIterableInstances: new Set<string>(),
+    ociIdentityClientInstances: new Set<string>(),
     httpClientInstances: new Map<string, string>(),
     httpResponseInstances: new Set<string>(),
     ghapiInstances: new Set<string>(),
@@ -236,6 +238,8 @@ export function clearTrackedName(current: Scope, name: string) {
   current.sqliteConnectionInstances.delete(name)
   current.sqliteCursorInstances.delete(name)
   current.trustedModelDumpInstances.delete(name)
+  current.ociPolicyIterableInstances.delete(name)
+  current.ociIdentityClientInstances.delete(name)
   clearTrackedProvenanceForName(current, name)
   current.httpClientInstances.delete(name)
   current.httpResponseInstances.delete(name)
@@ -322,6 +326,42 @@ export function hasTrustedModelDumpInstance(current: Scope, name: string) {
     if (scope.bindings.has(name)) return false
   }
   return false
+}
+
+export function hasOciPolicyIterableInstance(current: Scope, name: string) {
+  const target = resolveQualified(name, current) ?? name
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    if (scope.ociPolicyIterableInstances.has(name) || scope.ociPolicyIterableInstances.has(target)) return true
+    if (scope.bindings.has(name) && target === name) return false
+  }
+  return false
+}
+
+export function clearOciPolicyIterableInstance(current: Scope, name: string) {
+  const target = resolveQualified(name, current) ?? name
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.ociPolicyIterableInstances.delete(name)
+    scope.ociPolicyIterableInstances.delete(target)
+    if (scope.bindings.has(name) && target === name) return
+  }
+}
+
+export function hasOciIdentityClientInstance(current: Scope, name: string) {
+  const target = resolveQualified(name, current) ?? name
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    if (scope.ociIdentityClientInstances.has(name) || scope.ociIdentityClientInstances.has(target)) return true
+    if (scope.bindings.has(name) && target === name) return false
+  }
+  return false
+}
+
+export function clearOciIdentityClientInstance(current: Scope, name: string) {
+  const target = resolveQualified(name, current) ?? name
+  for (let scope: Scope | undefined = current; scope; scope = scope.parent) {
+    scope.ociIdentityClientInstances.delete(name)
+    scope.ociIdentityClientInstances.delete(target)
+    if (scope.bindings.has(name) && target === name) return
+  }
 }
 
 export function clearTrustedModelDumpInstance(current: Scope, name: string) {

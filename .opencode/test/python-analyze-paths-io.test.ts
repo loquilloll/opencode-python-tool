@@ -280,11 +280,12 @@ describe("python analyzer", () => {
 
     it("keeps arbitrary Path-like receivers conservative", async () => {
       const events = await analyze(
-        "obj.exists()\nobj.read_text()\nobj.write_text('x')\nobj.joinpath('a')\nobj.resolve()\nobj.stat()\nobj.open()",
+        "obj.exists()\nobj.is_file()\nobj.read_text()\nobj.write_text('x')\nobj.joinpath('a')\nobj.resolve()\nobj.stat()\nobj.open()",
       )
       expect(events).toEqual(
         expect.arrayContaining([
           { kind: "unknown", call: "callable:obj.exists" },
+          { kind: "unknown", call: "callable:obj.is_file" },
           { kind: "unknown", call: "callable:obj.read_text" },
           { kind: "unknown", call: "callable:obj.write_text" },
           { kind: "unknown", call: "callable:obj.joinpath" },
@@ -460,9 +461,122 @@ describe("python analyzer", () => {
         ].join("\n"),
       )
 
+      const invalidatedEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "base = root / 'python'",
+          "candidates = []",
+          "candidates += [base.with_suffix('.ts')]",
+          "candidates += ['bad']",
+          "for cand in candidates:",
+          "    cand.exists()",
+          "    cand.is_file()",
+        ].join("\n"),
+      )
+
       expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "pure", call: "source.relative_to", sourceCall: "pathlib.Path.relative_to" }), expect.objectContaining({ kind: "pure", call: "source.relative_to.as_posix" })]))
       expect(mixedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:candidate.exists" }]))
       expect(mixedEvents).not.toEqual(expect.arrayContaining([{ kind: "read", call: "candidate.exists" }]))
+    })
+
+    it("tracks conditional candidate Path lists into exists and is_file calls", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "base = root / 'python'",
+          "cands = [base] if base.suffix else [base.with_suffix('.ts'), base.with_suffix('.json')]",
+          "for cand in cands:",
+          "    cand.exists()",
+          "    cand.is_file()",
+        ].join("\n"),
+      )
+
+      const mixedEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "base = root / 'python'",
+          "cands = [base] if base.suffix else [base.with_suffix('.ts'), 'bad']",
+          "for cand in cands:",
+          "    cand.exists()",
+          "    cand.is_file()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "read", call: "cand.exists", dynamicPath: true, sourceCall: "pathlib.Path.exists" }),
+          expect.objectContaining({ kind: "read", call: "cand.is_file", dynamicPath: true, sourceCall: "pathlib.Path.is_file" }),
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:cand.exists" }, { kind: "unknown", call: "callable:cand.is_file" }]))
+
+      expect(mixedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:cand.exists" }, { kind: "unknown", call: "callable:cand.is_file" }]))
+      expect(mixedEvents).not.toEqual(expect.arrayContaining([{ kind: "read", call: "cand.exists" }, { kind: "read", call: "cand.is_file" }]))
+    })
+
+    it("tracks append and += candidate Path builders into exists and is_file calls", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "base = root / 'python'",
+          "candidates = []",
+          "if base.suffix:",
+          "    candidates.append(base)",
+          "else:",
+          "    candidates += [base.with_suffix('.ts'), base.with_suffix('.json')]",
+          "for cand in candidates:",
+          "    cand.exists()",
+          "    cand.is_file()",
+        ].join("\n"),
+      )
+
+      const mixedEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "base = root / 'python'",
+          "candidates = []",
+          "if base.suffix:",
+          "    candidates.append(base)",
+          "else:",
+          "    candidates += [base.with_suffix('.ts'), 'bad']",
+          "for cand in candidates:",
+          "    cand.exists()",
+          "    cand.is_file()",
+        ].join("\n"),
+      )
+
+      const invalidatedEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "base = root / 'python'",
+          "candidates = []",
+          "candidates += [base.with_suffix('.ts')]",
+          "candidates += ['bad']",
+          "for cand in candidates:",
+          "    cand.exists()",
+          "    cand.is_file()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "read", call: "cand.exists", dynamicPath: true, sourceCall: "pathlib.Path.exists" }),
+          expect.objectContaining({ kind: "read", call: "cand.is_file", dynamicPath: true, sourceCall: "pathlib.Path.is_file" }),
+        ]),
+      )
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:cand.exists" }, { kind: "unknown", call: "callable:cand.is_file" }]))
+
+      expect(mixedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:cand.exists" }, { kind: "unknown", call: "callable:cand.is_file" }]))
+      expect(mixedEvents).not.toEqual(expect.arrayContaining([{ kind: "read", call: "cand.exists" }, { kind: "read", call: "cand.is_file" }]))
+
+      expect(invalidatedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:cand.exists" }, { kind: "unknown", call: "callable:cand.is_file" }]))
+      expect(invalidatedEvents).not.toEqual(expect.arrayContaining([{ kind: "read", call: "cand.exists" }, { kind: "read", call: "cand.is_file" }]))
     })
 
     it("clears call-form __setitem__ mutations for tracked string and path iterables", async () => {
@@ -806,7 +920,7 @@ describe("python analyzer", () => {
       expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:text.replace" }]))
     })
 
-    it("keeps arbitrary and unsupported string-like receivers conservative", async () => {
+    it("keeps arbitrary and unsupported string-like receivers conservative while allowing builtin str() results", async () => {
       const events = await analyze(
         [
           "obj.find(needle)",
@@ -827,8 +941,9 @@ describe("python analyzer", () => {
           { kind: "unknown", call: "callable:open.read.find" },
           { kind: "unknown", call: "callable:open.read.replace" },
           { kind: "unknown", call: "callable:text.replace" },
-          { kind: "unknown", call: "callable:str.find" },
-          { kind: "unknown", call: "callable:str.replace" },
+          { kind: "pure", call: "str" },
+          { kind: "pure", call: "str.find" },
+          { kind: "pure", call: "str.replace" },
         ]),
       )
       expect(events).not.toEqual(
@@ -837,8 +952,6 @@ describe("python analyzer", () => {
           { kind: "pure", call: "obj.replace" },
           { kind: "pure", call: "open.read.find" },
           { kind: "pure", call: "open.read.replace" },
-          { kind: "pure", call: "str.find" },
-          { kind: "pure", call: "str.replace" },
           { kind: "write", call: "obj.replace" },
           { kind: "write", call: "open.read.replace" },
           { kind: "write", call: "str.replace" },
@@ -1134,7 +1247,7 @@ describe("python analyzer", () => {
       )
     })
 
-    it("keeps unsupported built-in type method receivers conservative while allowing tracked decode chains", async () => {
+    it("keeps unsupported built-in type method receivers conservative while allowing tracked decode chains and builtin str() results", async () => {
       const events = await analyze(
         [
           "obj.decode('utf8')",
@@ -1158,7 +1271,8 @@ describe("python analyzer", () => {
           { kind: "read", call: "Path.read_bytes", path: "f" },
           { kind: "pure", call: "data.decode" },
           { kind: "pure", call: "data.decode.split" },
-          { kind: "unknown", call: "callable:str.encode" },
+          { kind: "pure", call: "str" },
+          { kind: "pure", call: "str.encode" },
         ]),
       )
       expect(events).not.toEqual(
@@ -1168,7 +1282,6 @@ describe("python analyzer", () => {
           { kind: "pure", call: "obj.bit_length" },
           { kind: "pure", call: "obj.tobytes" },
           { kind: "pure", call: "open.read.decode" },
-          { kind: "pure", call: "str.encode" },
         ]),
       )
     })

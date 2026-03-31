@@ -18,11 +18,14 @@ import {
   clearIndirectSetitemMutations,
   clearMutatedTrustedFnmatchCalls,
   clearMutatedTrustedHashlibCalls,
-   clearMutatedTrustedModelDumpPaths,
+    clearMutatedTrustedModelDumpPaths,
   clearMutatedTrustedDifflibCalls,
   clearMutatedTrustedOsCalls,
   clearMutatedMappingValueContainerKind,
   clearMutatedTrustedOciModelMetadataMaps,
+  clearMutatedTrustedOciPolicyFields,
+  clearMutatedOciIdentityClientMethods,
+  clearMutatedTrustedOciRoot,
   clearMutatedTrustedStructCalls,
   clearEscapedReceiverPaths,
   clearMutatedIteratedElementInstance,
@@ -125,6 +128,9 @@ export async function analyzeDetailed(source: string): Promise<PythonAnalyzeResu
     clearMutatedTrustedDifflibCalls(entry)
     clearMutatedTrustedOsCalls(entry)
     clearMutatedTrustedOciModelMetadataMaps(entry)
+    clearMutatedTrustedOciPolicyFields(entry)
+    clearMutatedOciIdentityClientMethods(entry)
+    clearMutatedTrustedOciRoot(entry)
     clearMutatedTrustedStructCalls(entry)
     clearIndirectMappingMutations(entry)
     clearIndirectSetitemMutations(entry)

@@ -140,6 +140,13 @@ export function iteratedPathValue(node: Node | null, current: Scope): Value | un
     }
   }
 
+  if (node.type === "conditional_expression") {
+    const [consequence, , alternative] = node.namedChildren
+    if (iteratedPathValue(consequence, current) && iteratedPathValue(alternative, current)) {
+      return { dynamic: true }
+    }
+  }
+
   if (node.type === "list" || node.type === "tuple" || node.type === "set") {
     const items = node.namedChildren
     if (items.length > 0 && items.every((child) => trackedPathValue(child, current))) return { dynamic: true }

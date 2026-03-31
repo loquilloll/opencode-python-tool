@@ -62,6 +62,8 @@ export type Scope = {
   sqliteExecutedCursorInstances: Set<string>
   sqliteClosedCursorInstances: Set<string>
   trustedModelDumpInstances: Set<string>
+  ociPolicyIterableInstances: Set<string>
+  ociIdentityClientInstances: Set<string>
   httpClientInstances: Map<string, string>
   httpResponseInstances: Set<string>
   ghapiInstances: Set<string>

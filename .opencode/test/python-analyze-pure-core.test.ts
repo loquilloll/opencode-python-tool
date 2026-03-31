@@ -1335,6 +1335,218 @@ describe("python analyzer", () => {
       }
     })
 
+    it("classifies bounded OCI list_policies statement strings without widening generic response fields", async () => {
+      const positiveEvents = await analyze(
+        [
+          "import oci",
+          "identity = oci.identity.IdentityClient(config)",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "for policy in policies:",
+          "    for statement in policy.statements:",
+          "        statement.lower()",
+          "    for stmt in policy.statements:",
+          "        stmt.lower().strip()",
+        ].join("\n"),
+      )
+
+      const assignmentEvents = await analyze(
+        [
+          "import oci",
+          "identity = oci.identity.IdentityClient(config)",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "for policy in policies:",
+          "    policy.name = other",
+          "    policy.name.lower()",
+          "    policy.statements = [obj]",
+          "    for statement in policy.statements:",
+          "        statement.lower()",
+        ].join("\n"),
+      )
+
+      const aliasMutationEvents = await analyze(
+        [
+          "import oci",
+          "identity = oci.identity.IdentityClient(config)",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "for policy in policies:",
+          "    alias = policy",
+          "    alias.name = other",
+          "    policy.name.lower()",
+          "    alias.statements = [obj]",
+          "    for stmt in policy.statements:",
+          "        stmt.lower().strip()",
+        ].join("\n"),
+      )
+
+      const setattrEvents = await analyze(
+        [
+          "import oci",
+          "identity = oci.identity.IdentityClient(config)",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "for policy in policies:",
+          "    setattr(policy, 'name', other)",
+          "    policy.name.lower()",
+          "    setattr(policy, 'statements', [obj])",
+          "    for stmt in policy.statements:",
+          "        stmt.lower().strip()",
+        ].join("\n"),
+      )
+
+      const shadowedOciEvents = await analyze(
+        [
+          "oci = other",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "for policy in policies:",
+          "    for statement in policy.statements:",
+          "        statement.lower()",
+        ].join("\n"),
+      )
+
+      const iterableMutationEvents = await analyze(
+        [
+          "import oci",
+          "identity = oci.identity.IdentityClient(config)",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "policies.append(obj)",
+          "for policy in policies:",
+          "    for statement in policy.statements:",
+          "        statement.lower()",
+        ].join("\n"),
+      )
+
+      const iterableAliasMutationEvents = await analyze(
+        [
+          "import oci",
+          "identity = oci.identity.IdentityClient(config)",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "alias = policies",
+          "alias.append(obj)",
+          "for policy in policies:",
+          "    for stmt in policy.statements:",
+          "        stmt.lower().strip()",
+        ].join("\n"),
+      )
+
+      const statementsAliasEvents = await analyze(
+        [
+          "import oci",
+          "identity = oci.identity.IdentityClient(config)",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "for policy in policies:",
+          "    stmts = policy.statements",
+          "    policy.statements.append(obj)",
+          "    for statement in stmts:",
+          "        statement.lower()",
+        ].join("\n"),
+      )
+
+      const subscriptMutationEvents = await analyze(
+        [
+          "import oci",
+          "identity = oci.identity.IdentityClient(config)",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "policies[0] = obj",
+          "for policy in policies:",
+          "    for statement in policy.statements:",
+          "        statement.lower()",
+        ].join("\n"),
+      )
+
+      const fakeMethodEvents = await analyze(
+        [
+          "class FakePagination:",
+          "    def list_call_get_all_results(self, fn, tenancy):",
+          "        return self",
+          "    data = []",
+          "class FakeIdentity:",
+          "    def list_policies(self):",
+          "        return []",
+          "class FakeOci:",
+          "    pagination = FakePagination()",
+          "oci = FakeOci()",
+          "identity = FakeIdentity()",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "for policy in policies:",
+          "    for statement in policy.statements:",
+          "        statement.lower()",
+        ].join("\n"),
+      )
+
+      const paginationMonkeypatchEvents = await analyze(
+        [
+          "import oci",
+          "identity = oci.identity.IdentityClient(config)",
+          "oci.pagination.list_call_get_all_results = fake",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "for policy in policies:",
+          "    for statement in policy.statements:",
+          "        statement.lower()",
+        ].join("\n"),
+      )
+
+      const identityCtorMonkeypatchEvents = await analyze(
+        [
+          "import oci",
+          "oci.identity.IdentityClient = fake",
+          "identity = oci.identity.IdentityClient(config)",
+          "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+          "for policy in policies:",
+          "    for statement in policy.statements:",
+          "        statement.lower()",
+        ].join("\n"),
+      )
+
+      expect(positiveEvents).toEqual(
+        expect.arrayContaining([
+          { kind: "exec", call: "oci.identity.IdentityClient" },
+          { kind: "exec", call: "oci.pagination.list_call_get_all_results" },
+          { kind: "pure", call: "statement.lower" },
+          { kind: "pure", call: "stmt.lower" },
+          { kind: "pure", call: "stmt.lower.strip" },
+        ]),
+      )
+      expect(positiveEvents).not.toEqual(
+        expect.arrayContaining([
+          { kind: "unknown", call: "callable:statement.lower" },
+          { kind: "unknown", call: "callable:stmt.lower" },
+          { kind: "unknown", call: "callable:stmt.lower.strip" },
+        ]),
+      )
+
+      expect(assignmentEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:policy.name.lower" }, { kind: "unknown", call: "callable:statement.lower" }]))
+      expect(assignmentEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "policy.name.lower" }, { kind: "pure", call: "statement.lower" }]))
+
+      expect(aliasMutationEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:policy.name.lower" }, { kind: "unknown", call: "callable:stmt.lower" }, { kind: "unknown", call: "callable:stmt.lower.strip" }]))
+      expect(aliasMutationEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "policy.name.lower" }, { kind: "pure", call: "stmt.lower" }, { kind: "pure", call: "stmt.lower.strip" }]))
+
+      expect(setattrEvents).toEqual(expect.arrayContaining([{ kind: "pure", call: "setattr" }, { kind: "unknown", call: "callable:policy.name.lower" }, { kind: "unknown", call: "callable:stmt.lower" }, { kind: "unknown", call: "callable:stmt.lower.strip" }]))
+      expect(setattrEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "policy.name.lower" }, { kind: "pure", call: "stmt.lower" }, { kind: "pure", call: "stmt.lower.strip" }]))
+
+      expect(shadowedOciEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:statement.lower" }]))
+      expect(shadowedOciEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "statement.lower" }]))
+
+      expect(iterableMutationEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:policies.append" }, { kind: "unknown", call: "callable:statement.lower" }]))
+      expect(iterableMutationEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "statement.lower" }]))
+
+      expect(iterableAliasMutationEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:policies.append" }, { kind: "unknown", call: "callable:stmt.lower" }, { kind: "unknown", call: "callable:stmt.lower.strip" }]))
+      expect(iterableAliasMutationEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "stmt.lower" }, { kind: "pure", call: "stmt.lower.strip" }]))
+
+      expect(statementsAliasEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:statement.lower" }]))
+      expect(statementsAliasEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "statement.lower" }]))
+
+      expect(subscriptMutationEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:statement.lower" }]))
+      expect(subscriptMutationEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "statement.lower" }]))
+
+      expect(fakeMethodEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:statement.lower" }]))
+      expect(fakeMethodEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "statement.lower" }]))
+
+      expect(paginationMonkeypatchEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:statement.lower" }]))
+      expect(paginationMonkeypatchEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "statement.lower" }]))
+
+      expect(identityCtorMonkeypatchEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:statement.lower" }]))
+      expect(identityCtorMonkeypatchEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "statement.lower" }]))
+    })
+
     it("clears dir-derived string origins after mutating list methods", async () => {
       const events = await analyze(
         [
@@ -1798,6 +2010,60 @@ describe("python analyzer", () => {
 
       expect(scalarMembershipEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:item.lower" }]))
       expect(scalarMembershipEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "item.lower" }]))
+    })
+
+    it("classifies builtin str() results as string receivers and keeps shadowed str conservative", async () => {
+      const events = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "cand = root / 'python.ts'",
+          "str(cand).startswith(str(root))",
+          "text = str(cand)",
+          "text.lower()",
+        ].join("\n"),
+      )
+
+      const shadowedEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "str = builder",
+          "text = str(root)",
+          "text.startswith('src')",
+          "text.lower()",
+        ].join("\n"),
+      )
+
+      const parameterShadowedEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "def render(str):",
+          "    text = str(root)",
+          "    text.lower()",
+          "render(builder)",
+        ].join("\n"),
+      )
+
+      const reboundEvents = await analyze(
+        [
+          "from pathlib import Path",
+          "root = Path('src')",
+          "text = str(root)",
+          "text = other",
+          "text.lower()",
+        ].join("\n"),
+      )
+
+      expect(events).toEqual(expect.arrayContaining([{ kind: "pure", call: "str" }, { kind: "pure", call: "str.startswith" }, { kind: "pure", call: "text.lower" }]))
+      expect(events.filter((event) => event.kind === "pure" && event.call === "str")).toHaveLength(1)
+      expect(events).not.toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:str.startswith" }, { kind: "unknown", call: "callable:text.lower" }]))
+
+      expect(shadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:builder" }, { kind: "unknown", call: "callable:text.startswith" }, { kind: "unknown", call: "callable:text.lower" }]))
+      expect(parameterShadowedEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:str" }, { kind: "unknown", call: "callable:text.lower" }]))
+      expect(reboundEvents).toEqual(expect.arrayContaining([{ kind: "unknown", call: "callable:other.lower" }]))
+      expect(shadowedEvents).not.toEqual(expect.arrayContaining([{ kind: "pure", call: "str.startswith" }, { kind: "pure", call: "text.lower" }]))
     })
 
     it("classifies unittest.mock constructors, patch helpers, and tracked mock methods as pure", async () => {

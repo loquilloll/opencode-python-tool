@@ -2358,6 +2358,264 @@ describe("python tool runtime", () => {
       })
     })
 
+    it("keeps OCI list_policies statement strings off unknown ask patterns while preserving mutation negatives", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const positiveContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import oci",
+              "identity = oci.identity.IdentityClient(config)",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "for policy in policies:",
+              "    for statement in policy.statements:",
+              "        statement.lower()",
+              "    for stmt in policy.statements:",
+              "        stmt.lower().strip()",
+            ].join("\n"),
+            args: [],
+            description: "oci policy statement strings",
+          },
+          positiveContext,
+        )
+
+        expect(getAsk(positiveContext, "python")?.patterns).toEqual(expect.arrayContaining(["exec:oci.identity.IdentityClient", "exec:oci.pagination.list_call_get_all_results"]))
+        expect(getAsk(positiveContext, "python")?.patterns).not.toEqual(expect.arrayContaining(["unknown:callable:statement.lower", "unknown:callable:stmt.lower", "unknown:callable:stmt.lower.strip"]))
+        expect(positiveContext.metadatas[0]?.metadata?.operations).toEqual(
+            expect.arrayContaining([
+            expect.objectContaining({ kind: "exec", call: "oci.identity.IdentityClient", pattern: "exec:oci.identity.IdentityClient" }),
+            expect.objectContaining({ kind: "exec", call: "oci.pagination.list_call_get_all_results", pattern: "exec:oci.pagination.list_call_get_all_results" }),
+            expect.objectContaining({ kind: "pure", call: "statement.lower", pattern: "pure:statement.lower" }),
+            expect.objectContaining({ kind: "pure", call: "stmt.lower", pattern: "pure:stmt.lower" }),
+            expect.objectContaining({ kind: "pure", call: "stmt.lower.strip", pattern: "pure:stmt.lower.strip" }),
+          ]),
+        )
+
+        const assignmentContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import oci",
+              "identity = oci.identity.IdentityClient(config)",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "for policy in policies:",
+              "    policy.name = other",
+              "    policy.name.lower()",
+              "    policy.statements = [obj]",
+              "    for statement in policy.statements:",
+              "        statement.lower()",
+            ].join("\n"),
+            args: [],
+            description: "mutated oci policy statement strings",
+          },
+          assignmentContext,
+        )
+
+        expect(getAsk(assignmentContext, "python")?.patterns).toEqual(expect.arrayContaining(["exec:oci.identity.IdentityClient", "exec:oci.pagination.list_call_get_all_results", "unknown:callable:policy.name.lower", "unknown:callable:statement.lower"]))
+
+        const setattrContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import oci",
+              "identity = oci.identity.IdentityClient(config)",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "for policy in policies:",
+              "    setattr(policy, 'name', other)",
+              "    policy.name.lower()",
+              "    setattr(policy, 'statements', [obj])",
+              "    for stmt in policy.statements:",
+              "        stmt.lower().strip()",
+            ].join("\n"),
+            args: [],
+            description: "setattr oci policy statement strings",
+          },
+          setattrContext,
+        )
+
+        expect(getAsk(setattrContext, "python")?.patterns).toEqual(expect.arrayContaining(["exec:oci.identity.IdentityClient", "exec:oci.pagination.list_call_get_all_results", "unknown:callable:policy.name.lower", "unknown:callable:stmt.lower", "unknown:callable:stmt.lower.strip"]))
+
+        const shadowedOciContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "oci = other",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "for policy in policies:",
+              "    for statement in policy.statements:",
+              "        statement.lower()",
+            ].join("\n"),
+            args: [],
+            description: "shadowed oci policy statements",
+          },
+          shadowedOciContext,
+        )
+
+        expect(getAsk(shadowedOciContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:statement.lower"]))
+
+        const iterableMutationContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import oci",
+              "identity = oci.identity.IdentityClient(config)",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "policies.append(obj)",
+              "for policy in policies:",
+              "    for statement in policy.statements:",
+              "        statement.lower()",
+            ].join("\n"),
+            args: [],
+            description: "mutated oci policy iterable",
+          },
+          iterableMutationContext,
+        )
+
+        expect(getAsk(iterableMutationContext, "python")?.patterns).toEqual(expect.arrayContaining(["exec:oci.identity.IdentityClient", "exec:oci.pagination.list_call_get_all_results", "unknown:callable:policies.append", "unknown:callable:statement.lower"]))
+
+        const iterableAliasMutationContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import oci",
+              "identity = oci.identity.IdentityClient(config)",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "alias = policies",
+              "alias.append(obj)",
+              "for policy in policies:",
+              "    for stmt in policy.statements:",
+              "        stmt.lower().strip()",
+            ].join("\n"),
+            args: [],
+            description: "aliased mutated oci policy iterable",
+          },
+          iterableAliasMutationContext,
+        )
+
+        expect(getAsk(iterableAliasMutationContext, "python")?.patterns).toEqual(expect.arrayContaining(["exec:oci.identity.IdentityClient", "exec:oci.pagination.list_call_get_all_results", "unknown:callable:policies.append", "unknown:callable:stmt.lower", "unknown:callable:stmt.lower.strip"]))
+
+        const statementsAliasContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import oci",
+              "identity = oci.identity.IdentityClient(config)",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "for policy in policies:",
+              "    stmts = policy.statements",
+              "    policy.statements.append(obj)",
+              "    for statement in stmts:",
+              "        statement.lower()",
+            ].join("\n"),
+            args: [],
+            description: "aliased oci policy statements field",
+          },
+          statementsAliasContext,
+        )
+
+        expect(getAsk(statementsAliasContext, "python")?.patterns).toEqual(expect.arrayContaining(["exec:oci.identity.IdentityClient", "exec:oci.pagination.list_call_get_all_results", "unknown:callable:statement.lower"]))
+
+        const subscriptMutationContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import oci",
+              "identity = oci.identity.IdentityClient(config)",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "policies[0] = obj",
+              "for policy in policies:",
+              "    for statement in policy.statements:",
+              "        statement.lower()",
+            ].join("\n"),
+            args: [],
+            description: "subscript-mutated oci policy iterable",
+          },
+          subscriptMutationContext,
+        )
+
+        expect(getAsk(subscriptMutationContext, "python")?.patterns).toEqual(expect.arrayContaining(["exec:oci.identity.IdentityClient", "exec:oci.pagination.list_call_get_all_results", "unknown:callable:statement.lower"]))
+
+        const fakeMethodContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "class FakePagination:",
+              "    def list_call_get_all_results(self, fn, tenancy):",
+              "        return self",
+              "    data = []",
+              "class FakeIdentity:",
+              "    def list_policies(self):",
+              "        return []",
+              "class FakeOci:",
+              "    pagination = FakePagination()",
+              "oci = FakeOci()",
+              "identity = FakeIdentity()",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "for policy in policies:",
+              "    for statement in policy.statements:",
+              "        statement.lower()",
+            ].join("\n"),
+            args: [],
+            description: "fake list_policies producer",
+          },
+          fakeMethodContext,
+        )
+
+        expect(getAsk(fakeMethodContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:statement.lower"]))
+
+        const paginationMonkeypatchContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import oci",
+              "identity = oci.identity.IdentityClient(config)",
+              "oci.pagination.list_call_get_all_results = fake",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "for policy in policies:",
+              "    for statement in policy.statements:",
+              "        statement.lower()",
+            ].join("\n"),
+            args: [],
+            description: "oci pagination monkeypatch",
+          },
+          paginationMonkeypatchContext,
+        )
+
+        expect(getAsk(paginationMonkeypatchContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:statement.lower"]))
+
+        const identityCtorMonkeypatchContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "import oci",
+              "oci.identity.IdentityClient = fake",
+              "identity = oci.identity.IdentityClient(config)",
+              "policies = oci.pagination.list_call_get_all_results(identity.list_policies, tenancy).data",
+              "for policy in policies:",
+              "    for statement in policy.statements:",
+              "        statement.lower()",
+            ].join("\n"),
+            args: [],
+            description: "oci identity constructor monkeypatch",
+          },
+          identityCtorMonkeypatchContext,
+        )
+
+        expect(getAsk(identityCtorMonkeypatchContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:statement.lower"]))
+      })
+    })
+
     it("keeps dir-derived string origins conservative after mutating list methods", async () => {
       await withWorkspace(async ({ worktree }) => {
         const context = createMockContext({ worktree, directory: worktree })
@@ -2771,6 +3029,100 @@ describe("python tool runtime", () => {
         )
 
         expect(getAsk(scalarMembershipContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:item.lower"]))
+      })
+    })
+
+    it("skips python ask for builtin str() string receivers and keeps shadowed str conservative", async () => {
+      await withWorkspace(async ({ worktree }) => {
+        const exactContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "cand = root / 'python.ts'",
+              "str(cand).startswith(str(root))",
+              "text = str(cand)",
+              "text.lower()",
+            ].join("\n"),
+            args: [],
+            description: "builtin str string receivers",
+          },
+          exactContext,
+        )
+
+        expect(getAsk(exactContext, "python")).toBeUndefined()
+        expect(exactContext.metadatas[0]?.metadata?.permissionPatterns).toEqual([])
+        expect(exactContext.metadatas[0]?.metadata?.operations?.filter((operation) => operation.kind === "pure" && operation.call === "str")).toHaveLength(1)
+        expect(exactContext.metadatas[0]?.metadata?.operations).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "pure", call: "str", pattern: "pure:str" }),
+            expect.objectContaining({ kind: "pure", call: "str.startswith", pattern: "pure:str.startswith" }),
+            expect.objectContaining({ kind: "pure", call: "text.lower", pattern: "pure:text.lower" }),
+          ]),
+        )
+
+        const shadowedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "str = builder",
+              "text = str(root)",
+              "text.startswith('src')",
+              "text.lower()",
+            ].join("\n"),
+            args: [],
+            description: "shadowed str string receivers",
+          },
+          shadowedContext,
+        )
+
+        expect(getAsk(shadowedContext, "python")?.patterns).toEqual(
+          expect.arrayContaining(["unknown:callable:builder", "unknown:callable:text.startswith", "unknown:callable:text.lower"]),
+        )
+
+        const parameterShadowedContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "def render(str):",
+              "    text = str(root)",
+              "    text.lower()",
+              "render(builder)",
+            ].join("\n"),
+            args: [],
+            description: "parameter shadowed str receiver",
+          },
+          parameterShadowedContext,
+        )
+
+        expect(getAsk(parameterShadowedContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:str", "unknown:callable:text.lower"]))
+
+        const reboundContext = createMockContext({ worktree, directory: worktree })
+
+        await executeExpectingEnoent(
+          {
+            code: [
+              "from pathlib import Path",
+              "root = Path('src')",
+              "text = str(root)",
+              "text = other",
+              "text.lower()",
+            ].join("\n"),
+            args: [],
+            description: "rebound str receiver",
+          },
+          reboundContext,
+        )
+
+        expect(getAsk(reboundContext, "python")?.patterns).toEqual(expect.arrayContaining(["unknown:callable:other.lower"]))
       })
     })
 
